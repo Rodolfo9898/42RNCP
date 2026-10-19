@@ -24,9 +24,40 @@ def test_untrusted_text_cannot_inject_html_or_headings():
 def test_verdict_levels():
     assert summarize([])["overall"] == "NOT RUN"
     assert summarize([result("pass")])["overall"] == "PASS"
-    assert summarize([result("pass"), result("manual")])["overall"] == "PASS WITH REVIEW"
+    assert summarize([result("pass"), result("manual")])["overall"] == "PASS WITH ISSUES"
     assert summarize([result("pass"), result("fail")])["overall"] == "FAIL"
+    assert summarize([result("pass"), result("fail"), result("manual"), result("warn")])["overall"] == "FAIL"   # lacking wins
     assert summarize([result("pass"), result("fail", section="bonus")])["overall"] == "PASS"
+
+
+def manual(rule_id, detail):
+    return CheckResult(rule_id=rule_id, title="Needs manual review", status="manual", detail=detail)
+
+
+def judged(**assessments):
+    return AIState(reviews={rid: AIReview(rule_id=rid, assessment=a, by="Claude") for rid, a in assessments.items()})
+
+
+def test_the_result_follows_the_two_lists_including_claudes_answers():
+    results = [result("pass"), manual("r1", "Handles bad input."), manual("r2", "Never crashes.")]
+    # both lists empty: claude found every requirement ok (or not applicable)
+    assert summarize(results, judged(r1="likely_ok", r2="not_applicable"), ClaudeReport())["overall"] == "PASS"
+    # only something for a second look
+    assert summarize(results, judged(r1="likely_ok", r2="unclear"), ClaudeReport())["overall"] == "PASS WITH ISSUES"
+    assert summarize(results, judged(r1="likely_ok"), ClaudeReport())["overall"] == "PASS WITH ISSUES"            # r2 not reviewed
+    disagrees = ClaudeReport(corrections=[Correction(check="T", says="ok", actually="it is not")])
+    assert summarize(results, judged(r1="likely_ok", r2="likely_ok"), disagrees)["overall"] == "PASS WITH ISSUES"
+    # anything lacking is a fail, whatever else there is
+    assert summarize(results, judged(r1="likely_problem", r2="likely_ok"), ClaudeReport())["overall"] == "FAIL"
+    assert summarize(results, judged(r1="likely_problem", r2="unclear"), disagrees)["overall"] == "FAIL"
+
+
+def test_the_document_headline_uses_the_same_rule():
+    results = [result("pass"), manual("r1", "Handles bad input.")]
+    md = render_markdown(repo=None, subjects=[], results=results, ai=judged(r1="likely_ok"), claude=ClaudeReport(structured=True))
+    assert "✅ **PASS**" in md and "Nothing needs a second look." in md and "**Result: PASS**" in md
+    md = render_markdown(repo=None, subjects=[], results=results, ai=judged(r1="likely_problem"), claude=ClaudeReport(structured=True))
+    assert "❌ **FAIL**" in md and "**Result: FAIL**" in md
 
 
 def test_document_structure_and_readme_callout():
@@ -60,15 +91,15 @@ def test_the_document_always_ends_with_a_final_verdict():
     md = render_markdown(repo=None, subjects=["p.pdf"], results=fail)
     last = md[md.index("## Final verdict"):]
     assert md.rstrip().endswith("decides the grade._") and md.count("## Final verdict") == 1
-    assert "**Checks: FAIL**" in last and "1 thing(s) lacking" in last and "1. Makefile rules — missing re" in last
+    assert "**Result: FAIL**" in last and "1 thing(s) lacking" in last and "1. Makefile rules — missing re" in last
     assert "1 requirement(s) nobody has assessed yet" in last and "has not reviewed" in last
 
 
 def test_headline_and_wording_follow_the_result():
     passed = render_markdown(repo=None, subjects=[], results=[result("pass")])
-    assert "✅ **PASS**" in passed and "Every automated check passed" in passed and "Still open" not in passed
+    assert "✅ **PASS**" in passed and "Nothing is lacking and nothing needs a second look." in passed and "Still open" not in passed
     review = render_markdown(repo=None, subjects=[], results=[result("pass"), result("manual", detail="x")])
-    assert "⚠️ **PASS WITH REVIEW**" in review and "Nothing is lacking." in review and "1 to look at a second time" in review
+    assert "⚠️ **PASS WITH ISSUES**" in review and "Nothing is lacking." in review and "1 to look at a second time" in review
     failed = render_markdown(repo=None, subjects=[], results=[result("fail", title="T")])
     assert "❌ **FAIL**" in failed
     bonus = render_markdown(repo=None, subjects=[], results=[result("pass"), result("fail", section="bonus", title="Bonus thing")])
@@ -117,7 +148,7 @@ def merged_document():
         improvements=[Improvement(category="code", priority="high", title="Fix strchr", detail="Compare as char.", evidence=[Evidence(file="ft_strchr.c", line=20)], source="ai")],
         problems=["Claude did not answer 1 of 6 requirement(s): #5."])
     return render_markdown(repo=None, subjects=["libft.pdf"], results=results, improvements=claude.improvements, ai=ai,
-                           claude_review="# prose that must not be repeated", claude=claude, claude_file="claude-review.md", project="libft")
+                           claude_review="# prose that must not be repeated", claude=claude, project="libft")
 
 
 def section(md, start, end):
@@ -151,15 +182,15 @@ def test_claudes_corrections_of_the_scripts_are_visible_in_second_look():
 def test_the_merged_page_does_not_repeat_claudes_prose():
     md = merged_document()
     assert "prose that must not be repeated" not in md and "## Claude's review" not in md
-    assert "Claude's full report: `claude-review.md`" in md
-    assert "Claude answered 5 of 6 requirement(s); its full report is `claude-review.md`." in md
+    assert "Claude's full report" not in md and "claude-review.md" not in md
+    assert "Claude answered 5 of 6 requirement(s)." in md
 
 
 def test_the_headline_and_final_verdict_carry_both_opinions():
     md = merged_document()
     assert "❌ **FAIL** · Claude: **do not pass**" in md.split("## At a glance")[0]
     final = md[md.index("## Final verdict"):]
-    assert "**Checks: FAIL** · **Claude: do not pass**" in final and "> The README is missing and strchr is wrong." in final
+    assert "**Result: FAIL** · **Claude: do not pass**" in final and "> The README is missing and strchr is wrong." in final
     assert "What to do next (2 thing(s) lacking" in final and "1. README.md meets the subject's requirements" in final
     assert "2. The strchr function must find any byte. — Bytes above 0x7f" in final
     assert "Still open: 3 point(s) for a second look; 1 requirement(s) nobody has assessed yet." in final

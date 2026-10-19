@@ -4,14 +4,35 @@ Upload one or more 42 subject PDFs, give it a repository, and get a `verdict.md`
 what the subject requires, what the repo does, and what still needs a human.
 
 ```sh
-ssh-add            # clones use your ssh-agent; the key is never copied into a container
 make run           # http://localhost:8000
 ```
+
+`make` takes care of SSH: it makes sure an ssh-agent is running (yours, or one it starts at `~/.ssh/verdict-agent.sock`),
+loads your keys into it (`~/.ssh/id_*`, asking each passphrase once; pick others with `make SSH_KEYS="~/.ssh/work"`), and
+mounts the agent's socket into the web container. Clones authenticate through the agent: private keys are never copied
+into a container. `make ssh` does only that step.
 
 Settings live in `.env` (never committed). `make run` creates it if it is missing; to change options, start from
 `.env.example` (`cp .env.example .env`): it says what is required, what is recommended and what you can leave out.
 
-Put subject PDFs in `samples/` to pick them from **Library…** in the UI, or upload them directly.
+The subject library is `samples/`, one folder per track:
+
+```
+samples/
+  en.norm.pdf          the Norm: added by itself to every review where C code is detected
+  common-core/
+  post-common-core/
+  rncp/
+```
+
+Click a subject in the sidebar (or a "From libft.pdf p.4" reference under a result) to read the PDF in a tab, like a
+file. Pick subjects from **Library…** (grouped by track), or use **Upload PDFs** (or drop PDFs on the sidebar): you choose
+Common Core, Post Common Core or RNCP, and the PDF is added to the review and saved in that folder. An existing file
+with different content is never replaced.
+
+C is detected when a subject says the project must be written in C or, when no subject names a language, when the
+repository has `.c` files and no C++ (vendored minilibx is ignored). The Norm then adds the norminette check and, as
+manual items, only the rules the Norm marks with (*), the ones norminette cannot check.
 Clone with an SSH URL, e.g. `git@github.com:user/repo.git`.
 
 ## Output
@@ -28,7 +49,8 @@ merged, otherwise script heuristics) and ends with a **Final verdict**: the chec
 next". The page is shown in the app (a rendered `verdict.md` tab) and saved in the cloned repository. If the project already
 has its own `verdict.md` (or a symlink), it is never touched and `verdict-report.md` is used instead.
 
-Claude's full free-form report is saved next to it as `claude-review.md`. Only its **structured block** is merged into
+Claude's review goes into `verdict.md` only: no separate report file is added to the repository (a `claude-review.md` left
+by an earlier version is removed; a project's own file of that name is never touched). Its **structured block** is merged into
 `verdict.md`: the prompt asks claude to end the report with one json block answering every numbered requirement
 (`likely ok` / `likely a problem` / `unclear` / `not applicable`, a note, what to check by hand, `file:line` evidence), listing
 corrections to automated results, improvements and a verdict. Unknown requirement numbers are ignored and any file or line that
@@ -59,8 +81,8 @@ LLM_MODEL=deepseek-v3
 **✨ AI review** asks for confirmation (naming the server that will receive the code), then sends up to ~100,000–150,000
 characters of the repository and the subject's manual-review sentences. It returns a description of what is in the
 repository, an assessment of each manual-review item ("likely ok / likely a problem / unclear", why a human must check,
-and where to look) and extra improvement ideas. It is advisory: it never changes a check result or the verdict, every
-file/line it cites is checked against what it was shown, and uncited claims about the code are dropped. Repository
+and where to look) and extra improvement ideas. Its assessments count in the result (see **Verdict** below) but never change
+a check result, every file/line it cites is checked against what it was shown, and uncited claims about the code are dropped. Repository
 content is treated as untrusted data in the prompt. The key reaches the web container only, never the sandbox that runs
 student code. Models other than Claude have no schema-constrained output: the reply is validated and retried once, and
 smaller models may still give weaker answers. A third-party server receives the student's code, so check who runs it.
@@ -85,8 +107,8 @@ with `docker compose`. Anything a project needs beyond that is expected to come 
 ships: the review builds and runs it, rather than the app trying to install everything.
 
 - **🔧 Environment** (title bar) checks it for real, in both the sandbox and claude's terminal: each tool's version, a C and a
-  C++ program compiled with the strict flags and run through `make`, and the Docker daemon. "Also test a docker build" builds
-  and runs a tiny Dockerfile (it downloads a base image, so it needs internet). Only ✖ items make it "not ready"; it also
+  C++ program compiled with the strict flags and run through `make`, the Docker daemon, and building and running a tiny
+  Dockerfile (the first run downloads a base image, so it needs internet). Only ✖ items make it "not ready"; it also
   appears as one line in the ✨ AI review dialog, so a problem is visible *before* claude starts.
 - **claude** is told to confirm the environment first (`cc --version`, `c++ --version`, `make --version`, `docker info`), then to
   look for the student's Dockerfile or compose file and build and run the project with it, telling you each command first.
@@ -108,16 +130,14 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 - **⌨ Claude** opens a real terminal tab on the cloned repository. The first time, type `/login` inside claude and
   sign in with your Claude account; the login is kept in the `claude-home` Docker volume (`make fclean` deletes it).
 - **✨ AI review** (with `LLM_PROVIDER=claude-cli` in `.env`; `CLAUDE_MODEL` optionally names a claude model, and no other `LLM_*`
-  setting is read) offers two ways, both using your Claude login:
-  - **Review in the terminal:** the Claude tab opens and claude starts with a prompt built from this run. It lists what the
-    scripts verified (so claude does not redo it) and asks claude to judge what they could not: the subject requirements that
-    need a human, plus correctness on edge cases, error handling, memory, design and readability. Each point must cite
-    file:line, "unclear" is an accepted answer, and it asks before running anything. If a claude tab is already open, the
-    prompt is pasted into it instead. claude is asked to save its report as `claude-review.md` (you approve that one write);
-    **💾 Save review to verdict.md** in the terminal tab, or simply closing the tab, adds it to `verdict.md` between the
-    improvements and the closing **Final verdict** section. The report is treated as untrusted text (markup defused, headings demoted).
-  - **Run in the background:** `claude -p` explores the repository silently with read-only tools (Read, Grep, Glob) and the
-    answer goes through the same citation checks as every other provider and into `verdict.md`.
+  setting is read) runs the review in the terminal, using your Claude login. **Run** opens the Claude tab and claude starts
+  with a prompt built from this run. It lists what the scripts verified (so claude does not redo it) and asks claude to judge
+  what they could not: the subject requirements that need a human, plus correctness on edge cases, error handling, memory,
+  design and readability. Each point must cite file:line, "unclear" is an accepted answer, and it asks before running
+  anything. If a claude tab is already open, the prompt is pasted into it instead. claude saves its report as
+  `claude-review.md` in its throw-away copy (you approve that one write); it is picked up automatically, or with
+  **💾 Save review to verdict.md** or by closing the tab, and merged into `verdict.md` between the improvements and the closing **Final verdict** section. The report is treated
+  as untrusted text (markup defused, headings demoted).
   Check Anthropic's terms for your plan before automating a subscription login this way.
 - **Safety:** claude never runs in the original repository. It runs in a throw-away copy (in memory, wiped when you close
   the tab) from which `.git`, `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out, with `--setting-sources user`
@@ -130,15 +150,15 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 ## SSH troubleshooting
 
 The status bar shows `ssh: N key(s)` when the container can use your agent, or `ssh: ⚠ not ready` with the reason
-on hover (and in the Clone dialog). On your computer: `ssh-add -l` must list a key that can read the repository.
+on hover (and in the Clone dialog). On your computer: `ssh-add -l` must list a key that can read the repository; `make ssh` loads them.
 Still stuck? This shows what the container sees:
 
 ```sh
 docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; ssh-add -l'
 ```
 
-On Linux hosts the agent socket is `$SSH_AUTH_SOCK` rather than Docker Desktop's `/run/host-services/ssh-auth.sock`;
-mount it in `docker-compose.yml` and set `HOST_SSH_SOCK` to its in-container path.
+`make` mounts your `$SSH_AUTH_SOCK` on Linux and Docker Desktop's `/run/host-services/ssh-auth.sock` on macOS
+(`SSH_AGENT_MOUNT` overrides it). Running `docker compose` by hand skips that: use `make`, or export `SSH_AGENT_MOUNT`.
 
 ## How it works
 
@@ -149,8 +169,12 @@ mount it in `docker-compose.yml` and set `HOST_SSH_SOCK` to its in-container pat
    `make clean/fclean/re`, norminette, authorized functions (`nm`), C++ bans, a crash smoke test and a
    valgrind run. Anything that builds or runs the repo goes through the `sandbox` container, which has no
    network, no capabilities and a read-only root filesystem.
-3. **Verdict**: `FAIL` if a mandatory check fails, `PASS WITH REVIEW` if nothing failed but items need a human,
-   `PASS` otherwise. Bonus results are reported separately and never fail the verdict.
+3. **Verdict**: it follows the two lists of `verdict.md` for the mandatory part, claude's answers included. `FAIL` when
+   anything is under **❌ Lacking** (whatever else there is), `PASS WITH ISSUES` when nothing is lacking but something is
+   under **⚠️ Second look** (warnings, requirements nobody or claude could not settle, claude disagreeing with a check),
+   `PASS` when both lists are empty. Bonus results are reported separately and never fail the verdict.
+   A review (claude's or the AI's) belongs to one repository, commit and set of subjects: changing any of them drops it,
+   so the next project never inherits the previous one's answers.
 
 ## Limits
 

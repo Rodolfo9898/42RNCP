@@ -124,13 +124,21 @@ function render() {
   $("#btn-clone").disabled = busy();
 }
 
+const TRACK_LABEL = { "common-core": "Common Core", "post-common-core": "Post Common Core", rncp: "RNCP" };
+
 function renderSidebar() {
   const list = $("#subjects");
-  list.replaceChildren(...session.subjects.map((s) => h("li", { title: `${s.rules.length} rules extracted` },
-    h("span", { class: "name" }, s.name),
-    h("span", { class: "meta" }, `${s.rules.length} rules`),
-    h("button", { class: "x", title: "Remove", onclick: () => guarded(async () => setSession(
-      await api(`sessions/${sid}/subjects/${encodeURIComponent(s.name)}`, { method: "DELETE" }))) }, "✕"))));
+  list.replaceChildren(...session.subjects.map((s) => s.kind === "norm"
+    ? h("li", { title: "C code was detected: norminette runs, and the Norm rules it cannot check go to the manual review" },
+      h("span", { class: "name link", onclick: () => guarded(() => openSubject(s.name)) }, s.name),
+      h("span", { class: "meta" }, `Norm · auto (C) · ${s.rules.length} rules`))
+    : h("li", { title: `${s.rules.length} rules extracted. Click to open the PDF.` },
+      h("span", { class: "name link", onclick: () => guarded(() => openSubject(s.name)) }, s.name),
+      h("span", { class: "meta" }, [TRACK_LABEL[s.track], `${s.rules.length} rules`].filter(Boolean).join(" · ")),
+      h("button", { class: "x", title: "Remove", onclick: () => guarded(async () => {
+        setSession(await api(`sessions/${sid}/subjects/${encodeURIComponent(s.name)}`, { method: "DELETE" }));
+        if (tabs.has(`pdf:${s.name}`)) closeTab(`pdf:${s.name}`);
+      }) }, "✕"))));
   $("#subjects-count").textContent = session.subjects.length || "";
   $("#subjects-hint").hidden = session.subjects.length > 0;
 }
@@ -141,7 +149,7 @@ function renderOverview() {
   const css = s.overall === "FAIL" ? "FAIL" : s.overall === "PASS" ? "PASS" : s.overall === "NOT RUN" ? "none" : "review";
   const step = (done, text) => h("li", { class: done ? "done" : "" }, `${done ? "✔" : "○"} ${text}`);
   const row = (name, c) => h("tr", {}, h("td", {}, name), ...ORDER.map((k) => h("td", {}, c[k])));
-  view.replaceChildren(
+  view.replaceChildren(...[
     h("h1", {}, session.repo ? (session.repo.name || session.repo.url) : "No repository yet"),
     session.repo && h("div", { class: "meta" }, `${session.repo.url} · ${session.repo.path} · ${session.repo.commit} ${session.repo.subject} — ${session.repo.author}`),
     session.ai.state === "running" && aiOverview(),   // pinned to the top while it works
@@ -154,8 +162,8 @@ function renderOverview() {
       step(session.results.length > 0, "Run checks")),
     session.ai.state !== "running" && aiOverview(),
     session.state === "done" && h("p", { class: "meta" },
-      "Automated checks cover what a script can verify. “Needs manual review” items come from the subject and still need a human."),
-  );
+      "FAIL when anything is lacking, PASS WITH ISSUES when something still needs a second look, PASS when both lists in verdict.md are empty."),
+  ].filter((node) => node != null && node !== false));   // optional parts are false/null when absent: never show them as text
 }
 
 
@@ -228,7 +236,7 @@ async function saveClaudeReview() {
   await afterReviewSaved(result);
 }
 
-// Show a saved review everywhere: the tree (the new file), the verdict tab, a message.
+// Show a saved review everywhere: the tree, the verdict tab, a message.
 async function afterReviewSaved(result) {
   session = await api(`sessions/${sid}`);
   render();
@@ -237,11 +245,10 @@ async function afterReviewSaved(result) {
   if (result && result.warning) return toast(result.warning);
   const claude = session.claude || {};
   if (!claude.structured) {
-    return toast(`claude's report is in the repository, but it has no data block at the end, so it could not be merged into the lists. ${(claude.problems || [])[0] || ""}`);
+    return toast(`claude's report was added to ${session.verdict_file || "verdict.md"} as text: it has no data block at the end, so it could not be merged into the lists. ${(claude.problems || [])[0] || ""}`);
   }
-  const files = [session.verdict_file, session.claude_review_file].filter(Boolean).join(" and ");
   const gaps = claude.assessed < claude.total ? ` ${claude.total - claude.assessed} requirement(s) were not answered.` : "";
-  toast(`Merged claude's answers (${claude.assessed} of ${claude.total} requirements) into ${session.verdict_file || "verdict.md"}; full report: ${session.claude_review_file || "claude-review.md"}.${gaps}`, true);
+  toast(`Merged claude's answers (${claude.assessed} of ${claude.total} requirements) into ${session.verdict_file || "verdict.md"}.${gaps}`, true);
 }
 
 // Type the review request into a claude that is already running: as one bracketed paste, then Enter.
@@ -274,12 +281,10 @@ async function startAi() {
       envLine,
       h("p", {}, "claude will receive a prompt built from this run: what the scripts verified (so it does not redo it), and everything they ",
         h("strong", {}, "could not"), " judge: the subject requirements that need a human, plus correctness, error handling, memory, design and readability."),
-      h("p", {}, h("strong", {}, "In the terminal: "), "you watch it work, it asks before running anything, and you can answer or ask follow-up questions."),
-      h("p", {}, h("strong", {}, "In the background: "), "it reads the repository silently with read-only tools and adds its answer to verdict.md."),
-      h("p", { class: "hint" }, `The source files of ${files} are read by claude and sent to Anthropic using your Claude login. It works on a throw-away copy, never on the original. The AI only advises: the pass/fail result is unchanged.`)), [
+      h("p", {}, "It runs in the terminal: you watch it work, it asks before running anything, and you can answer or ask follow-up questions."),
+      h("p", { class: "hint" }, `The source files of ${files} are read by claude and sent to Anthropic using your Claude login. It works on a throw-away copy, never on the original. Its answers count in the result: a requirement it judges a problem makes it FAIL.`)), [
       h("button", { onclick: closeDialog }, "Cancel"),
-      h("button", { onclick: background }, "Run in the background"),
-      h("button", { class: "primary", onclick: () => guarded(reviewInTerminal) }, "Review in the terminal"),
+      h("button", { class: "primary", onclick: () => guarded(reviewInTerminal) }, "Run"),
     ]);
     return;
   }
@@ -288,7 +293,7 @@ async function startAi() {
       h("strong", {}, llm.host), ` using the model `, h("strong", {}, llm.model), "."),
     llm.provider === "openai" && h("p", { class: "warning" },
       `${llm.host} is a server you configured, not necessarily the model's maker. It receives the student's code and forwards it, so check who runs it and how it handles data.`),
-    h("p", { class: "hint" }, "The student's code leaves this computer. The AI only advises: it never changes the pass/fail result, and every file and line it cites is checked against what it was shown.")), [
+    h("p", { class: "hint" }, "The student's code leaves this computer. Its answers count in the result (a requirement it judges a problem makes it FAIL), and every file and line it cites is checked against what it was shown.")), [
     h("button", { onclick: closeDialog }, "Cancel"),
     h("button", { class: "primary", onclick: background }, "Send and review"),
   ]);
@@ -332,7 +337,7 @@ function resultItem(r) {
   const ai = aiReviewNodes(r);
   const body = h("div", { class: "item-body", hidden: !expanded.has(key) },
     ai.body,
-    r.sources.length > 0 && h("div", { class: "src-ref" }, "From " + r.sources.slice(0, 4).map((s) => `${s.pdf} p.${s.page}`).join(", ")),
+    r.sources.length > 0 && h("div", { class: "src-ref" }, "From ", r.sources.slice(0, 4).flatMap((s, i) => [i ? ", " : "", pageLink(s.pdf, s.page)])),
     r.evidence.map((e) => h("button", { class: "ev", onclick: () => guarded(() => openFile(e.file, e.line)) },
       e.line ? `${e.file}:${e.line}` : e.file, e.snippet && h("span", { class: "snip" }, e.snippet))),
     r.log && h("pre", { class: "log" }, r.log));
@@ -385,7 +390,9 @@ function renderRules() {
   if (!session.subjects.length) return h("p", { class: "hint" }, "No subjects loaded.");
   const out = h("div");
   for (const s of session.subjects) {
-    out.append(h("div", { class: "group-title" }, `${s.name} — ${s.rules.length} rules, ${s.lang ? s.lang.toUpperCase() : "language unknown"}`));
+    out.append(h("div", { class: "group-title" }, s.kind === "norm"
+      ? `${s.name} — the Norm, added because C code was detected (${s.rules.length} rules)`
+      : `${s.name} — ${[TRACK_LABEL[s.track], `${s.rules.length} rules`, s.lang ? s.lang.toUpperCase() : "language unknown"].filter(Boolean).join(", ")}`));
     for (const r of s.rules) {
       const auto = r.kind !== "manual";
       out.append(h("div", { class: `item st-${auto ? "pass" : "manual"}` },
@@ -538,13 +545,14 @@ function environmentSummary(env) {
   return issues;
 }
 
-async function openEnvironment(deep = false) {
-  const status = h("div", {}, h("p", { class: "hint" }, deep
-    ? "Building and running a tiny Dockerfile… this can take a minute (it downloads a base image)."
-    : "Compiling and running a C and a C++ program through make, and asking the Docker daemon… (a few seconds)"));
+// Always the full check: make, C and C++, the Docker daemon, and building and running a tiny Dockerfile.
+async function openEnvironment() {
+  const status = h("div", {}, h("p", { class: "hint" },
+    "Compiling and running a C and a C++ program through make, then building and running a tiny Dockerfile… "
+    + "(about a minute the first time: it downloads a base image)"));
   dialog("Environment check", status, [h("button", { onclick: closeDialog }, "Close")]);
   let env;
-  try { env = await api(`environment?deep=${deep}`); } catch (err) { status.replaceChildren(h("p", { class: "warning" }, err.message)); return; }
+  try { env = await api("environment?deep=true"); } catch (err) { status.replaceChildren(h("p", { class: "warning" }, err.message)); return; }
   const issues = environmentSummary(env);
   status.replaceChildren(
     env.ready
@@ -555,8 +563,7 @@ async function openEnvironment(deep = false) {
     h("p", { class: "hint" }, "Only ✖ items stop the environment from being ready. Anything extra a project needs should come from the Dockerfile the student ships."));
   $("#dialog .buttons").replaceChildren(
     h("button", { onclick: closeDialog }, "Close"),
-    h("button", { onclick: () => guarded(() => openEnvironment(false)) }, "Run again"),
-    h("button", { class: env.deep ? "" : "primary", onclick: () => guarded(() => openEnvironment(true)) }, "Also test a docker build (needs internet)"));
+    h("button", { onclick: () => guarded(openEnvironment) }, "Run again"));
 }
 
 // One line inside the review dialog, so a missing tool is seen before claude starts.
@@ -566,7 +573,7 @@ async function environmentHint(line) {
     const issues = environmentSummary(env);
     line.className = env.ready ? "env-ok" : "warning";
     line.replaceChildren(env.ready ? "✅ Environment ready: make, C, C++ and Docker all work for claude."
-      : `⚠ Environment problem: ${issues.join("; ")}. `, h("button", { class: "linklike", onclick: () => guarded(() => openEnvironment(false)) }, "Details"));
+      : `⚠ Environment problem: ${issues.join("; ")}. `, h("button", { class: "linklike", onclick: () => guarded(openEnvironment) }, "Details"));
   } catch { line.textContent = ""; }
 }
 
@@ -582,7 +589,7 @@ async function openTerminal(promptId) {
   const view = h("div", { class: "view term" });
   const holder = h("div", { class: "term-holder" });
   view.append(h("div", { class: "term-bar" },
-    h("span", {}, "claude saves its report as ", h("code", {}, "claude-review.md"), " (approve the write). It is copied into the repository next to verdict.md automatically."),
+    h("span", {}, "claude saves its report in its throw-away copy (approve the write). It is merged into verdict.md automatically; no other file is added to the repository."),
     h("button", { onclick: () => guarded(saveClaudeReview) }, "💾 Save review to verdict.md")), holder);
   addTab("terminal", "⌨ claude", view, true);
   tabs.get("terminal").onClose = () => {
@@ -637,7 +644,7 @@ async function openTerminal(promptId) {
   tab.watcher = setInterval(async () => {
     try {
       const latest = await api(`sessions/${sid}`);
-      if ((latest.claude_review_at || "") !== known && latest.claude_review_file) {
+      if ((latest.claude_review_at || "") !== known) {
         known = latest.claude_review_at || "";
         await afterReviewSaved({ verdict_file: latest.verdict_file });
       }
@@ -711,6 +718,28 @@ async function openFile(path, line) {
   }
 }
 
+// Subject PDFs open in a tab like a file: one image per page, rendered by the server.
+async function openSubject(name, page = 1) {
+  const key = `pdf:${name}`;
+  let tab = tabs.get(key);
+  if (!tab) {
+    const subject = session.subjects.find((s) => s.name === name);
+    if (!subject) return toast(`${name} is not loaded in this review.`);
+    const base = `/api/sessions/${sid}/subjects/${encodeURIComponent(name)}/pages`;
+    const view = h("div", { class: "view pdf" }, Array.from({ length: subject.pages }, (_, i) => h("figure", { "data-page": i + 1 },
+      h("img", { src: `${base}/${i + 1}.png`, alt: `${name}, page ${i + 1}`, loading: "lazy" }),
+      h("figcaption", {}, `page ${i + 1} of ${subject.pages}`))));
+    addTab(key, name, view);
+    tab = tabs.get(key);
+    tab.language = "PDF";
+  }
+  showTab(key);
+  $(`figure[data-page="${page}"]`, tab.view)?.scrollIntoView({ block: "start" });
+}
+
+const pageLink = (pdf, page) => h("a", { href: "#", class: "page-link", onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); guarded(() => openSubject(pdf, page)); } },
+  `${pdf} p.${page}`);
+
 async function loadTree() {
   const entries = await api(`sessions/${sid}/tree`).catch(() => []);
   const root = $("#tree");
@@ -762,32 +791,81 @@ function dialog(title, body, buttons) {
 }
 const closeDialog = () => { $("#modal").hidden = true; };
 
-async function uploadFiles(files) {
-  const pdfs = [...files].filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+const pdfsOf = (files) => [...files].filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+let lastTrack = (() => { try { return localStorage.getItem("verdict.track") || ""; } catch { return ""; } })();
+let pendingTrack = "";
+
+async function uploadFiles(pdfs, track) {
   if (!pdfs.length) return toast("Only PDF files can be added.");
   const form = new FormData();
   pdfs.forEach((f) => form.append("files", f));
+  form.append("track", track);
   setSession(await api(`sessions/${sid}/subjects`, { method: "POST", body: form }));
+  toast(`Added, and kept in samples/${track}/: ${pdfs.map((f) => f.name).join(", ")}`, true);
+}
+
+// Every upload is kept in the library, in the folder of the track it belongs to.
+async function openUpload(files = null) {
+  const pdfs = files && pdfsOf(files);
+  if (pdfs && !pdfs.length) return toast("Only PDF files can be added.");
+  const lib = await api("library");
+  const radios = lib.tracks.map((t) => h("label", { class: "pick" },
+    h("input", { type: "radio", name: "track", value: t.id, checked: t.id === lastTrack }), t.label,
+    h("span", { class: "dim" }, `samples/${t.id}/`)));
+  const go = () => {
+    const track = radios.map((r) => r.firstChild).find((i) => i.checked)?.value;
+    if (!track) return toast("Choose Common Core, Post Common Core or RNCP first.");
+    lastTrack = track;
+    try { localStorage.setItem("verdict.track", track); } catch { /* storage unavailable */ }
+    closeDialog();
+    if (pdfs) guarded(() => uploadFiles(pdfs, track));
+    else { pendingTrack = track; $("#file-input").click(); }
+  };
+  dialog("Upload subject PDFs", h("div", {},
+    pdfs && h("div", { class: "where" }, pdfs.map((f) => h("div", {}, f.name))),
+    h("p", {}, "Where does this subject belong?"),
+    radios,
+    h("p", { class: "dim" }, "It is added to this review and kept in that library folder.")), [
+    h("button", { onclick: closeDialog }, "Cancel"),
+    h("button", { class: "primary", onclick: go }, pdfs ? "Upload" : "Choose PDFs…"),
+  ]);
 }
 
 async function openLibrary() {
-  const items = await api("library");
-  if (!items.length) return toast("The library is empty. Put PDFs in the samples/ folder.");
+  const lib = await api("library");
+  if (!lib.items.length) return toast(`The library is empty. Put PDFs in ${lib.tracks.map((t) => `samples/${t.id}/`).join(", ")}.`);
   const have = new Set(session.subjects.map((s) => s.name));
-  const boxes = items.map((i) => h("label", { class: "pick" },
-    h("input", { type: "checkbox", value: i.name, checked: have.has(i.name) }), i.name));
-  dialog("Add subjects from the library", h("div", {}, boxes), [
+  const boxes = [];
+  // One collapsible folder per track; a folder opens by itself when it holds subjects already in this review.
+  const groups = lib.tracks.map((t) => {
+    const mine = lib.items.filter((i) => i.track === t.id).map((i) => h("label", { class: "pick" },
+      h("input", { type: "checkbox", value: i.path, "data-name": i.name, checked: have.has(i.name) }), i.name));
+    boxes.push(...mine);
+    const count = h("span", { class: "dim" });
+    const recount = () => {
+      const ticked = mine.filter((b) => b.firstChild.checked).length;
+      count.textContent = mine.length ? `${mine.length} PDF${mine.length === 1 ? "" : "s"}${ticked ? ` · ${ticked} selected` : ""}` : "empty";
+    };
+    mine.forEach((b) => b.firstChild.addEventListener("change", recount));
+    recount();
+    return h("details", { class: "track", open: mine.some((b) => b.firstChild.checked) },
+      h("summary", {}, h("span", {}, t.label), count),
+      h("div", { class: "track-items" }, mine.length ? mine : h("p", { class: "dim" }, `Empty: put PDFs in samples/${t.id}/`)));
+  });
+  dialog("Add subjects from the library", h("div", {}, groups,
+    h("p", { class: "dim" }, lib.norm ? "The Norm (samples/en.norm.pdf) is added by itself whenever C code is detected."
+      : "samples/en.norm.pdf is missing, so the Norm cannot be added to C projects.")), [
     h("button", { onclick: closeDialog }, "Cancel"),
     h("button", { class: "primary", onclick: () => guarded(async () => {
-      const names = boxes.map((b) => b.firstChild).filter((c) => c.checked && !have.has(c.value)).map((c) => c.value);
+      const paths = boxes.map((b) => b.firstChild).filter((c) => c.checked && !have.has(c.dataset.name)).map((c) => c.value);
       closeDialog();
-      if (names.length) setSession(await post(`sessions/${sid}/subjects/library`, { names }));
+      if (paths.length) setSession(await post(`sessions/${sid}/subjects/library`, { paths }));
     }) }, "Add"),
   ]);
 }
 
 async function openClone() {
-  const projects = await api("projects").catch(() => ({ root: "projects", folders: [] }));
+  const projects = await api("projects").catch(() => ({ root: "projects" }));
   await refreshSsh();
   const nameFromUrl = (url) => {
     const last = url.trim().replace(/\/+$/, "").split(/[/:]/).pop().replace(/\.git$/, "");
@@ -796,23 +874,20 @@ async function openClone() {
   const field = (label, input, hint) => h("div", { class: "field" }, h("label", {}, label), input, hint && h("div", { class: "hint" }, hint));
   const url = h("input", { type: "text", placeholder: "git@github.com:user/repo.git", value: session.repo?.url ?? "" });
   const name = h("input", { type: "text", placeholder: "project name" });
-  const dest = h("input", { type: "text", list: "dest-list", placeholder: "(top level)" });
   const where = h("div", { class: "where" });
   let nameEdited = false;
   const update = () => {
     if (!nameEdited) name.value = nameFromUrl(url.value);
-    const rel = [dest.value.trim().replace(/^\/+|\/+$/g, ""), name.value.trim()].filter(Boolean).join("/");
-    where.textContent = `Will clone to ${projects.root}/${rel}`;
+    where.textContent = `Will clone to ${projects.root}/${name.value.trim()}`;
   };
   name.addEventListener("input", () => { nameEdited = true; update(); });
   url.addEventListener("input", update);
-  dest.addEventListener("input", update);
   const go = () => {
     closeDialog();
     session.state = "cloning"; render();
     guarded(async () => {
       try {
-        setSession(await post(`sessions/${sid}/repo`, { url: url.value, name: name.value, destination: dest.value }));
+        setSession(await post(`sessions/${sid}/repo`, { url: url.value, name: name.value }));
         for (const k of [...tabs.keys()]) if (k !== "overview") closeTab(k);
         await loadTree();
       } catch (err) {
@@ -821,13 +896,11 @@ async function openClone() {
       }
     });
   };
-  for (const input of [url, name, dest]) input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") go(); });
+  for (const input of [url, name]) input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") go(); });
   dialog("Clone a repository", h("div", {},
     ssh && !ssh.ok && h("div", { class: "warning" }, "SSH is not ready: ", ssh.message),
     field("Repository (SSH)", url),
     field("Project name", name),
-    field("Destination folder", dest, `A folder inside the ${projects.root} folder. Existing folders are suggested; a new one is created if needed.`),
-    h("datalist", { id: "dest-list" }, projects.folders.map((f) => h("option", { value: f }))),
     where), [
     h("button", { onclick: closeDialog }, "Cancel"),
     h("button", { class: "primary", onclick: go }, "Clone"),
@@ -860,10 +933,10 @@ async function poll() {
   } finally { polling = false; }
 }
 
-$("#btn-upload").onclick = () => $("#file-input").click();
-$("#file-input").onchange = (ev) => { guarded(() => uploadFiles(ev.target.files)); ev.target.value = ""; };
+$("#btn-upload").onclick = () => guarded(() => openUpload());
+$("#file-input").onchange = (ev) => { const pdfs = pdfsOf(ev.target.files); guarded(() => uploadFiles(pdfs, pendingTrack)); ev.target.value = ""; };
 $("#btn-library").onclick = () => guarded(openLibrary);
-$("#btn-env").onclick = () => guarded(() => openEnvironment(false));
+$("#btn-env").onclick = () => guarded(openEnvironment);
 $("#btn-clone").onclick = () => guarded(openClone);
 $("#btn-run").onclick = () => guarded(run);
 $("#btn-ai").onclick = () => guarded(startAi);
@@ -881,7 +954,7 @@ side.addEventListener("dragover", (ev) => { ev.preventDefault(); side.classList.
 side.addEventListener("dragleave", () => side.classList.remove("drag"));
 side.addEventListener("drop", (ev) => {
   ev.preventDefault(); side.classList.remove("drag");
-  guarded(() => uploadFiles(ev.dataTransfer.files));
+  guarded(() => openUpload(ev.dataTransfer.files));
 });
 
 init().catch((err) => toast(err.message));

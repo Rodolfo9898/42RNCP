@@ -3,11 +3,12 @@ from pathlib import Path
 import pytest
 
 from verdict.pdfread import read_pages
-from verdict.spec import expand_files, merge_rules, parse_subject
+from verdict.spec import expand_files, merge_rules, parse_norm, parse_subject
 
-from .conftest import SUBJECT_PAGES
+from .conftest import NORM_PAGES, SUBJECT_PAGES
 
-SAMPLES = Path(__file__).resolve().parent.parent / "samples"
+LIBRARY = Path(__file__).resolve().parent.parent / "samples"
+SAMPLES = LIBRARY / "common-core"
 
 
 def kinds(spec):
@@ -59,6 +60,30 @@ def test_bonus_section_is_tagged():
     spec = parse_subject("x.pdf", pages)
     sections = {r.params["program"]: r.section for r in spec.rules if r.kind == "program"}
     assert sections == {"foo": "mandatory", "bar": "bonus"}
+
+
+def test_norm_keeps_only_what_norminette_cannot_check():
+    spec = parse_norm("en.norm.pdf", NORM_PAGES)
+    assert spec.lang == "c"
+    assert [r.kind for r in spec.rules].count("norm") == 1
+    manual = [r.text for r in spec.rules if r.kind == "manual"]
+    assert manual == ["Your comments should be in English, and useful.", "Inclusion of unused headers is forbidden."]
+    assert all(r.sources[0].pdf == "en.norm.pdf" for r in spec.rules)
+
+
+def test_norm_rule_merges_with_the_subjects_own():
+    norm = next(r for r in parse_norm("en.norm.pdf", NORM_PAGES).rules if r.kind == "norm")
+    own = next(r for r in parse_subject("push_swap.pdf", SUBJECT_PAGES).rules if r.kind == "norm")
+    merged = merge_rules([own, norm])
+    assert len(merged) == 1 and {s.pdf for s in merged[0].sources} == {"push_swap.pdf", "en.norm.pdf"}
+
+
+@pytest.mark.skipif(not (LIBRARY / "en.norm.pdf").exists(), reason="the Norm is not present")
+def test_real_norm_lists_the_starred_rules():
+    spec = parse_norm("en.norm.pdf", read_pages(LIBRARY / "en.norm.pdf"))
+    manual = [r.text for r in spec.rules if r.kind == "manual"]
+    assert len(manual) == 9
+    assert any("unused headers" in t for t in manual) and any("42 header" in t for t in manual)
 
 
 needs_samples = pytest.mark.skipif(not (SAMPLES / "push_swap.pdf").exists(), reason="sample subjects not present")

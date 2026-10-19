@@ -1,3 +1,4 @@
+import os
 import socket
 import stat
 import subprocess
@@ -94,7 +95,7 @@ def stub(path: Path, body: str):
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def run_entrypoint(root: Path, *, uid: str, socat: str | None, host_socket: bool = True):
+def run_entrypoint(root: Path, *, uid: str, socat: str | None, host_socket: bool = True, app_uid: str = "4242"):
     bin_dir = root / "bin"
     bin_dir.mkdir()
     stub(bin_dir / "id", f'echo {uid}\n')
@@ -110,7 +111,7 @@ def run_entrypoint(root: Path, *, uid: str, socat: str | None, host_socket: bool
         except PermissionError:
             pytest.skip("this environment forbids binding unix sockets")
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOST_SSH_SOCK": str(host), "PROXY_SSH_SOCK": str(root / "proxy.sock"),
-           "SSH_AUTH_SOCK": str(host)}
+           "SSH_AUTH_SOCK": str(host), "APP_UID": app_uid}       # 4242: a socket the app user does not own (Docker Desktop)
     proc = subprocess.run(["sh", str(ENTRYPOINT), "sh", "-c", 'echo "APP SSH=$SSH_AUTH_SOCK"'],
                           env=env, capture_output=True, text=True, timeout=30)
     return proc, host, root / "proxy.sock"
@@ -151,3 +152,10 @@ def test_entrypoint_still_starts_if_the_relay_never_appears(sandbox_dir):
 def test_entrypoint_without_a_host_socket_skips_the_relay(sandbox_dir):
     proc, host, _ = run_entrypoint(sandbox_dir, uid="0", socat=RELAY, host_socket=False)
     assert proc.returncode == 0 and "relay did not start" not in proc.stderr
+
+
+def test_entrypoint_uses_a_socket_the_app_user_owns_directly(sandbox_dir):
+    # Linux hosts: the mounted socket belongs to the host user, who is the app user. No relay (root could not open it).
+    proc, host, proxy = run_entrypoint(sandbox_dir, uid="0", socat=RELAY, app_uid=str(os.getuid()))
+    assert proc.returncode == 0, proc.stderr
+    assert f"APP SSH={host}" in proc.stdout and not proxy.exists()

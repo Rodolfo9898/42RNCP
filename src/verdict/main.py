@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -11,8 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -23,20 +24,23 @@ from . import repo as repo_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
 from .prompts import build_review_prompt, find_docker_files, manual_items
-from .checks import VERDICT_MARKER, Ctx, run_checks
+from .checks import EXCLUDED_DIRS, VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
-from .pdfread import read_pages
+from .pdfread import read_pages, render_page
 from .report import render_markdown, summarize
 from .sandbox import Sandbox, SandboxError, sandbox_selftest
 from .selftest import summarize as selftest_summary
-from .spec import parse_subject
-from .models import AIEvent, AIState
+from .spec import parse_norm, parse_subject
+from .models import AIEvent, AIState, ClaudeReport
 from .store import RepoMeta, Session, Store, Subject, safe_filename
 
 WORKSPACE = Path(os.environ.get("WORKSPACE", "workspace")).resolve()
 PROJECTS = Path(os.environ.get("PROJECTS_DIR", WORKSPACE / "projects")).resolve()
 PROJECTS.mkdir(parents=True, exist_ok=True)
 SAMPLES = Path(os.environ.get("SAMPLES_DIR", "/samples" if Path("/samples").is_dir() else "samples")).resolve()
+# The library: one folder per curriculum track, and the Norm at the root (applied to every C project).
+TRACKS = {"common-core": "Common Core", "post-common-core": "Post Common Core", "rncp": "RNCP"}
+NORM_PDF = "en.norm.pdf"
 MAX_PDF_BYTES = 30 * 1024 * 1024
 MAX_SUBJECTS = 20
 
@@ -88,7 +92,7 @@ def view(session: Session) -> dict:
         "message": session.message,
         "repo": session.repo.model_dump() if session.repo else None,
         "subjects": [
-            {"name": s.name, "lang": s.lang, "pages": s.pages, "rules": [r.model_dump() for r in s.rules]}
+            {"name": s.name, "kind": s.kind, "track": s.track, "lang": s.lang, "pages": s.pages, "rules": [r.model_dump() for r in s.rules]}
             for s in session.subjects.values()
         ],
         "results": [r.model_dump() for r in session.results],
@@ -97,9 +101,8 @@ def view(session: Session) -> dict:
         "readme": session.readme,
         "verdict_file": session.verdict_file,
         "claude_review_at": session.claude_review_at,
-        "claude_review_file": session.claude_review_file,
         "ai": session.ai.model_dump(),
-        "summary": summarize(session.results),
+        "summary": summarize(session.results, session.ai, session.claude),
     }
 
 
@@ -152,12 +155,27 @@ def environment(deep: bool = False) -> dict:
 _environment_cache: dict = {}
 
 
+def library_files() -> dict[str, Path]:
+    """Subject PDFs in the library, by their path inside it (`common-core/libft.pdf`)."""
+    found: dict[str, Path] = {}
+    for track in TRACKS:
+        folder = SAMPLES / track
+        if folder.is_dir():
+            for p in sorted(folder.glob("*.pdf")):
+                if p.is_file() and not p.is_symlink():
+                    found[f"{track}/{p.name}"] = p
+    return found
+
+
 @app.get("/api/library")
-def library() -> list[dict]:
-    """Subject PDFs bundled with the deployment (the ./samples folder)."""
-    if not SAMPLES.is_dir():
-        return []
-    return [{"name": p.name, "size": p.stat().st_size} for p in sorted(SAMPLES.glob("*.pdf"))]
+def library() -> dict:
+    """Subject PDFs bundled with the deployment (./samples/<track>/), and whether the Norm (./samples/en.norm.pdf) is there."""
+    return {
+        "tracks": [{"id": track, "label": label} for track, label in TRACKS.items()],
+        "items": [{"path": rel, "name": p.name, "track": rel.split("/", 1)[0], "size": p.stat().st_size}
+                  for rel, p in library_files().items()],
+        "norm": (SAMPLES / NORM_PDF).is_file(),
+    }
 
 
 # ------------------------------------------------------------------ sessions
@@ -171,13 +189,19 @@ def create_session() -> dict:
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str) -> dict:
     session = session_or_404(session_id)
+    if drop_stale_reviews(session):   # a review of another repository or subject set never reaches this verdict
+        if session.results:
+            write_verdict(session)
+        store.save(session)
     ensure_review_files(session)      # a stored review whose file is missing from the clone is written out
     return view(session)
 
 
-def _add_subject(session: Session, name: str, data: bytes) -> None:
+def _add_subject(session: Session, name: str, data: bytes, track: str = "") -> None:
     if not data.startswith(b"%PDF"):
         raise HTTPException(400, f"{name} is not a PDF")
+    if name == NORM_PDF:
+        raise HTTPException(400, f"{NORM_PDF} is the Norm: it is added automatically whenever C code is detected")
     if len(session.subjects) >= MAX_SUBJECTS and name not in session.subjects:
         raise HTTPException(400, f"at most {MAX_SUBJECTS} subjects per session")
     try:
@@ -185,35 +209,166 @@ def _add_subject(session: Session, name: str, data: bytes) -> None:
     except Exception as exc:
         raise HTTPException(400, f"could not read {name}: {exc}") from exc
     spec = parse_subject(name, pages)
-    session.subjects[name] = Subject(name=name, lang=spec.lang, pages=len(pages), rules=spec.rules)
+    session.subjects[name] = Subject(name=name, track=track, lang=spec.lang, pages=len(pages), rules=spec.rules)
     session.results = []
     session.state = "idle"
+    kept = subjects_dir(session) / name           # a copy of its own, so the PDF can be shown in the app
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes(data)
+
+
+def subjects_dir(session: Session) -> Path:
+    return store.path(session.id) / "subjects"
+
+
+def subject_pdf(session: Session, name: str) -> Path:
+    """The PDF of a subject of this session: its own copy, or the library file (sessions made before copies were kept)."""
+    subject = session.subjects.get(name)
+    if subject is None:
+        raise HTTPException(404, f"{name} is not a subject of this session")
+    candidates = [subjects_dir(session) / name]
+    if subject.kind == "norm":
+        candidates.append(SAMPLES / NORM_PDF)
+    elif subject.track in TRACKS:
+        candidates.append(SAMPLES / subject.track / name)
+    for path in candidates:
+        if path.is_file() and not path.is_symlink():
+            return path
+    raise HTTPException(404, f"the PDF of {name} is no longer available; add it again")
+
+
+def library_slot(track: str, name: str, data: bytes) -> Path | None:
+    """Where an upload goes in samples/<track>/, or None when that exact file is already there.
+    An existing file with other content (or a link) is never replaced."""
+    target = SAMPLES / track / name
+    if target.is_symlink():
+        raise HTTPException(409, f"samples/{track}/{name} is a link; it was not replaced")
+    if target.exists():
+        if target.read_bytes() == data:
+            return None
+        raise HTTPException(409, f"samples/{track}/{name} already exists with different content. "
+                                 "Rename the file, or remove the old one from the folder first.")
+    return target
+
+
+def save_to_library(target: Path, data: bytes) -> None:
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".{target.name}.upload")
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    except OSError as exc:
+        raise HTTPException(500, f"could not save {target.name} into samples/{target.parent.name}/: {exc.strerror}") from exc
+
+
+_norm_cache: dict = {}
+
+
+def norm_subject() -> Subject | None:
+    """The Norm from samples/en.norm.pdf (parsed once per version of the file), or None when it is missing."""
+    path = SAMPLES / NORM_PDF
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (stat.st_mtime_ns, stat.st_size)
+    if _norm_cache.get("key") != key:
+        pages = read_pages(path.read_bytes())
+        spec = parse_norm(NORM_PDF, pages)
+        _norm_cache.update(key=key, subject=Subject(name=NORM_PDF, kind="norm", lang=spec.lang, pages=len(pages), rules=spec.rules))
+    return _norm_cache["subject"].model_copy(deep=True)
+
+
+def has_c_code(session: Session) -> bool:
+    """C is detected when a subject requires it or, with no language in the subjects, when the repo has C and no C++."""
+    lang = session.lang()
+    if lang:
+        return lang == "c"
+    root = repo_dir(session)
+    if root is None or not root.is_dir():
+        return False
+    exts = {p.suffix.lower() for p in repo_mod.tracked_files(root) if not EXCLUDED_DIRS.search("/" + p.as_posix())}
+    return ".c" in exts and not exts & {".cpp", ".cc", ".hpp", ".tpp", ".ipp"}
+
+
+def sync_norm(session: Session) -> None:
+    """Attach the Norm whenever C code is detected, and take it away when it is not."""
+    attached = session.subjects.get(NORM_PDF)
+    if has_c_code(session):
+        if attached is None or attached.kind != "norm":
+            norm = norm_subject()
+            if norm is not None:
+                session.subjects[NORM_PDF] = norm
+                session.results = []
+    elif attached is not None and attached.kind == "norm":
+        del session.subjects[NORM_PDF]
+        session.results = []
+
+
+def review_context(session: Session) -> str:
+    """What a review is about: the cloned commit and the subjects. A review made for another context is stale."""
+    repo = session.repo
+    subjects = sorted(name for name, s in session.subjects.items() if s.kind == "subject")
+    return json.dumps([[repo.url, repo.path, repo.commit] if repo else None, subjects])
+
+
+def drop_stale_reviews(session: Session) -> bool:
+    """Forget claude's review and the AI review when they were made for another repository, commit or set of subjects
+    (e.g. libft's review must never show up in the verdict of the next project). True when something was dropped."""
+    has_reviews = session.claude_review or session.review_items or session.ai.state != "idle" or session.ai.reviews
+    if not has_reviews or session.review_context == review_context(session):
+        return False
+    job = _ai_jobs.pop(session.id, None)
+    if job:
+        job.cancel.set()
+    with store.lock:
+        session.ai = AIState(job=session.ai.job + 1)
+        session.claude_review = session.claude_review_at = ""
+        session.claude = ClaudeReport()
+        session.review_items = []
+        session.review_context = ""
+    return True
+
+
+def refresh_context(session: Session) -> None:
+    """After the repository or the subjects changed: attach or remove the Norm, and drop reviews of the old context."""
+    sync_norm(session)
+    drop_stale_reviews(session)
 
 
 @app.post("/api/sessions/{session_id}/subjects")
-async def upload_subjects(session_id: str, files: list[UploadFile] = File(...)) -> dict:
+async def upload_subjects(session_id: str, files: list[UploadFile] = File(...), track: str = Form(...)) -> dict:
+    """Add uploaded subjects to the session and keep them in the library folder of the chosen track."""
     session = session_or_404(session_id)
+    if track not in TRACKS:
+        raise HTTPException(400, f"choose where the subject belongs: {', '.join(TRACKS.values())}")
     for upload in files:
         data = await upload.read(MAX_PDF_BYTES + 1)
         if len(data) > MAX_PDF_BYTES:
             raise HTTPException(413, f"{upload.filename} is larger than {MAX_PDF_BYTES // 2**20} MB")
-        _add_subject(session, safe_filename(upload.filename or "subject.pdf"), data)
+        name = safe_filename(upload.filename or "subject.pdf")
+        target = library_slot(track, name, data)
+        _add_subject(session, name, data, track)
+        if target is not None:
+            save_to_library(target, data)
+    refresh_context(session)
     store.save(session)
     return view(session)
 
 
 class LibraryPick(BaseModel):
-    names: list[str]
+    paths: list[str]
 
 
 @app.post("/api/sessions/{session_id}/subjects/library")
 def add_from_library(session_id: str, pick: LibraryPick) -> dict:
     session = session_or_404(session_id)
-    available = {p.name: p for p in SAMPLES.glob("*.pdf")} if SAMPLES.is_dir() else {}
-    for name in pick.names:
-        if name not in available:
-            raise HTTPException(404, f"{name} is not in the library")
-        _add_subject(session, name, available[name].read_bytes())
+    available = library_files()
+    for rel in pick.paths:
+        if rel not in available:
+            raise HTTPException(404, f"{rel} is not in the library")
+        _add_subject(session, available[rel].name, available[rel].read_bytes(), rel.split("/", 1)[0])
+    refresh_context(session)
     store.save(session)
     return view(session)
 
@@ -221,10 +376,35 @@ def add_from_library(session_id: str, pick: LibraryPick) -> dict:
 @app.delete("/api/sessions/{session_id}/subjects/{name}")
 def remove_subject(session_id: str, name: str) -> dict:
     session = session_or_404(session_id)
+    subject = session.subjects.get(name)
+    if subject is not None and subject.kind == "norm":
+        raise HTTPException(400, "The Norm applies to every C project; it goes away by itself when no C is detected.")
     session.subjects.pop(name, None)
+    (subjects_dir(session) / safe_filename(name)).unlink(missing_ok=True)
     session.results = []
+    refresh_context(session)
     store.save(session)
     return view(session)
+
+
+_page_cache: dict = {}
+
+
+@app.get("/api/sessions/{session_id}/subjects/{name}/pages/{page}.png")
+def subject_page(session_id: str, name: str, page: int) -> Response:
+    """One page of a subject PDF as an image, for the PDF tab (the CSP allows images, not embedded PDF viewers)."""
+    path = subject_pdf(session_or_404(session_id), name)
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size, page)
+    if key not in _page_cache:
+        try:
+            png = render_page(path, page)
+        except IndexError:
+            raise HTTPException(404, f"{name} has no page {page}") from None
+        if len(_page_cache) > 120:
+            _page_cache.clear()
+        _page_cache[key] = png
+    return Response(_page_cache[key], media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
 
 class RepoRequest(BaseModel):
@@ -264,6 +444,7 @@ def clone_repo(session_id: str, req: RepoRequest) -> dict:
         raise HTTPException(400, str(exc)) from exc
     session.repo = RepoMeta(**info.__dict__, name=name, path=dest.relative_to(PROJECTS).as_posix())
     session.results, session.state = [], "idle"
+    refresh_context(session)
     store.save(session)
     return view(session)
 
@@ -327,23 +508,28 @@ def apply_claude_review(session: Session) -> None:
         kept = {k: v for k, v in session.ai.reviews.items() if v.by != "Claude"}
         session.ai.reviews = {**kept, **reviews}
         session.claude = report
+        session.review_context = review_context(session)
 
 
 def ensure_review_files(session: Session) -> bool:
-    """Make sure verdict.md and claude-review.md exist in the clone whenever there is a review to show.
-    (A review stored before the file existed, or a file deleted by hand, is healed here.)"""
+    """Make sure verdict.md exists in the clone whenever there is a review to show, and that no claude-review.md written
+    by an earlier version is left behind. (A verdict.md deleted by hand is healed here.)"""
     root = repo_dir(session)
     if root is None or not session.claude_review.strip():
         return False
-    if session.claude_review_file and (root / session.claude_review_file).is_file():
+    if (session.verdict_file and (root / session.verdict_file).is_file()
+            and not any(is_generated(root / name) for name in OLD_REVIEW_FILES)):
         return False
     write_verdict(session)
     store.save(session)
     return True
 
 
-def collect_claude_review(session: Session) -> bool:
-    """Store claude's saved report in the session and write it into the clone. False when there was nothing new."""
+def collect_claude_review(session: Session, context: str | None = None) -> bool:
+    """Store claude's saved report in the session and merge it into verdict.md. False when there was nothing new.
+    `context` is what the terminal was opened for: a report from a terminal of another repository or subject set is ignored."""
+    if context is not None and context != review_context(session):
+        return False
     try:
         text = fetch_claude_review(session.id)
     except Exception:
@@ -360,7 +546,7 @@ def collect_claude_review(session: Session) -> bool:
 
 @app.post("/api/sessions/{session_id}/claude-review/save")
 def save_claude_review(session_id: str) -> dict:
-    """Write what claude saved in the open terminal into the clone: claude-review.md, and the end of verdict.md."""
+    """Merge what claude saved in the open terminal into verdict.md in the clone (no separate file is written)."""
     session = session_or_404(session_id)
     if not session.results:
         raise HTTPException(400, "run the checks first")
@@ -381,12 +567,12 @@ def save_claude_review(session_id: str) -> dict:
         apply_claude_review(session)   # (also re-reads a report stored before the numbering existed)
     write_verdict(session)             # always: an unchanged report must still be written if the file is missing
     store.save(session)
-    return {"saved": bool(session.claude_review_file), "changed": changed, "chars": len(text), "verdict_file": session.verdict_file,
-            "review_file": session.claude_review_file, "source_name": data.get("name") or "claude-review.md",
+    return {"saved": bool(session.verdict_file), "changed": changed, "chars": len(text), "verdict_file": session.verdict_file,
+            "source_name": data.get("name") or "claude-review.md",
             "structured": session.claude.structured, "assessed": session.claude.assessed, "total": session.claude.total,
             "problems": session.claude.problems,
-            "warning": "" if session.claude_review_file else
-            "The review was stored, but it could not be written into the repository (a file named claude-review.md already exists there and is not ours, or it is a link)."}
+            "warning": "" if session.verdict_file else
+            "The review was stored, but verdict.md could not be written into the repository (files of that name exist there and are not ours, or they are links)."}
 
 
 
@@ -441,6 +627,7 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
     if not session.repo or not session.repo.path:
         await ws.close(code=4404)
         return
+    context = review_context(session)   # what claude in this terminal reviews; its report is only kept for that
     await ws.accept()
     if not (TERMINAL_URL and TERMINAL_TOKEN):
         await ws.send_bytes(b"\r\n[terminal] not configured. Start the app with `make run`.\r\n")
@@ -478,7 +665,7 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
         while True:
             await asyncio.sleep(REPORT_POLL_SECONDS)
             try:
-                await loop.run_in_executor(None, collect_claude_review, session)
+                await loop.run_in_executor(None, collect_claude_review, session, context)
             except Exception:
                 pass
 
@@ -493,7 +680,7 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
         try:
             # Collect claude's saved report before the working copy is deleted. The thread starts at once; shield and
             # catch cancellation, because this block also runs while the connection's task is being cancelled.
-            await asyncio.shield(asyncio.get_running_loop().run_in_executor(None, collect_claude_review, session))
+            await asyncio.shield(asyncio.get_running_loop().run_in_executor(None, collect_claude_review, session, context))
         except (Exception, asyncio.CancelledError):
             pass
         try:
@@ -510,6 +697,7 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
     if not session.results or session.repo is None:
         raise HTTPException(400, "run the checks first")
     session.review_items = manual_items(session.results)        # claude answers by these numbers
+    session.review_context = review_context(session)
     store.save(session)
     root = repo_dir(session)
     docker_files = find_docker_files(p.as_posix() for p in repo_mod.tracked_files(root)) if root else []
@@ -555,7 +743,6 @@ def verdict_text(session: Session) -> str:
         ai=session.ai,
         claude_review=session.claude_review,
         claude=session.claude,
-        claude_file=session.claude_review_file,
         project=(session.repo.name or session.repo.path) if session.repo else "",
     )
 
@@ -586,15 +773,26 @@ def write_generated(session: Session, names: tuple[str, str], text: str) -> str:
     return ""
 
 
+# Earlier versions also saved claude's report into the clone under these names. Only verdict.md is written now.
+OLD_REVIEW_FILES = ("claude-review.md", "claude-review-report.md")
+
+
+def is_generated(path: Path) -> bool:
+    """A regular file (not a link) that this app wrote: it starts with the verdict marker."""
+    try:
+        return not path.is_symlink() and path.is_file() and path.read_bytes()[:200].startswith(VERDICT_MARKER.encode())
+    except OSError:
+        return False
+
+
 def write_verdict(session: Session) -> None:
-    """Save claude's review (when there is one) and the verdict inside the reviewed repository.
-    claude-review.md goes first so that verdict.md can point to it by its real name."""
-    if session.claude_review.strip():
-        session.claude_review_file = write_generated(
-            session, ("claude-review.md", "claude-review-report.md"),
-            f"{VERDICT_MARKER}\n\n{session.claude_review.strip()}\n")
-    else:
-        session.claude_review_file = ""
+    """Save the verdict, with claude's review merged into it, inside the reviewed repository. No separate review file is
+    written, and one left by an earlier version is removed (never a file of the project's own)."""
+    root = repo_dir(session)
+    if root is not None:
+        for name in OLD_REVIEW_FILES:
+            if is_generated(root / name):
+                (root / name).unlink(missing_ok=True)
     session.verdict_file = write_generated(session, ("verdict.md", "verdict-report.md"), verdict_text(session))
     if not session.verdict_file and repo_dir(session) is not None:
         session.message = "Could not save the verdict into the repository (no writable file name)."
@@ -644,8 +842,9 @@ def run(session_id: str) -> dict:
         raise HTTPException(409, f"session is busy ({session.state})")
     if not session.repo:
         raise HTTPException(400, "clone a repository first")
-    if not session.subjects:
+    if not any(s.kind == "subject" for s in session.subjects.values()):
         raise HTTPException(400, "add at least one subject PDF first")
+    refresh_context(session)
     session.results, session.improvements, session.state, session.message = [], [], "running", ""
     session.ai = AIState(reviews={k: v for k, v in session.ai.reviews.items() if v.by == "Claude"})
     threading.Thread(target=_run, args=(session,), daemon=True).start()
@@ -751,6 +950,7 @@ def start_ai(session_id: str) -> dict:
         raise HTTPException(400, "run the checks first")
     state = AIState(state="running", model=ai_mod.model_name(), started_at=_now(), job=session.ai.job + 1)
     session.ai = state
+    session.review_context = review_context(session)
     job = ai_mod.Job(notify=lambda text: _note(session, state, text))
     _ai_jobs[session.id] = job
     _note(session, state, f"Starting the AI review with {state.model} via {ai_mod.endpoint_host()}")

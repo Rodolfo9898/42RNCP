@@ -105,6 +105,17 @@ SUBJECT_PAGES = [
 ]
 
 
+# A short Norm: the rules marked (*) are the ones norminette cannot check.
+NORM_PAGES = [
+    "Chapter I\nForeword\nThe norminette checks Norm compliance of your source code.\n"
+    "In the following pages, rules that are not checked by the norminette are marked with (*).\n",
+    "Chapter II\nThe Norm\n"
+    "- Each function must be at most 25 lines long, not counting the function's own braces.\n"
+    "- (*) Your comments should be in English, and useful.\n"
+    "- (*) Inclusion of unused headers is forbidden.\n",
+]
+
+
 @pytest.fixture
 def subject_pdf() -> bytes:
     return make_pdf(SUBJECT_PAGES)

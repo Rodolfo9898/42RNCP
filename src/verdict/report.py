@@ -6,7 +6,7 @@ verdict.md is ONE page that answers three questions, whoever found the answer (a
   ⚠  what needs a second look -> a human should verify these
   ✅ what is ok            -> nothing to do
 
-Claude's separate report stays in claude-review.md; only its structured answers are merged here.
+Only the structured answers of claude's report are merged here; its prose is kept in the session, not in the repository.
 """
 
 from __future__ import annotations
@@ -25,17 +25,21 @@ AI_NOTE = ("> Written by an AI model ({model}) from a bounded view of the reposi
 CATEGORY_TITLES = {"structure": "Structure", "code": "Code", "logic": "Logic", "readability": "Readability"}
 
 
-def summarize(results: list[CheckResult]) -> dict:
+def summarize(results: list[CheckResult], ai: AIState | None = None, claude: ClaudeReport | None = None) -> dict:
+    """The result follows the two lists of verdict.md (mandatory part, claude's answers included):
+    anything under "Lacking" is a FAIL; otherwise anything under "Second look" is a PASS WITH ISSUES; otherwise PASS."""
     counts = {sec: Counter(r.status for r in results if r.section == sec) for sec in ("mandatory", "bonus")}
-    m = counts["mandatory"]
     if not results:
         overall = "NOT RUN"
-    elif m["fail"]:
-        overall = "FAIL"
-    elif m["warn"] or m["manual"] or m["skipped"]:
-        overall = "PASS WITH REVIEW"
     else:
-        overall = "PASS"
+        mandatory = bucket([r for r in results if r.section == "mandatory"], ai)
+        if mandatory.lacking:
+            overall = "FAIL"
+        elif mandatory.second or (claude is not None and claude.corrections):
+            overall = "PASS WITH ISSUES"
+        else:
+            overall = "PASS"
+    m = counts["mandatory"]
     return {
         "overall": overall,
         "mandatory": {s: m[s] for s in ORDER},
@@ -243,16 +247,16 @@ def render_claude_prose(text: str) -> list[str]:
 def render_markdown(*, repo: dict | None, subjects: list[str], results: list[CheckResult],
                     improvements: list[Improvement] | None = None, readme: dict | None = None,
                     ai: AIState | None = None, claude_review: str = "", claude: ClaudeReport | None = None,
-                    claude_file: str = "", project: str = "") -> str:
+                    project: str = "") -> str:
     claude = claude or ClaudeReport()
-    summary = summarize(results)
+    summary = summarize(results, ai, claude)
     mandatory = bucket([r for r in results if r.section == "mandatory"], ai)
     bonus = bucket([r for r in results if r.section == "bonus"], ai)
     merged = claude.structured                                   # claude's answers are in the buckets; its prose is not repeated
 
     lacking, second = len(mandatory.lacking), len(mandatory.second)
     ok = len(mandatory.ok) + len(mandatory.not_applicable)
-    icon = "❌" if lacking else ("⚠️" if second else "✅")
+    icon = {"FAIL": "❌", "PASS WITH ISSUES": "⚠️"}.get(summary["overall"], "✅")
     out = [VERDICT_MARKER, "", f"# Verdict{': ' + _inline(project) if project else ''}", ""]
     if not results:
         out += ["**NOT RUN** — the checks have not been run yet.", ""]
@@ -267,8 +271,6 @@ def render_markdown(*, repo: dict | None, subjects: list[str], results: list[Che
         out.append(f"- Commit: {_code(repo['commit'])} {_inline(repo.get('subject', ''))} ({_inline(repo.get('author', ''))})")
     out.append("- Subjects: " + (", ".join(_inline(x) for x in subjects) or "none"))
     out.append(f"- Generated: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}")
-    if claude_file:
-        out.append(f"- Claude's full report: {_code(claude_file)}")
     out.append("")
     if not results:
         return "\n".join(out).rstrip() + "\n"
@@ -277,8 +279,8 @@ def render_markdown(*, repo: dict | None, subjects: list[str], results: list[Che
             f"| Mandatory part | {lacking} | {second} | {ok} |"]
     if any((bonus.lacking, bonus.second, bonus.ok, bonus.not_applicable)):
         out.append(f"| Bonus part | {len(bonus.lacking)} | {len(bonus.second)} | {len(bonus.ok) + len(bonus.not_applicable)} |")
-    out += ["", "> Scripts verify what a script can verify. Items marked `Claude` were assessed by claude in the terminal; "
-                "they are advisory. The peer evaluation decides the grade.", ""]
+    out += ["", "> FAIL when anything is lacking, PASS WITH ISSUES when something still needs a second look, PASS when both "
+                "lists are empty. Items marked `Claude` were assessed by claude in the terminal. The peer evaluation decides the grade.", ""]
 
     # ---------------------------------------------------------------- lacking
     out += ["## ❌ Lacking — fix these", ""]
@@ -330,13 +332,13 @@ def render_markdown(*, repo: dict | None, subjects: list[str], results: list[Che
         if claude.problems:
             out += ["> ⚠ claude's report could not be merged into the lists above: " + " ".join(_inline(p) for p in claude.problems[:2]), ""]
         out += render_claude_prose(claude_review)
-    out += render_final_verdict(summary, mandatory, claude, has_review=bool(claude_review.strip()), claude_file=claude_file)
+    out += render_final_verdict(summary, mandatory, claude, has_review=bool(claude_review.strip()))
     return "\n".join(out).rstrip() + "\n"
 
 
-def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport, *, has_review: bool, claude_file: str) -> list[str]:
+def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport, *, has_review: bool) -> list[str]:
     overall = summary["overall"]
-    out = ["## Final verdict", "", f"**Checks: {overall}**" + (f" · **Claude: {claude.verdict.decision}**" if claude.verdict else ""), ""]
+    out = ["## Final verdict", "", f"**Result: {overall}**" + (f" · **Claude: {claude.verdict.decision}**" if claude.verdict else ""), ""]
     if claude.verdict and claude.verdict.reason:
         out += [f"> {_inline(claude.verdict.reason)}", ""]
     if overall == "NOT RUN":
@@ -350,7 +352,7 @@ def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport
             out.append(f"{len(todo)}. … and {len(todo) - 8} more (listed above)")
         out.append("")
     elif overall == "PASS":
-        out += ["Every automated check passed.", ""]
+        out += ["Nothing is lacking and nothing needs a second look.", ""]
     else:
         out += ["Nothing is lacking.", ""]
     still = []
@@ -363,7 +365,7 @@ def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport
     if claude.problems and claude.structured:
         out += ["_Notes on claude's report: " + " ".join(_inline(p) for p in claude.problems[:3]) + "_", ""]
     if claude.structured:
-        out.append(f"Claude answered {claude.assessed} of {claude.total} requirement(s)" + (f"; its full report is {_code(claude_file)}." if claude_file else "."))
+        out.append(f"Claude answered {claude.assessed} of {claude.total} requirement(s).")
     elif has_review:
         out.append("Claude's report is included above as text (it could not be merged into the lists).")
     else:

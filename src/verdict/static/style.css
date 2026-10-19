@@ -112,6 +112,17 @@ pre.log { margin: 6px 0 0; padding: 8px; background: #151515; border: 1px solid 
 .dialog input[type=text] { width: 100%; padding: 6px 8px; background: #3c3c3c; border: 1px solid var(--border); color: #fff; font: inherit; }
 .dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
 .dialog label.pick { display: flex; gap: 8px; padding: 2px 0; }
+.dialog .dim { color: var(--dim); font-size: 12px; }
+.dialog label.pick .dim { margin-left: auto; font-family: var(--mono); }
+.dialog .group-title { padding: 8px 0 2px; background: var(--side); }
+.dialog details.track { border: 1px solid var(--border); margin-bottom: 6px; }
+.dialog details.track summary { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; list-style: none; user-select: none; }
+.dialog details.track summary::-webkit-details-marker { display: none; }
+.dialog details.track summary::before { content: "▸"; color: var(--dim); width: 10px; }
+.dialog details.track[open] summary::before { content: "▾"; }
+.dialog details.track summary:hover { background: var(--sel); }
+.dialog details.track summary .dim { margin-left: auto; }
+.dialog details.track .track-items { padding: 2px 10px 8px 28px; max-height: 40vh; overflow: auto; }
 .dialog .error { color: var(--fail); margin-top: 8px; }
 #toast { position: fixed; bottom: 36px; right: 16px; background: #5a1d1d; border: 1px solid var(--fail); padding: 8px 14px; z-index: 20; max-width: 480px; }
 #toast[hidden] { display: none; }
@@ -130,6 +141,14 @@ pre.log { margin: 6px 0 0; padding: 8px; background: #151515; border: 1px solid 
 
 /* rendered verdict.md */
 .view.doc { padding: 0 28px 40px; }
+.view.pdf { background: #2b2b2b; padding: 16px 0 40px; }
+.view.pdf figure { margin: 0 auto 18px; max-width: 900px; padding: 0 16px; }
+.view.pdf img { display: block; width: 100%; min-height: 200px; background: #fff; box-shadow: 0 2px 12px #0008; }
+.view.pdf figcaption { text-align: center; color: var(--dim); font-size: 11px; margin-top: 4px; }
+.list li .name.link { cursor: pointer; }
+.list li .name.link:hover { text-decoration: underline; }
+a.page-link { color: inherit; text-decoration: underline dotted; }
+a.page-link:hover { color: var(--manual); }
 .doc-bar { position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); color: var(--dim); }
 .doc-bar button { margin-left: auto; }
 .markdown { max-width: 900px; line-height: 1.55; }

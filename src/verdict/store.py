@@ -21,6 +21,8 @@ ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
 
 class Subject(BaseModel):
     name: str
+    kind: Literal["subject", "norm"] = "subject"   # "norm": the Norm, attached automatically to C projects
+    track: str = ""                                # the library folder it came from (common-core, ...)
     lang: str | None = None
     pages: int = 0
     rules: list[Rule] = Field(default_factory=list)
@@ -44,11 +46,11 @@ class Session(BaseModel):
     improvements: list[Improvement] = Field(default_factory=list)
     readme: dict = Field(default_factory=dict)
     ai: AIState = Field(default_factory=AIState)
-    claude_review: str = ""       # the report claude saved in the terminal (claude-review.md), shown in verdict.md
+    claude_review: str = ""       # the report claude saved in the terminal; merged into verdict.md, never written as a file
     claude_review_at: str = ""
     claude: ClaudeReport = Field(default_factory=ClaudeReport)
     review_items: list[ReviewItem] = Field(default_factory=list)   # numbering of the requirements in the last prompt
-    claude_review_file: str = ""   # name of claude's report inside the cloned repository
+    review_context: str = ""       # the repository, commit and subjects that claude's and the AI's reviews were made for
     verdict_file: str = ""  # name of the verdict written into the repository
     state: Literal["idle", "cloning", "running", "done", "error"] = "idle"
     message: str = ""
@@ -57,7 +59,7 @@ class Session(BaseModel):
         return merge_rules([r for s in self.subjects.values() for r in s.rules])
 
     def lang(self) -> str | None:
-        langs = {s.lang for s in self.subjects.values() if s.lang}
+        langs = {s.lang for s in self.subjects.values() if s.lang and s.kind == "subject"}
         return "cpp" if "cpp" in langs else ("c" if "c" in langs else None)
 
 

@@ -444,6 +444,21 @@ def parse_subject(pdf: str, pages: list[str]) -> Spec:
     return Spec(name=pdf, lang=lang, rules=merge_rules(rules))
 
 
+def parse_norm(pdf: str, pages: list[str]) -> Spec:
+    """The Norm (en.norm.pdf): norminette checks most of it; the rules it marks with (*) need a human."""
+    lines = read_lines(pages)
+    first = next((l for l in lines if "norminette" in l.text.lower()), lines[0] if lines else None)
+    rules = [_rule("norm", "Passes norminette", text="The code must follow the Norm (checked by norminette).",
+                   source=Source(pdf=pdf, page=first.page) if first else None)]
+    for sentence, line in _prose_items(lines):
+        m = re.match(r"(?:[-•◦]\s*)?\(\*\)\s*(.+)", sentence)
+        if m:
+            text = m.group(1)
+            rules.append(_rule("manual", "Norm rule norminette cannot check", text=text, params={"text": text},
+                               source=Source(pdf=pdf, page=line.page)))
+    return Spec(name=pdf, lang="c", rules=merge_rules(rules))
+
+
 def merge_rules(rules: list[Rule]) -> list[Rule]:
     """Collapse identical rules (same id), remembering every place they came from."""
     merged: dict[str, Rule] = {}

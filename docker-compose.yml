@@ -22,8 +22,9 @@ services:
     volumes:
       - workspace:/workspace
       - ${PROJECTS_DIR:-./projects}:/projects
-      - ./samples:/samples:ro
-      - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
+      - ./samples:/samples   # writable: uploaded subjects are kept in samples/<track>/
+      # your ssh-agent's socket (set by `make`: your $SSH_AUTH_SOCK on Linux, Docker Desktop's path on macOS)
+      - ${SSH_AGENT_MOUNT:-/run/host-services/ssh-auth.sock}:/run/host-services/ssh-auth.sock
     networks: [default, sandbox-net]
     depends_on:
       sandbox:

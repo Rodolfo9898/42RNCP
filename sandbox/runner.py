@@ -35,9 +35,11 @@ if os.environ.get("DOCKER_HOST"):
 
 
 def _limits() -> None:
+    # No RLIMIT_NPROC: the kernel counts it per uid across the whole host, and uid 1000 is usually the Linux host's
+    # own user (with a browser's worth of threads), so every fork would fail. pids_limit in docker-compose.yml caps the
+    # number of processes of this container alone.
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_FSIZE, (200 * 1024 * 1024,) * 2)
-    resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
     resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT, MAX_TIMEOUT))
 
 

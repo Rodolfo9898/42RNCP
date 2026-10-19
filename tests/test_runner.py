@@ -14,9 +14,15 @@ def runner(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("runner_under_test", RUNNER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    if sys.platform == "darwin":  # RLIMIT_NPROC would constrain the developer's whole account
-        monkeypatch.setattr(module, "_limits", lambda: None)
     return module
+
+
+def test_limits_never_cap_processes_per_uid(runner, monkeypatch):
+    # RLIMIT_NPROC counts every process of the uid on the whole host (uid 1000 is often the host's own user).
+    calls = []
+    monkeypatch.setattr(runner.resource, "setrlimit", lambda which, value: calls.append(which))
+    runner._limits()
+    assert calls and runner.resource.RLIMIT_NPROC not in calls
 
 
 def test_run_captures_output_and_exit_code(runner, tmp_path):

@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import make_pdf, SUBJECT_PAGES
+from .conftest import make_pdf, NORM_PAGES, SUBJECT_PAGES
 
 
 @pytest.fixture
@@ -10,8 +10,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SAMPLES_DIR", str(tmp_path / "lib"))
     monkeypatch.setenv("PROJECTS_DIR", str(tmp_path / "projects"))
     monkeypatch.delenv("SANDBOX_URL", raising=False)
-    (tmp_path / "lib").mkdir()
-    (tmp_path / "lib" / "push_swap.pdf").write_bytes(make_pdf(SUBJECT_PAGES))
+    (tmp_path / "lib" / "common-core").mkdir(parents=True)
+    (tmp_path / "lib" / "common-core" / "push_swap.pdf").write_bytes(make_pdf(SUBJECT_PAGES))
+    (tmp_path / "lib" / "en.norm.pdf").write_bytes(make_pdf(NORM_PAGES))
     import importlib
 
     import verdict.main as main
@@ -25,18 +26,18 @@ def test_upload_several_pdfs_merges_rules(client):
     sid = c.post("/api/sessions").json()["id"]
     files = [("files", ("a.pdf", make_pdf(SUBJECT_PAGES), "application/pdf")),
              ("files", ("b.pdf", make_pdf(SUBJECT_PAGES), "application/pdf"))]
-    r = c.post(f"/api/sessions/{sid}/subjects", files=files)
+    r = c.post(f"/api/sessions/{sid}/subjects", files=files, data={"track": "rncp"})
     assert r.status_code == 200
-    assert [s["name"] for s in r.json()["subjects"]] == ["a.pdf", "b.pdf"]
+    assert [s["name"] for s in r.json()["subjects"] if s["kind"] == "subject"] == ["a.pdf", "b.pdf"]
 
 
 def test_rejects_non_pdf_and_odd_filenames(client):
     c, _ = client
     sid = c.post("/api/sessions").json()["id"]
-    bad = c.post(f"/api/sessions/{sid}/subjects", files=[("files", ("x.pdf", b"not a pdf", "application/pdf"))])
+    bad = c.post(f"/api/sessions/{sid}/subjects", files=[("files", ("x.pdf", b"not a pdf", "application/pdf"))], data={"track": "rncp"})
     assert bad.status_code == 400
     sneaky = c.post(f"/api/sessions/{sid}/subjects",
-                    files=[("files", ("../../etc/<b>x.pdf", make_pdf(SUBJECT_PAGES), "application/pdf"))])
+                    files=[("files", ("../../etc/<b>x.pdf", make_pdf(SUBJECT_PAGES), "application/pdf"))], data={"track": "rncp"})
     assert sneaky.status_code == 200
     assert sneaky.json()["subjects"][0]["name"] == "_b_x.pdf"
 
@@ -44,10 +45,85 @@ def test_rejects_non_pdf_and_odd_filenames(client):
 def test_library_listing_and_add(client):
     c, _ = client
     sid = c.post("/api/sessions").json()["id"]
-    assert c.get("/api/library").json()[0]["name"] == "push_swap.pdf"
-    r = c.post(f"/api/sessions/{sid}/subjects/library", json={"names": ["push_swap.pdf"]})
-    assert r.status_code == 200 and r.json()["subjects"][0]["rules"]
-    assert c.post(f"/api/sessions/{sid}/subjects/library", json={"names": ["../secret.pdf"]}).status_code == 404
+    lib = c.get("/api/library").json()
+    assert [t["id"] for t in lib["tracks"]] == ["common-core", "post-common-core", "rncp"]
+    assert lib["items"] == [{"path": "common-core/push_swap.pdf", "name": "push_swap.pdf", "track": "common-core", "size": lib["items"][0]["size"]}]
+    assert lib["norm"] is True                                                  # the Norm is never listed as a subject
+    r = c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": ["common-core/push_swap.pdf"]})
+    assert r.status_code == 200 and r.json()["subjects"][0]["rules"] and r.json()["subjects"][0]["track"] == "common-core"
+    for bad in ("../secret.pdf", "push_swap.pdf", "rncp/push_swap.pdf", "en.norm.pdf", "common-core/../en.norm.pdf"):
+        assert c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": [bad]}).status_code == 404
+
+
+def test_upload_lands_in_the_chosen_track(client, tmp_path):
+    c, _ = client
+    sid = c.post("/api/sessions").json()["id"]
+    pdf = make_pdf(SUBJECT_PAGES)
+    upload = lambda name, data, **form: c.post(f"/api/sessions/{sid}/subjects", files=[("files", (name, data, "application/pdf"))], data=form)
+    assert upload("ft_ls.pdf", pdf).status_code == 422                                  # a track is required
+    assert upload("ft_ls.pdf", pdf, track="../etc").status_code == 400
+    r = upload("ft_ls.pdf", pdf, track="post-common-core")
+    assert r.status_code == 200
+    assert (tmp_path / "lib" / "post-common-core" / "ft_ls.pdf").read_bytes() == pdf
+    subject = next(s for s in r.json()["subjects"] if s["name"] == "ft_ls.pdf")
+    assert subject["track"] == "post-common-core"
+    assert "post-common-core/ft_ls.pdf" in [i["path"] for i in c.get("/api/library").json()["items"]]
+    assert upload("ft_ls.pdf", pdf, track="post-common-core").status_code == 200        # the same file again is fine
+    other = make_pdf(SUBJECT_PAGES + ["Chapter III\nBonus part\nMore.\n"])
+    assert upload("ft_ls.pdf", other, track="post-common-core").status_code == 409      # never replaced silently
+    assert (tmp_path / "lib" / "post-common-core" / "ft_ls.pdf").read_bytes() == pdf
+    assert upload("en.norm.pdf", pdf, track="rncp").status_code == 400                 # the Norm is not a subject
+    assert not (tmp_path / "lib" / "rncp" / "en.norm.pdf").exists()
+
+
+def norm_names(state):
+    return [s["name"] for s in state["subjects"] if s["kind"] == "norm"]
+
+
+def test_norm_is_attached_when_the_subject_is_in_c(client):
+    c, _ = client
+    sid = c.post("/api/sessions").json()["id"]
+    state = c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": ["common-core/push_swap.pdf"]}).json()
+    assert norm_names(state) == ["en.norm.pdf"]
+    norm = next(s for s in state["subjects"] if s["kind"] == "norm")
+    assert [r["text"] for r in norm["rules"] if r["kind"] == "manual"] == ["Your comments should be in English, and useful.",
+                                                                          "Inclusion of unused headers is forbidden."]
+    assert c.delete(f"/api/sessions/{sid}/subjects/en.norm.pdf").status_code == 400       # it follows the detection
+    state = c.delete(f"/api/sessions/{sid}/subjects/push_swap.pdf").json()
+    assert state["subjects"] == []                                                       # no C left: no Norm
+
+
+def test_norm_is_attached_when_the_repo_has_c_code(client):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    no_lang = make_pdf(["Chapter I\nMandatory part\nYou must write a configuration file.\n"])
+    c.post(f"/api/sessions/{sid}/subjects", files=[("files", ("conf.pdf", no_lang, "application/pdf"))], data={"track": "rncp"})
+    repo = attach_repo(main, sid, "c-repo")
+    (repo / "main.c").write_text("int main(void){return 0;}\n")
+    session = main.store.get(sid)
+    main.sync_norm(session)
+    assert NORM in session.subjects
+    (repo / "main.cpp").write_text("int main(){}\n")                                   # C++ in the repo: not the Norm
+    main.sync_norm(session)
+    assert NORM not in session.subjects
+    (repo / "main.cpp").unlink()
+    (repo / "mlx").mkdir()
+    (repo / "main.c").rename(repo / "mlx" / "mlx.c")                                    # vendored C does not count
+    main.sync_norm(session)
+    assert NORM not in session.subjects
+
+
+NORM = "en.norm.pdf"
+
+
+def test_run_applies_the_norm_to_c_projects(client):
+    c, main = client
+    sid, _ = prepared_session(c, main, "norm-run")
+    state = run_to_completion(c, sid)
+    titles = [r["title"] for r in state["results"]]
+    assert "Norm rule norminette cannot check" in titles
+    norm_rule = next(r for r in state["results"] if r["title"] == "Passes norminette")
+    assert {s["pdf"] for s in norm_rule["sources"]} == {"push_swap.pdf", NORM}
 
 
 @pytest.mark.parametrize("url", [
@@ -145,7 +221,7 @@ def test_run_and_export_verdict(client):
     c, main = client
     sid = c.post("/api/sessions").json()["id"]
     assert c.post(f"/api/sessions/{sid}/run").status_code == 400  # nothing yet
-    c.post(f"/api/sessions/{sid}/subjects/library", json={"names": ["push_swap.pdf"]})
+    c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": ["common-core/push_swap.pdf"]})
     repo = attach_repo(main, sid, "run-test")
     (repo / "Makefile").write_text("all:\n")
     (repo / "main.c").write_text("int main(void){return 0;}\n")
@@ -193,7 +269,7 @@ def run_to_completion(c, sid):
 
 def prepared_session(c, main, path="rv"):
     sid = c.post("/api/sessions").json()["id"]
-    c.post(f"/api/sessions/{sid}/subjects/library", json={"names": ["push_swap.pdf"]})
+    c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": ["common-core/push_swap.pdf"]})
     repo = attach_repo(main, sid, path)
     (repo / "Makefile").write_text("all:\n")
     (repo / "main.c").write_text("int main(void)\n{\n\treturn (0);\n}\n")
@@ -757,86 +833,73 @@ def test_building_never_touches_the_clone_so_nothing_looks_committed_that_was_no
     assert not any(p.suffix == ".o" for p in repo.rglob("*"))
 
 
-# ---------------------------------------------------------------- claude's report is also written into the cloned repository
+# ---------------------------------------------------------------- claude's report goes into verdict.md, never into a file of its own
 
 
-def test_claudes_report_is_saved_in_the_clone_next_to_verdict_md(client, monkeypatch):
+def saving_terminal(monkeypatch, main, text):
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    terminal_returns(monkeypatch, main, lambda session_id: text)
+
+
+def test_claudes_report_goes_into_verdict_md_and_no_other_file(client, monkeypatch):
     c, main = client
     sid, repo = prepared_session(c, main, "cr4")
     run_to_completion(c, sid)
-    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
-    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
-    terminal_returns(monkeypatch, main, lambda session_id: "# Report\n\n## Verdict\ndo not pass\n")
+    saving_terminal(monkeypatch, main, REVIEW)
     saved = c.post(f"/api/sessions/{sid}/claude-review/save").json()
-    assert saved["review_file"] == "claude-review.md"
-    written = (repo / "claude-review.md").read_text()
-    assert written.startswith("<!-- generated by verdict -->") and "do not pass" in written
-    assert c.get(f"/api/sessions/{sid}").json()["claude_review_file"] == "claude-review.md"
-    # it is our file, so it is not mistaken for part of the project on the next run
-    again = run_to_completion(c, sid)
-    assert not any("claude-review" in e["file"] for r in again["results"] for e in r["evidence"])
-    assert "claude-review.md" not in main.build_digest(repo).included
+    assert saved["saved"] is True and saved["warning"] == "" and "review_file" not in saved
+    assert "Claude's review" in (repo / "verdict.md").read_text()
+    assert not (repo / "claude-review.md").exists() and not (repo / "claude-review-report.md").exists()
+    assert "claude_review_file" not in c.get(f"/api/sessions/{sid}").json()
 
 
-def test_a_projects_own_claude_review_md_is_never_overwritten(client, monkeypatch):
+def test_a_review_file_left_by_an_earlier_version_is_removed_but_never_the_projects_own(client, monkeypatch):
     c, main = client
     sid, repo = prepared_session(c, main, "cr5")
-    (repo / "claude-review.md").write_text("the student's own file\n")
     run_to_completion(c, sid)
-    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
-    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
-    terminal_returns(monkeypatch, main, lambda session_id: "# Report\n")
-    saved = c.post(f"/api/sessions/{sid}/claude-review/save").json()
-    assert (repo / "claude-review.md").read_text() == "the student's own file\n"
-    assert saved["review_file"] == "claude-review-report.md" and (repo / "claude-review-report.md").exists()
+    (repo / "claude-review.md").write_text("<!-- generated by verdict -->\n\nold report\n")         # ours, from before
+    (repo / "claude-review-report.md").write_text("the student's own file\n")
+    saving_terminal(monkeypatch, main, REVIEW)
+    c.post(f"/api/sessions/{sid}/claude-review/save")
+    assert not (repo / "claude-review.md").exists()
+    assert (repo / "claude-review-report.md").read_text() == "the student's own file\n"
 
 
-def test_claudes_report_is_never_written_through_a_symlink(client, monkeypatch, tmp_path):
+def test_an_old_review_file_is_never_removed_through_a_symlink(client, monkeypatch, tmp_path):
     c, main = client
     sid, repo = prepared_session(c, main, "cr6")
     run_to_completion(c, sid)
-    target = tmp_path / "outside.txt"
-    target.write_text("keep me")
-    for name in ("claude-review.md", "claude-review-report.md"):
-        (repo / name).symlink_to(target)
-    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
-    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
-    terminal_returns(monkeypatch, main, lambda session_id: "# Report\n")
-    assert c.post(f"/api/sessions/{sid}/claude-review/save").json()["review_file"] == ""
-    assert target.read_text() == "keep me"
+    target = tmp_path / "outside.md"
+    target.write_text("<!-- generated by verdict -->\nkeep me")
+    (repo / "claude-review.md").symlink_to(target)
+    saving_terminal(monkeypatch, main, REVIEW)
+    c.post(f"/api/sessions/{sid}/claude-review/save")
+    assert (repo / "claude-review.md").is_symlink() and target.read_text().endswith("keep me")
 
 
-# ---------------------------------------------------------------- the file must really end up in the clone
-
-
-def test_saving_an_unchanged_report_still_writes_the_missing_file(client, monkeypatch):
-    """The bug: a review stored before claude-review.md existed was 'already saved', so the file was never created."""
+def test_saving_an_unchanged_report_still_writes_a_missing_verdict(client, monkeypatch):
     c, main = client
     sid, repo = prepared_session(c, main, "cr7")
     run_to_completion(c, sid)
     session = main.store.get(sid)
-    session.claude_review, session.claude_review_at, session.claude_review_file = REVIEW, "2026-01-01T00:00:00+00:00", ""
-    assert not (repo / "claude-review.md").exists()
-    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
-    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
-    monkeypatch.setattr(main, "fetch_claude_result", lambda session_id: {"found": True, "text": REVIEW, "name": "claude-review.md", "new_files": []})
+    session.claude_review, session.claude_review_at = REVIEW, "2026-01-01T00:00:00+00:00"
+    (repo / "verdict.md").unlink()
+    saving_terminal(monkeypatch, main, REVIEW)
     saved = c.post(f"/api/sessions/{sid}/claude-review/save").json()
     assert saved["changed"] is False and saved["saved"] is True and saved["warning"] == ""
-    assert (repo / "claude-review.md").read_text().startswith("<!-- generated by verdict -->")
+    assert "Claude's review" in (repo / "verdict.md").read_text()
 
 
-def test_opening_the_session_heals_a_missing_review_file(client):
+def test_opening_the_session_heals_a_missing_verdict_and_clears_an_old_review_file(client):
     c, main = client
     sid, repo = prepared_session(c, main, "cr8")
     run_to_completion(c, sid)
-    session = main.store.get(sid)
-    session.claude_review = REVIEW
-    assert not (repo / "claude-review.md").exists()
-    state = c.get(f"/api/sessions/{sid}").json()
-    assert state["claude_review_file"] == "claude-review.md" and (repo / "claude-review.md").exists()
-    (repo / "claude-review.md").unlink()                      # deleted by hand: written again next time
+    main.store.get(sid).claude_review = REVIEW
+    (repo / "verdict.md").unlink()
+    (repo / "claude-review.md").write_text("<!-- generated by verdict -->\n\nold report\n")
     c.get(f"/api/sessions/{sid}")
-    assert (repo / "claude-review.md").exists()
+    assert (repo / "verdict.md").exists() and not (repo / "claude-review.md").exists()
 
 
 def test_the_report_is_saved_automatically_while_the_terminal_is_open(client, monkeypatch):
@@ -854,15 +917,15 @@ def test_the_report_is_saved_automatically_while_the_terminal_is_open(client, mo
         return FakeUpstream()
 
     monkeypatch.setattr(main, "open_upstream", fake_open)
+    merged = lambda: "Claude's review" in (repo / "verdict.md").read_text()
     with c.websocket_connect(f"/api/sessions/{sid}/terminal", headers={"origin": "http://testserver"}) as ws:
         ws.receive_bytes()
-        assert not (repo / "claude-review.md").exists()
+        assert not merged()
         for _ in range(40):                                    # no click, no closing: it just appears
-            if (repo / "claude-review.md").exists():
+            if merged():
                 break
             time.sleep(0.1)
-        assert (repo / "claude-review.md").exists() and "do not pass" in (repo / "claude-review.md").read_text()
-        assert "Claude's review" in (repo / "verdict.md").read_text()
+        assert merged() and not (repo / "claude-review.md").exists()
 
 
 def test_when_nothing_is_saved_the_message_says_what_claude_did_create(client, monkeypatch):
@@ -877,16 +940,16 @@ def test_when_nothing_is_saved_the_message_says_what_claude_did_create(client, m
     assert "has not created any file yet" in c.post(f"/api/sessions/{sid}/claude-review/save").json()["detail"]
 
 
-def test_a_file_that_cannot_be_written_is_reported_not_hidden(client, monkeypatch):
+def test_a_verdict_that_cannot_be_written_is_reported_not_hidden(client, monkeypatch):
     c, main = client
     sid, repo = prepared_session(c, main, "cr11")
+    (repo / "verdict.md").write_text("the student's own\n")
+    (repo / "verdict-report.md").write_text("also theirs\n")
     run_to_completion(c, sid)
-    (repo / "claude-review.md").write_text("the student's own\n")
-    (repo / "claude-review-report.md").write_text("also theirs\n")
     monkeypatch.setattr(main, "fetch_claude_result", lambda session_id: {"found": True, "text": REVIEW, "name": "claude-review.md", "new_files": []})
     saved = c.post(f"/api/sessions/{sid}/claude-review/save").json()
-    assert saved["saved"] is False and "could not be written into the repository" in saved["warning"]
-    assert (repo / "claude-review.md").read_text() == "the student's own\n"
+    assert saved["saved"] is False and "verdict.md could not be written into the repository" in saved["warning"]
+    assert (repo / "verdict.md").read_text() == "the student's own\n"
 
 
 # ---------------------------------------------------------------- claude's structured report becomes the one readable page
@@ -902,7 +965,7 @@ def structured_review(item_ids):
             "corrections": [{"check": "Compiles with -Wall -Wextra -Werror", "says": "some message", "actually": "it does compile with them"}],
             "improvements": [{"category": "logic", "priority": "high", "title": "Check the allocation", "detail": "malloc can fail", "evidence": ["main.c:2", "ghost.c:9"]}],
             "verdict": {"decision": "pass with reservations", "reason": "Mostly sound."}}
-    return "# My review\n\nLong prose that stays in claude-review.md only.\n\n```c\nint x;\n```\n\n```json\n" + __import__("json").dumps(data) + "\n```\n"
+    return "# My review\n\nLong prose that stays in the session only.\n\n```c\nint x;\n```\n\n```json\n" + __import__("json").dumps(data) + "\n```\n"
 
 
 def test_the_prompt_stores_its_numbering_and_the_saved_report_is_merged_by_those_numbers(client, monkeypatch):
@@ -927,9 +990,9 @@ def test_the_prompt_stores_its_numbering_and_the_saved_report_is_merged_by_those
     assert "`Claude`" in lacking and "note for 1" in lacking and "_Check by hand:_ run it" in lacking and "`main.c:1`" in lacking
     assert "note for 2" in second and "it does compile with them" in second and "Claude disagrees" in second
     assert "Requirements claude found ok" in document
-    assert "Long prose that stays in claude-review.md only." not in document            # no second document stuffed into the first
-    assert "Long prose that stays" in (repo / "claude-review.md").read_text()          # ...it lives in its own file
-    assert "Claude's full report: `claude-review.md`" in document
+    assert "Long prose that stays in the session only." not in document                 # no second document stuffed into the first
+    assert not (repo / "claude-review.md").exists() and "Claude's full report" not in document
+    assert main.store.get(sid).claude_review == review                                    # the prose is kept in the session
     assert "Claude: **pass with reservations**" in document and "> Mostly sound." in document
     improvements = document[document.index("## Improvements"):document.index("## Final verdict")]
     assert "Check the allocation" in improvements and "`main.c:2`" in improvements and "ghost.c" not in improvements   # invented file dropped
@@ -1080,3 +1143,94 @@ def test_without_docker_files_claude_is_told_to_use_make(client):
     run_to_completion(c, sid)
     data = c.get(f"/api/sessions/{sid}/review-prompt").json()
     assert data["docker_files"] == [] and "No Dockerfile or compose file was found" in data["text"]
+
+
+def test_subject_pages_are_served_as_images(client):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    c.post(f"/api/sessions/{sid}/subjects", files=[("files", ("ft_ls.pdf", make_pdf(SUBJECT_PAGES), "application/pdf"))],
+           data={"track": "rncp"})
+    page = c.get(f"/api/sessions/{sid}/subjects/ft_ls.pdf/pages/1.png")
+    assert page.status_code == 200 and page.headers["content-type"] == "image/png" and page.content.startswith(b"\x89PNG")
+    assert c.get(f"/api/sessions/{sid}/subjects/ft_ls.pdf/pages/{len(SUBJECT_PAGES) + 1}.png").status_code == 404
+    assert c.get(f"/api/sessions/{sid}/subjects/ft_ls.pdf/pages/0.png").status_code == 404
+    assert c.get(f"/api/sessions/{sid}/subjects/{NORM}/pages/1.png").status_code == 200     # the Norm too (C subject)
+    assert c.get(f"/api/sessions/{sid}/subjects/other.pdf/pages/1.png").status_code == 404
+    assert c.get(f"/api/sessions/{sid}/subjects/..%2f..%2fsession.json/pages/1.png").status_code == 404
+    c.delete(f"/api/sessions/{sid}/subjects/ft_ls.pdf")
+    assert not (main.subjects_dir(main.store.get(sid)) / "ft_ls.pdf").exists()
+    assert c.get(f"/api/sessions/{sid}/subjects/ft_ls.pdf/pages/1.png").status_code == 404
+
+
+def test_subject_pages_fall_back_to_the_library_copy(client):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": ["common-core/push_swap.pdf"]})
+    (main.subjects_dir(main.store.get(sid)) / "push_swap.pdf").unlink()                 # a session from before copies were kept
+    assert c.get(f"/api/sessions/{sid}/subjects/push_swap.pdf/pages/1.png").status_code == 200
+
+
+# ---------------------------------------------------------------- a review belongs to one repository, commit and set of subjects
+
+
+def reviewed_session(c, main, monkeypatch, path):
+    sid, repo = prepared_session(c, main, path)
+    run_to_completion(c, sid)
+    saving_terminal(monkeypatch, main, REVIEW)
+    c.post(f"/api/sessions/{sid}/claude-review/save")
+    assert main.store.get(sid).claude_review == REVIEW and "Claude's review" in (repo / "verdict.md").read_text()
+    return sid, repo
+
+
+def assert_no_review(c, main, sid):
+    session = main.store.get(sid)
+    assert session.claude_review == "" and not session.claude.structured and session.review_items == []
+    assert not any(v.by == "Claude" for v in session.ai.reviews.values())
+    assert c.get(f"/api/sessions/{sid}").json()["claude"]["verdict"] is None
+
+
+def test_a_review_stays_while_the_same_project_is_checked_again(client, monkeypatch):
+    c, main = client
+    sid, repo = reviewed_session(c, main, monkeypatch, "ctx0")
+    run_to_completion(c, sid)
+    assert main.store.get(sid).claude_review == REVIEW and "Claude's review" in (repo / "verdict.md").read_text()
+
+
+def test_another_repository_never_inherits_the_previous_review(client, monkeypatch):
+    c, main = client
+    sid, _ = reviewed_session(c, main, monkeypatch, "ctx1")
+    other = attach_repo(main, sid, "ctx1-next")                          # the next project, in the same session
+    (other / "Makefile").write_text("all:\n")
+    (other / "main.c").write_text("int main(void)\n{\n\treturn (0);\n}\n")
+    c.get(f"/api/sessions/{sid}")
+    assert_no_review(c, main, sid)
+    run_to_completion(c, sid)
+    assert "Claude's review" not in (other / "verdict.md").read_text()
+
+
+def test_other_subjects_never_inherit_the_previous_review(client, monkeypatch):
+    c, main = client
+    sid, _ = reviewed_session(c, main, monkeypatch, "ctx2")
+    c.post(f"/api/sessions/{sid}/subjects", files=[("files", ("ft_turing.pdf", make_pdf(SUBJECT_PAGES), "application/pdf"))],
+           data={"track": "post-common-core"})
+    assert_no_review(c, main, sid)
+
+
+def test_a_terminal_opened_for_the_old_project_cannot_bring_its_report_back(client, monkeypatch):
+    c, main = client
+    sid, _ = reviewed_session(c, main, monkeypatch, "ctx3")
+    session = main.store.get(sid)
+    old_context = main.review_context(session)
+    attach_repo(main, sid, "ctx3-next")
+    c.get(f"/api/sessions/{sid}")
+    monkeypatch.setattr(main, "fetch_claude_review", lambda session_id: REVIEW)   # the old terminal still holds its report
+    assert main.collect_claude_review(session, old_context) is False
+    assert_no_review(c, main, sid)
+
+
+def test_a_review_saved_before_contexts_were_recorded_is_dropped(client, monkeypatch):
+    c, main = client
+    sid, _ = reviewed_session(c, main, monkeypatch, "ctx4")
+    main.store.get(sid).review_context = ""                                # as in a session.json from an earlier version
+    c.get(f"/api/sessions/{sid}")
+    assert_no_review(c, main, sid)
