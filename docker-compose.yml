@@ -41,10 +41,11 @@ services:
       dockerfile: sandbox/Dockerfile
     environment:
       ALLOWED_ROOTS: /workspace:/projects
+      DOCKER_HOST: tcp://dind:2375     # the separate daemon below, never your Mac's Docker
     volumes:
       - workspace:/workspace
       - ${PROJECTS_DIR:-./projects}:/projects
-    networks: [sandbox-net]
+    networks: [sandbox-net, docker-net]
     read_only: true
     tmpfs:
       - /tmp:size=512m
@@ -68,6 +69,8 @@ services:
       dockerfile: terminal/Dockerfile
     environment:
       TERMINAL_TOKEN: ${TERMINAL_TOKEN:?run `make run` (it creates TERMINAL_TOKEN in .env)}
+      DOCKER_HOST: tcp://dind:2375     # claude can build and run a student's Dockerfile on the separate daemon below
+    networks: [default, docker-net]
     volumes:
       - ${PROJECTS_DIR:-./projects}:/projects:ro
       - claude-home:/home/term
@@ -86,10 +89,39 @@ services:
       timeout: 3s
       retries: 6
 
+  # A Docker daemon of its own, so the sandbox and claude can build and run the Dockerfile a student ships.
+  #  - ROOTLESS: the daemon runs as an unprivileged user, so a container that escapes lands there, not as root.
+  #    (Rootless-in-Docker needs `privileged`; this is the only service that has it.)
+  #  - It sees nothing of yours: no projects folder, no .env, no ssh-agent, and never the host's /var/run/docker.sock.
+  #    It only receives what a docker client sends it (the build context) and keeps its images in the `docker-data` volume.
+  #  - It has internet through `builds-net` because Dockerfiles download packages. Nothing else is on that network.
+  #  - Not started by `web`: if it cannot run on your machine, everything else still works and `docker` just reports
+  #    that it cannot reach a daemon.
+  dind:
+    image: docker:dind-rootless
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""           # plain tcp on the private docker-net only (nothing is published)
+    volumes:
+      - docker-data:/home/rootless/.local/share/docker
+    networks: [docker-net, builds-net]
+    pids_limit: 2048
+    mem_limit: 4g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "docker", "-H", "tcp://127.0.0.1:2375", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 networks:
   sandbox-net:
     internal: true
+  docker-net:          # the sandbox, the terminal and the daemon only; no internet
+    internal: true
+  builds-net: {}       # internet for the daemon (Dockerfiles download packages); nothing else is on it
 
 volumes:
   workspace:
   claude-home:
+  docker-data:

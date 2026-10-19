@@ -634,15 +634,6 @@ def verified(citations: list[CitationOut], digest: Digest, limit: int = 5) -> li
 # ------------------------------------------------------------------ the two analyses
 
 
-@dataclass
-class AIResult:
-    overview: AIOverview
-    improvements: list[Improvement]
-    reviews: dict[str, AIReview]
-    usage: Usage = field(default_factory=Usage)
-    dropped_citations: int = 0
-
-
 def analyze(backend: Backend, digest: Digest, *, subjects: list[str], summary: str, known_titles: list[str], usage: Usage) -> tuple[AIOverview, list[Improvement]]:
     backend.job.notify("Step 1: describing the repository and looking for improvements")
     out: AnalysisOut = backend.structured(SYSTEM, digest.text, _analysis_task(subjects, summary, known_titles), AnalysisOut, usage)

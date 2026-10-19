@@ -183,3 +183,12 @@ body.term-focus { grid-template-rows: 36px 1fr 0 24px; }
 body.term-focus #panel { display: none; }
 #toast.ok { background: #1d3b22; border-color: var(--pass); }
 .ai-chip.na { background: #6c6c6c; color: #eee; }
+
+/* environment check */
+.env-part { margin: 12px 0; } .env-part h4 { margin: 0 0 4px; font-size: 13px; }
+table.env { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.env td { padding: 2px 8px 2px 0; vertical-align: top; }
+table.env td.mark { width: 18px; font-weight: 700; } table.env td.detail { color: var(--dim); font-family: var(--mono); word-break: break-word; }
+table.env tr.ok td.mark { color: var(--pass); } table.env tr.bad td.mark { color: var(--fail); } table.env tr.warn td.mark { color: var(--dim); }
+.env-ok { color: var(--pass); }
+button.linklike { background: none; border: 0; color: var(--manual); padding: 0; text-decoration: underline; cursor: pointer; }

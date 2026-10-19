@@ -65,7 +65,7 @@ SAFE_FLAGS = [
 
 def child_env() -> dict[str, str]:
     """The only environment claude gets: no secrets from this process."""
-    return {
+    env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": HOME,
         "TERM": "xterm-256color",
@@ -75,7 +75,11 @@ def child_env() -> dict[str, str]:
         "DISABLE_TELEMETRY": "1",
         "DISABLE_ERROR_REPORTING": "1",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DOCKER_CONFIG": f"{HOME}/.docker",
     }
+    if os.environ.get("DOCKER_HOST"):      # the separate daemon (never the host's); passed on only if the operator set one
+        env["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
+    return env
 
 
 def interactive_argv(prompt: str | None = None) -> list[str]:
@@ -268,6 +272,28 @@ def result(request: Request, sid: str = "") -> dict:
     if not authorised(request.headers.get("x-terminal-token")):
         raise HTTPException(401, "bad token")
     return read_review(sid)
+
+
+@app.get("/selftest")
+async def selftest(request: Request, deep: bool = False) -> dict:
+    """The environment claude works in: compilers, make, docker (client and daemon), and a real build."""
+    if not authorised(request.headers.get("x-terminal-token")):
+        raise HTTPException(401, "bad token")
+    from .selftest import Outcome, run_selftest
+
+    def run(argv: list[str], cwd: Path, timeout: float) -> Outcome:
+        try:
+            done = subprocess.run(argv, cwd=cwd, env=child_env(), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            return Outcome(-1, timed_out=True)
+        except OSError as exc:
+            return Outcome(127, stderr=str(exc))
+        return Outcome(done.returncode, done.stdout[-4000:], done.stderr[-4000:])
+
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    extra = [("gdb", ["gdb", "--version"], False), ("claude", [CLAUDE, "--version"], True)]
+    results = await asyncio.get_running_loop().run_in_executor(None, lambda: run_selftest(run, SCRATCH, deep=deep, extra=extra))
+    return {"tools": results}
 
 
 @app.post("/prompts")

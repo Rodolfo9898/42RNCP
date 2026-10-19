@@ -94,3 +94,36 @@ def test_the_prompt_demands_a_machine_readable_block_that_matches_the_numbering(
     items = manual_items(RESULTS)
     assert [i.n for i in items] == [1, 2] and len(items) == stats["items"]
     assert f"1. {items[0].text}" in prompt and f"2. {items[1].text}" in prompt           # the numbers claude sees are the stored ones
+
+
+# ---------------------------------------------------------------- Docker guidance for claude
+
+
+def test_finding_the_students_docker_files():
+    from verdict.prompts import find_docker_files
+    paths = ["Makefile", "Dockerfile", "srcs/requirements/nginx/Dockerfile", "srcs/docker-compose.yml", "compose.yaml", "docker-compose.override.yml",
+             "app.dockerfile", "Dockerfile.dev", "notes/dockerfile.txt", "mlx/Dockerfile", "a/b/c/d/e/Dockerfile", "node_modules/x/Dockerfile", "docker-compose.md"]
+    assert find_docker_files(paths) == ["Dockerfile", "Dockerfile.dev", "app.dockerfile", "compose.yaml", "docker-compose.override.yml",
+                                        "srcs/docker-compose.yml", "srcs/requirements/nginx/Dockerfile"]
+    assert find_docker_files(["Makefile", "main.c"]) == []
+    assert len(find_docker_files([f"d{n}/Dockerfile" for n in range(40)])) == 12
+
+
+def test_the_prompt_makes_claude_use_the_students_docker_setup_when_there_is_one():
+    prompt, stats = build_review_prompt(project="inception", subjects=["inception.pdf"], lang=None, results=RESULTS,
+                                        docker_files=["srcs/docker-compose.yml", "srcs/requirements/nginx/Dockerfile"])
+    assert stats["docker_files"] == ["srcs/docker-compose.yml", "srcs/requirements/nginx/Dockerfile"]
+    assert "The student ships Docker files: srcs/docker-compose.yml, srcs/requirements/nginx/Dockerfile." in prompt
+    assert "build and run the project the way they intend" in prompt and "instead of relying on the toolchain here" in prompt
+    assert "--privileged, host mounts, the host network, published ports" in prompt
+    assert "DOCKER_HOST points to a separate, rootless Docker daemon" in prompt and "not the evaluator's own Docker" in prompt
+    assert "Anything beyond those basics is meant to come from a Docker setup the student ships." in prompt
+
+
+def test_the_prompt_starts_with_an_environment_check():
+    prompt, _ = build()
+    step0 = prompt.index("0. Start by confirming the environment")
+    assert step0 < prompt.index("1. Read the Makefile")
+    for command in ("cc --version", "c++ --version", "make --version", "docker info"):
+        assert command in prompt[step0:step0 + 200]
+    assert "tell me at once if any of them fails" in prompt

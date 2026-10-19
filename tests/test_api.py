@@ -924,7 +924,7 @@ def test_the_prompt_stores_its_numbering_and_the_saved_report_is_merged_by_those
     document = (repo / "verdict.md").read_text()
     lacking = document[document.index("## ❌ Lacking"):document.index("## ⚠️ Second look")]
     second = document[document.index("## ⚠️ Second look"):document.index("## ✅ Ok")]
-    assert f"`Claude`" in lacking and "note for 1" in lacking and "_Check by hand:_ run it" in lacking and "`main.c:1`" in lacking
+    assert "`Claude`" in lacking and "note for 1" in lacking and "_Check by hand:_ run it" in lacking and "`main.c:1`" in lacking
     assert "note for 2" in second and "it does compile with them" in second and "Claude disagrees" in second
     assert "Requirements claude found ok" in document
     assert "Long prose that stays in claude-review.md only." not in document            # no second document stuffed into the first
@@ -971,3 +971,112 @@ def test_a_new_run_keeps_claudes_answers(client, monkeypatch):
     again = run_to_completion(c, sid)
     assert {v["by"] for v in again["ai"]["reviews"].values()} == {"Claude"} and again["claude"]["structured"]
     assert "Requirements claude found ok" in (repo / "verdict.md").read_text()
+
+
+# ---------------------------------------------------------------- the environment check (sandbox + claude's terminal)
+
+
+def tools(**broken):
+    names = ["C compiler (cc)", "C++ compiler (c++)", "make", "docker client", "docker compose", "docker daemon"]
+    return [{"name": n, "ok": n not in broken, "required": True, "detail": "x" if n not in broken else "not found"} for n in names]
+
+
+def fake_environment(monkeypatch, main, sandbox_tools, terminal_tools=None, terminal_error=False):
+    import httpx
+    calls = {"sandbox": 0, "terminal": 0, "deep": []}
+
+    def fake_sandbox_selftest(sandbox, workspace, deep=False):
+        calls["sandbox"] += 1
+        calls["deep"].append(deep)
+        return sandbox_tools
+
+    def handler(request):
+        calls["terminal"] += 1
+        if terminal_error:
+            raise httpx.ConnectError("refused", request=request)
+        assert request.headers["x-terminal-token"] == "tok" and request.url.path == "/selftest"
+        calls["deep"].append(request.url.params.get("deep"))
+        return httpx.Response(200, json={"tools": terminal_tools or tools()})
+
+    real = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(main, "sandbox", object())
+    monkeypatch.setattr(main, "sandbox_selftest", fake_sandbox_selftest)
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    main._environment_cache.clear()
+    return calls
+
+
+def test_environment_is_ready_when_both_containers_can_build_and_use_docker(client, monkeypatch):
+    c, main = client
+    fake_environment(monkeypatch, main, tools())
+    env = c.get("/api/environment").json()
+    assert env["ready"] is True and env["deep"] is False
+    for part in ("sandbox", "terminal"):
+        assert env[part]["available"] and env[part]["summary"]["ready"] and len(env[part]["tools"]) == 6
+
+
+def test_a_missing_tool_in_either_container_makes_it_not_ready_and_says_which(client, monkeypatch):
+    c, main = client
+    fake_environment(monkeypatch, main, tools(), terminal_tools=tools(**{"C++ compiler (c++)": 1}))
+    env = c.get("/api/environment").json()
+    assert env["ready"] is False and env["sandbox"]["summary"]["ready"] is True
+    assert env["terminal"]["summary"]["failed"] == ["C++ compiler (c++)"] and env["terminal"]["summary"]["basics_ok"] is False
+
+
+def test_docker_without_a_daemon_is_reported_separately_from_the_basics(client, monkeypatch):
+    c, main = client
+    fake_environment(monkeypatch, main, tools(**{"docker daemon": 1}))
+    env = c.get("/api/environment").json()
+    assert env["ready"] is False
+    assert env["sandbox"]["summary"]["basics_ok"] is True and env["sandbox"]["summary"]["docker_daemon_down"] is True
+
+
+def test_an_unreachable_terminal_or_missing_sandbox_is_explained(client, monkeypatch):
+    c, main = client
+    fake_environment(monkeypatch, main, tools(), terminal_error=True)
+    env = c.get("/api/environment").json()
+    assert env["ready"] is False and env["sandbox"]["available"] is True
+    assert env["terminal"]["available"] is False and "could not reach the terminal service" in env["terminal"]["error"]
+    fake_environment(monkeypatch, main, tools())
+    monkeypatch.setattr(main, "sandbox", None)
+    monkeypatch.setattr(main, "TERMINAL_URL", "")
+    main._environment_cache.clear()
+    env = c.get("/api/environment").json()
+    assert env["ready"] is False and "not configured" in env["sandbox"]["error"] and "not configured" in env["terminal"]["error"]
+
+
+def test_the_check_is_cached_briefly_and_deep_is_passed_through(client, monkeypatch):
+    c, main = client
+    calls = fake_environment(monkeypatch, main, tools())
+    c.get("/api/environment")
+    c.get("/api/environment")
+    assert calls["sandbox"] == 1 and calls["terminal"] == 1                        # the second call is served from the cache
+    c.get("/api/environment", params={"deep": "true"})
+    assert calls["sandbox"] == 2 and calls["deep"][-2:] == [True, "true"]         # a deep test is never answered from the shallow cache
+    assert c.get("/api/environment", params={"deep": "true"}).json()["deep"] is True
+
+
+# ---------------------------------------------------------------- claude is told to confirm the environment and to find the student's Docker setup
+
+
+def test_the_review_prompt_lists_the_students_docker_files(client):
+    c, main = client
+    sid, repo = prepared_session(c, main, "dk1")
+    (repo / "Dockerfile").write_text("FROM debian\n")
+    (repo / "srcs").mkdir()
+    (repo / "srcs" / "docker-compose.yml").write_text("services: {}\n")
+    run_to_completion(c, sid)
+    data = c.get(f"/api/sessions/{sid}/review-prompt").json()
+    assert data["docker_files"] == ["Dockerfile", "srcs/docker-compose.yml"]
+    assert "The student ships Docker files: Dockerfile, srcs/docker-compose.yml." in data["text"]
+    assert "Start by confirming the environment" in data["text"] and "`docker info`" in data["text"]
+
+
+def test_without_docker_files_claude_is_told_to_use_make(client):
+    c, main = client
+    sid, _ = prepared_session(c, main, "dk2")
+    run_to_completion(c, sid)
+    data = c.get(f"/api/sessions/{sid}/review-prompt").json()
+    assert data["docker_files"] == [] and "No Dockerfile or compose file was found" in data["text"]

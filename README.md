@@ -75,6 +75,28 @@ The sandbox image builds norminette from its official repository (https://github
 tag `3.3.60`, over SSH when your agent is available at build time (falls back to HTTPS), and aborts if the commit is not
 the reviewed one. Bump `NORMINETTE_REF` and `NORMINETTE_COMMIT` in `sandbox/Dockerfile` to upgrade.
 
+## Docker, C, C++ and make: the environment
+
+The sandbox (and claude's terminal) provide the basics: **cc, c++, make**, valgrind, norminette, and the **Docker client**
+with `docker compose`. Anything a project needs beyond that is expected to come from a Dockerfile or compose file the student
+ships: the review builds and runs it, rather than the app trying to install everything.
+
+- **🔧 Environment** (title bar) checks it for real, in both the sandbox and claude's terminal: each tool's version, a C and a
+  C++ program compiled with the strict flags and run through `make`, and the Docker daemon. "Also test a docker build" builds
+  and runs a tiny Dockerfile (it downloads a base image, so it needs internet). Only ✖ items make it "not ready"; it also
+  appears as one line in the ✨ AI review dialog, so a problem is visible *before* claude starts.
+- **claude** is told to confirm the environment first (`cc --version`, `c++ --version`, `make --version`, `docker info`), then to
+  look for the student's Dockerfile or compose file and build and run the project with it, telling you each command first.
+- **The daemon is separate and rootless** (`dind`, image `docker:dind-rootless`). It is *not* your Mac's Docker: the host's
+  `/var/run/docker.sock` is never mounted anywhere. It sees nothing of yours (no projects folder, `.env` or ssh-agent); it only
+  receives what a docker client sends it, and keeps its images in the `docker-data` volume. Rootless means a container that
+  escapes lands as an unprivileged user. It needs `privileged` to run inside Docker, and it is the only service that has it.
+  Tests in `tests/test_images.py` fail if that ever widens.
+- **Trade-offs to know:** the sandbox still has no internet, but a student's Makefile can now call `docker`, and containers on the
+  daemon *do* have internet (Dockerfiles install packages). If the daemon cannot start on your machine, everything else still
+  works and the Environment check says "Docker client is there but no daemon answers". To turn it off, delete the `dind` service
+  and the two `DOCKER_HOST` lines from `docker-compose.yml`.
+
 ## Claude in a terminal, and the one-click review through it
 
 Three containers run: `web` (the app), `sandbox` (builds and runs student code, no network) and `terminal` (the

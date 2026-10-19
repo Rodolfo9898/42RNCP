@@ -62,3 +62,27 @@ def test_request_validation(runner, tmp_path):
     ):
         with pytest.raises(ValueError):
             runner.parse_request(bad)
+
+
+def load_runner(tmp_path, monkeypatch, **env):
+    monkeypatch.setenv("WORKSPACE", str(tmp_path))
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    spec = importlib.util.spec_from_file_location("runner_env_test", RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_no_docker_daemon_address_is_passed_on_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    runner = load_runner(tmp_path, monkeypatch)
+    assert "DOCKER_HOST" not in runner.ENV and runner.ENV["DOCKER_CONFIG"] == "/tmp/.docker"
+    res = runner.run([sys.executable, "-c", "import os; print(os.environ.get('DOCKER_HOST'))"], tmp_path, 10, "")
+    assert res["stdout"].strip() == "None"
+
+
+def test_a_daemon_address_set_for_the_runner_reaches_the_commands_it_runs(tmp_path, monkeypatch):
+    runner = load_runner(tmp_path, monkeypatch, DOCKER_HOST="tcp://dind:2375")
+    res = runner.run([sys.executable, "-c", "import os; print(os.environ.get('DOCKER_HOST'))"], tmp_path, 10, "")
+    assert res["stdout"].strip() == "tcp://dind:2375"

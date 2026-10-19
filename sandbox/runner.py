@@ -26,7 +26,12 @@ ENV = {
     "HOME": "/tmp",
     "LANG": "C.UTF-8",
     "TMPDIR": "/tmp",
+    "DOCKER_CONFIG": "/tmp/.docker",
 }
+# The sandbox has a Docker client but no daemon. If an operator deliberately points the runner at one, commands run
+# by the review can use it; nothing is passed on otherwise (and the host's socket is never mounted).
+if os.environ.get("DOCKER_HOST"):
+    ENV["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
 
 
 def _limits() -> None:

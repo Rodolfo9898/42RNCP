@@ -1,7 +1,5 @@
-import os
 import stat
 import time
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -387,7 +385,7 @@ def test_the_exact_name_wins_and_a_review_like_name_beats_other_new_files(env, t
 
 
 def test_files_that_were_already_there_are_not_mistaken_for_the_report(env, tmp_path):
-    workdir = live(tmp_path)                       # README.md is in the baseline (it is the student's)
+    live(tmp_path)                                 # README.md is in the baseline (it is the student's)
     got = terminal.read_review("sid-777777")
     assert got == {"found": False, "text": "", "name": "", "new_files": []}
 
@@ -415,3 +413,34 @@ def test_the_live_terminal_records_its_baseline_and_forgets_it(env):
             break
         time.sleep(0.1)
     assert "sess-base01" not in terminal._baselines
+
+
+# ---------------------------------------------------------------- the terminal container's own environment check
+
+
+def test_child_env_hands_on_the_docker_daemon_address_only_when_set(env, monkeypatch):
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    assert "DOCKER_HOST" not in terminal.child_env()
+    monkeypatch.setenv("DOCKER_HOST", "tcp://dind:2375")
+    assert terminal.child_env()["DOCKER_HOST"] == "tcp://dind:2375"
+    assert terminal.child_env()["DOCKER_CONFIG"].endswith("/.docker")
+    assert "TERMINAL_TOKEN" not in terminal.child_env() and "ANTHROPIC_API_KEY" not in terminal.child_env()
+
+
+def test_selftest_needs_the_token(env):
+    client = TestClient(terminal.app)
+    assert client.get("/selftest").status_code == 401
+    assert client.get("/selftest", headers={"x-terminal-token": "no"}).status_code == 401
+
+
+@pytest.mark.skipif(not (__import__("shutil").which("make") and __import__("shutil").which("cc") and __import__("shutil").which("c++")),
+                    reason="needs make, cc and c++")
+def test_selftest_really_builds_and_runs_inside_the_terminals_environment(env, monkeypatch):
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    got = TestClient(terminal.app).get("/selftest", headers={"x-terminal-token": TOKEN}).json()["tools"]
+    named = {t["name"]: t for t in got}
+    assert named["claude"]["ok"] and named["claude"]["required"]            # the stub claude answers --version
+    assert named["gdb"]["required"] is False                                # an extra, only in this container
+    for step in ("C compiler (cc)", "C++ compiler (c++)", "make", "build C and C++ with make", "run the C program", "run the C++ program"):
+        assert named[step]["ok"], named[step]
+    assert list(env.scratch.iterdir()) == []                               # the scratch build is cleaned up

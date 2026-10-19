@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -21,12 +22,13 @@ from . import improve as improve_mod
 from . import repo as repo_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
-from .prompts import build_review_prompt, manual_items
+from .prompts import build_review_prompt, find_docker_files, manual_items
 from .checks import VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
 from .pdfread import read_pages
 from .report import render_markdown, summarize
-from .sandbox import Sandbox
+from .sandbox import Sandbox, SandboxError, sandbox_selftest
+from .selftest import summarize as selftest_summary
 from .spec import parse_subject
 from .models import AIEvent, AIState
 from .store import RepoMeta, Session, Store, Subject, safe_filename
@@ -108,6 +110,46 @@ def view(session: Session) -> dict:
 def health() -> dict:
     return {"status": "ok", "sandbox": bool(sandbox and sandbox.healthy()),
             "llm": {"configured": ai_mod.configured(), "model": ai_mod.model_name(), "provider": ai_mod.provider(), "host": ai_mod.endpoint_host()}}
+
+
+@app.get("/api/environment")
+def environment(deep: bool = False) -> dict:
+    """Can the sandbox AND claude's terminal really build and run things? C, C++, make, docker (client and daemon).
+    `deep` also builds and runs a tiny Dockerfile on the separate daemon (needs internet, so only on request)."""
+    now = time.monotonic()
+    cached = _environment_cache.get(deep)
+    if cached and now - cached[0] < 20:
+        return cached[1]
+    answer: dict = {}
+    if sandbox is None:
+        answer["sandbox"] = {"available": False, "tools": [], "summary": selftest_summary([]), "error": "the sandbox is not configured"}
+    else:
+        try:
+            tools = sandbox_selftest(sandbox, WORKSPACE, deep=deep)
+            answer["sandbox"] = {"available": True, "tools": tools, "summary": selftest_summary(tools)}
+        except (SandboxError, OSError) as exc:
+            answer["sandbox"] = {"available": False, "tools": [], "summary": selftest_summary([]), "error": str(exc)}
+    if not (TERMINAL_URL and TERMINAL_TOKEN):
+        answer["terminal"] = {"available": False, "tools": [], "summary": selftest_summary([]), "error": "the terminal is not configured"}
+    else:
+        try:
+            import httpx
+
+            with httpx.Client(trust_env=False, timeout=360 if deep else 90) as client:
+                response = client.get(f"{TERMINAL_URL}/selftest", params={"deep": deep}, headers={"x-terminal-token": TERMINAL_TOKEN})
+            response.raise_for_status()
+            tools = response.json()["tools"]
+            answer["terminal"] = {"available": True, "tools": tools, "summary": selftest_summary(tools)}
+        except Exception as exc:
+            answer["terminal"] = {"available": False, "tools": [], "summary": selftest_summary([]), "error": f"could not reach the terminal service ({type(exc).__name__})"}
+    parts = [answer["sandbox"], answer["terminal"]]
+    answer["ready"] = all(p["available"] and p["summary"]["ready"] for p in parts)
+    answer["deep"] = deep
+    _environment_cache[deep] = (now, answer)
+    return answer
+
+
+_environment_cache: dict = {}
 
 
 @app.get("/api/library")
@@ -469,8 +511,10 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
         raise HTTPException(400, "run the checks first")
     session.review_items = manual_items(session.results)        # claude answers by these numbers
     store.save(session)
+    root = repo_dir(session)
+    docker_files = find_docker_files(p.as_posix() for p in repo_mod.tracked_files(root)) if root else []
     return build_review_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
-                               lang=session.lang(), results=session.results)
+                               lang=session.lang(), results=session.results, docker_files=docker_files)
 
 
 @app.get("/api/sessions/{session_id}/review-prompt")

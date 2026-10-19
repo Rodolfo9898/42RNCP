@@ -60,3 +60,14 @@ class Sandbox:
         if r.status_code != 200:
             raise SandboxError(f"sandbox refused the command: {r.text}")
         return ExecResult(**r.json())
+
+
+def sandbox_selftest(sandbox: Sandbox, workspace: Path, *, deep: bool = False) -> list[dict]:
+    """The shared self-test, run inside the sandbox container through its runner."""
+    from .selftest import Outcome, run_selftest
+
+    def run(argv: list[str], cwd: Path, timeout: float) -> Outcome:
+        res = sandbox.exec(argv, cwd, timeout=timeout)
+        return Outcome(res.rc, res.stdout, res.stderr, res.timed_out)
+
+    return run_selftest(run, workspace / "_selftest", deep=deep)

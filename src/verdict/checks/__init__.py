@@ -124,7 +124,7 @@ class Ctx:
 Checker = Callable[[Ctx, Rule], Iterable[CheckResult]]
 CHECKERS: dict[str, tuple[int, Checker]] = {}
 
-PHASE_STATIC, PHASE_BUILD, PHASE_ANALYSIS, PHASE_RUNTIME, PHASE_FINAL = range(5)
+PHASE_STATIC, PHASE_BUILD, PHASE_ANALYSIS, PHASE_RUNTIME = range(4)
 
 
 def checker(kind: str, phase: int) -> Callable[[Checker], Checker]:

@@ -3,6 +3,9 @@
 # can build and run the student's project itself instead of only reading it. Keep the packages in step with sandbox/Dockerfile.
 
 # ---- stage 1: claude (Claude Code), pinned
+# Which image the Docker client is copied from (global ARG: it must come before the first FROM).
+ARG DOCKER_CLI_IMAGE=docker:cli
+
 FROM node:22-slim AS claude
 ARG CLAUDE_CODE_VERSION=2.1.303
 RUN npm install -g --prefix /opt/claude "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
@@ -23,6 +26,10 @@ RUN --mount=type=ssh fetch-norminette
 RUN for po in /src/norminette/locale/*/LC_MESSAGES/norminette.po; do msgfmt "$po" -o "${po%.po}.mo"; done \
     && pip wheel --no-deps --wheel-dir /dist /src
 
+# ---- the Docker client (docker, docker compose) from the official image. A CLIENT only: there is deliberately no daemon here
+# and the host's /var/run/docker.sock is never mounted (that would give student code root on your machine).
+FROM ${DOCKER_CLI_IMAGE} AS dockercli
+
 # ---- stage 3: the terminal service
 FROM python:3.14-slim
 
@@ -35,10 +42,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ripgrep build-essential make valgrind gdb libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+RUN docker --version && docker compose version
+
 COPY --from=norminette /dist /tmp/dist
 RUN pip install --no-cache-dir /tmp/dist/*.whl flake8 \
     && rm -rf /tmp/dist \
     && norminette --version
+
+RUN cc --version | head -1 && c++ --version | head -1 && make --version | head -1
 
 RUN useradd --create-home --home-dir /home/term --uid 1000 term \
     && mkdir -p /projects /scratch /home/term/.claude \

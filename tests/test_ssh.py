@@ -1,4 +1,3 @@
-import os
 import socket
 import stat
 import subprocess

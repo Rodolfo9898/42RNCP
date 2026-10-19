@@ -20,7 +20,6 @@ from .checks import VERDICT_MARKER
 from .models import AIReview, AIState, CheckResult, ClaudeReport, Evidence, Improvement
 
 ORDER = ("fail", "warn", "manual", "skipped", "pass")
-ASSESSMENT_LABELS = {"likely_ok": "likely ok", "likely_problem": "likely a problem", "unclear": "unclear", "not_applicable": "not applicable"}
 AI_NOTE = ("> Written by an AI model ({model}) from a bounded view of the repository. It is advisory and unverified: "
            "it never changes the result, and file/line citations are checked against what the model was shown.")
 CATEGORY_TITLES = {"structure": "Structure", "code": "Code", "logic": "Logic", "readability": "Readability"}

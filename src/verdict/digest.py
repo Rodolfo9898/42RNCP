@@ -15,7 +15,6 @@ from .repo import tracked_files
 
 MAX_FILE_BYTES = 300_000
 MAX_TREE = 400
-TEXT_NAMES = {"makefile", "dockerfile", "readme", "license", ".gitignore"}
 
 
 @dataclass

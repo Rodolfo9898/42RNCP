@@ -116,7 +116,6 @@ def merged_document():
         verdict=ClaudeVerdict(decision="do not pass", reason="The README is missing and strchr is wrong."),
         improvements=[Improvement(category="code", priority="high", title="Fix strchr", detail="Compare as char.", evidence=[Evidence(file="ft_strchr.c", line=20)], source="ai")],
         problems=["Claude did not answer 1 of 6 requirement(s): #5."])
-    static = [Improvement(category="structure", priority="low", title="A heuristic suggestion")]
     return render_markdown(repo=None, subjects=["libft.pdf"], results=results, improvements=claude.improvements, ai=ai,
                            claude_review="# prose that must not be repeated", claude=claude, claude_file="claude-review.md", project="libft")
 

@@ -268,7 +268,10 @@ async function startAi() {
   const files = session.repo ? session.repo.path : "the repository";
   const background = () => guarded(async () => { closeDialog(); setSession(await post(`sessions/${sid}/ai`)); showTab("overview"); poll(); });
   if (llm.provider === "claude-cli") {
+    const envLine = h("p", { class: "hint" }, "Checking the environment…");
+    environmentHint(envLine);
     dialog("Ask claude to review what the checks could not?", h("div", {},
+      envLine,
       h("p", {}, "claude will receive a prompt built from this run: what the scripts verified (so it does not redo it), and everything they ",
         h("strong", {}, "could not"), " judge: the subject requirements that need a human, plus correctness, error handling, memory, design and readability."),
       h("p", {}, h("strong", {}, "In the terminal: "), "you watch it work, it asks before running anything, and you can answer or ask follow-up questions."),
@@ -512,6 +515,60 @@ async function refreshVerdict(show) {
   if (show) showTab("verdict.md"); else showTab(activeTab);
 }
 
+
+
+// ------------------------------------------------------------------ environment check (sandbox + claude's terminal)
+
+function environmentTable(title, part) {
+  const rows = part.tools.map((t) => h("tr", { class: t.ok ? "ok" : (t.required ? "bad" : "warn") },
+    h("td", { class: "mark" }, t.ok ? "✔" : (t.required ? "✖" : "–")), h("td", {}, t.name), h("td", { class: "detail" }, t.detail)));
+  return h("div", { class: "env-part" }, h("h4", {}, title),
+    part.available ? h("table", { class: "env" }, h("tbody", {}, rows)) : h("p", { class: "warning" }, part.error || "Not available."));
+}
+
+function environmentSummary(env) {
+  const issues = [];
+  for (const [label, part] of [["sandbox", env.sandbox], ["claude's terminal", env.terminal]]) {
+    if (!part.available) { issues.push(`${label}: ${part.error || "not available"}`); continue; }
+    const s = part.summary;
+    if (!s.basics_ok) issues.push(`${label}: ${s.failed.filter((n) => !n.startsWith("docker")).join(", ")} not working`);
+    if (s.docker_daemon_down) issues.push(`${label}: Docker client is there but no daemon answers, so a student's Dockerfile cannot be built or run`);
+    else if (!s.docker_ok) issues.push(`${label}: ${s.failed.filter((n) => n.startsWith("docker")).join(", ")} not working`);
+  }
+  return issues;
+}
+
+async function openEnvironment(deep = false) {
+  const status = h("div", {}, h("p", { class: "hint" }, deep
+    ? "Building and running a tiny Dockerfile… this can take a minute (it downloads a base image)."
+    : "Compiling and running a C and a C++ program through make, and asking the Docker daemon… (a few seconds)"));
+  dialog("Environment check", status, [h("button", { onclick: closeDialog }, "Close")]);
+  let env;
+  try { env = await api(`environment?deep=${deep}`); } catch (err) { status.replaceChildren(h("p", { class: "warning" }, err.message)); return; }
+  const issues = environmentSummary(env);
+  status.replaceChildren(
+    env.ready
+      ? h("p", { class: "env-ok" }, `✅ Ready. The sandbox and claude's terminal can compile C and C++, run make and use Docker${env.deep ? ", and build and run a Dockerfile" : ""}.`)
+      : h("div", { class: "warning" }, h("strong", {}, "Not ready:"), h("ul", {}, issues.map((i) => h("li", {}, i)))),
+    environmentTable("Sandbox (builds and runs the checks)", env.sandbox),
+    environmentTable("Claude's terminal (where claude works)", env.terminal),
+    h("p", { class: "hint" }, "Only ✖ items stop the environment from being ready. Anything extra a project needs should come from the Dockerfile the student ships."));
+  $("#dialog .buttons").replaceChildren(
+    h("button", { onclick: closeDialog }, "Close"),
+    h("button", { onclick: () => guarded(() => openEnvironment(false)) }, "Run again"),
+    h("button", { class: env.deep ? "" : "primary", onclick: () => guarded(() => openEnvironment(true)) }, "Also test a docker build (needs internet)"));
+}
+
+// One line inside the review dialog, so a missing tool is seen before claude starts.
+async function environmentHint(line) {
+  try {
+    const env = await api("environment");
+    const issues = environmentSummary(env);
+    line.className = env.ready ? "env-ok" : "warning";
+    line.replaceChildren(env.ready ? "✅ Environment ready: make, C, C++ and Docker all work for claude."
+      : `⚠ Environment problem: ${issues.join("; ")}. `, h("button", { class: "linklike", onclick: () => guarded(() => openEnvironment(false)) }, "Details"));
+  } catch { line.textContent = ""; }
+}
 
 // ------------------------------------------------------------------ claude terminal (xterm.js <-> PTY in the terminal container)
 
@@ -806,6 +863,7 @@ async function poll() {
 $("#btn-upload").onclick = () => $("#file-input").click();
 $("#file-input").onchange = (ev) => { guarded(() => uploadFiles(ev.target.files)); ev.target.value = ""; };
 $("#btn-library").onclick = () => guarded(openLibrary);
+$("#btn-env").onclick = () => guarded(() => openEnvironment(false));
 $("#btn-clone").onclick = () => guarded(openClone);
 $("#btn-run").onclick = () => guarded(run);
 $("#btn-ai").onclick = () => guarded(startAi);

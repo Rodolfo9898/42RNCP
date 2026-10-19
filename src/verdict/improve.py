@@ -13,7 +13,6 @@ from pathlib import Path
 from .checks import Ctx, strip_code
 from .models import Evidence, Improvement
 
-C_LIKE = {".c", ".h", ".cpp", ".hpp", ".cc", ".tpp", ".ipp"}
 LONG_FUNCTION = 40
 LONG_FILE = 500
 LONG_LINE = 120
@@ -133,11 +132,9 @@ def code_and_readability(ctx: Ctx) -> Iterable[Improvement]:
     unsafe: list[Evidence] = []
     commented_code: list[Evidence] = []
     todo: list[Evidence] = []
-    total_lines = 0
     for rel in sources:
         raw = ctx.read(rel)
         raw_lines = raw.splitlines()
-        total_lines += len(raw_lines)
         if len(raw_lines) > LONG_FILE:
             long_files.append((len(raw_lines), rel.as_posix()))
         code = strip_code(raw)
