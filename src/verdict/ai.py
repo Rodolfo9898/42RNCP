@@ -39,7 +39,7 @@ def provider() -> str:
 
 def model_name() -> str:
     if provider() == "claude-cli":
-        return os.environ.get("LLM_MODEL", "").strip() or "account default"
+        return os.environ.get("CLAUDE_MODEL", "").strip() or "account default"      # (never LLM_MODEL: that names another backend's model)
     if provider() == "openai":
         return os.environ.get("LLM_MODEL", "").strip()
     return os.environ.get("LLM_MODEL") or DEFAULT_MODEL
@@ -75,7 +75,7 @@ def configured() -> bool:
 
 def make_client(repo: str = "") -> Backend:
     if provider() == "claude-cli":
-        model = os.environ.get("LLM_MODEL", "").strip()
+        model = os.environ.get("CLAUDE_MODEL", "").strip()
         return ClaudeCliBackend(os.environ["TERMINAL_URL"], os.environ["TERMINAL_TOKEN"], repo, model)
     if provider() == "openai":
         return OpenAIBackend(os.environ["LLM_BASE_URL"].strip(), os.environ.get("LLM_API_KEY", "").strip(), model_name(),

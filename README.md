@@ -8,6 +8,9 @@ ssh-add            # clones use your ssh-agent; the key is never copied into a c
 make run           # http://localhost:8000
 ```
 
+Settings live in `.env` (never committed). `make run` creates it if it is missing; to change options, start from
+`.env.example` (`cp .env.example .env`): it says what is required, what is recommended and what you can leave out.
+
 Put subject PDFs in `samples/` to pick them from **Library…** in the UI, or upload them directly.
 Clone with an SSH URL, e.g. `git@github.com:user/repo.git`.
 
@@ -104,7 +107,8 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 
 - **⌨ Claude** opens a real terminal tab on the cloned repository. The first time, type `/login` inside claude and
   sign in with your Claude account; the login is kept in the `claude-home` Docker volume (`make fclean` deletes it).
-- **✨ AI review** (with `LLM_PROVIDER=claude-cli` in `.env`) offers two ways, both using your Claude login:
+- **✨ AI review** (with `LLM_PROVIDER=claude-cli` in `.env`; `CLAUDE_MODEL` optionally names a claude model, and no other `LLM_*`
+  setting is read) offers two ways, both using your Claude login:
   - **Review in the terminal:** the Claude tab opens and claude starts with a prompt built from this run. It lists what the
     scripts verified (so claude does not redo it) and asks claude to judge what they could not: the subject requirements that
     need a human, plus correctness on edge cases, error handling, memory, design and readability. Each point must cite

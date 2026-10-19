@@ -145,7 +145,7 @@ def test_batches_are_announced_and_sized_for_an_agent():
 
 
 def test_configuration(monkeypatch):
-    for name in ("TERMINAL_URL", "TERMINAL_TOKEN", "LLM_MODEL", "LLM_BASE_URL", "ANTHROPIC_API_KEY"):
+    for name in ("TERMINAL_URL", "TERMINAL_TOKEN", "LLM_MODEL", "CLAUDE_MODEL", "LLM_BASE_URL", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LLM_PROVIDER", "claude-cli")
     assert ai.provider() == "claude-cli" and not ai.configured()
@@ -154,5 +154,17 @@ def test_configuration(monkeypatch):
     assert ai.configured() and ai.model_name() == "account default" and "Claude" in ai.endpoint_host()
     made = ai.make_client(repo="42/ps")
     assert isinstance(made, ai.ClaudeCliBackend) and made.repo == "42/ps" and made.model == ""
-    monkeypatch.setenv("LLM_MODEL", "sonnet")
-    assert ai.make_client(repo="x").model == "sonnet"
+    monkeypatch.setenv("CLAUDE_MODEL", "sonnet")
+    assert ai.make_client(repo="x").model == "sonnet" and ai.model_name() == "sonnet"
+
+
+def test_another_backends_model_name_never_reaches_claude(monkeypatch):
+    """A leftover LLM_MODEL=ministral-14b-latest (for an OpenAI-compatible server) used to be passed as claude's --model."""
+    for name in ("CLAUDE_MODEL", "LLM_BASE_URL", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "claude-cli")
+    monkeypatch.setenv("TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setenv("TERMINAL_TOKEN", "tok")
+    monkeypatch.setenv("LLM_MODEL", "ministral-14b-latest")
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "llama-instant")
+    assert ai.model_name() == "account default" and ai.make_client(repo="x").model == ""

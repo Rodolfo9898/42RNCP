@@ -113,6 +113,6 @@ def subject_pdf() -> bytes:
 @pytest.fixture(autouse=True)
 def hermetic_ai_environment(monkeypatch):
     """Tests never depend on (or leak) the developer's real AI configuration."""
-    for name in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_MAX_CHARS", "LLM_STREAM", "LLM_FALLBACK_MODELS",
+    for name in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_MAX_CHARS", "LLM_STREAM", "LLM_FALLBACK_MODELS", "CLAUDE_MODEL",
                  "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TERMINAL_URL", "TERMINAL_TOKEN"):
         monkeypatch.delenv(name, raising=False)
