@@ -1,0 +1,95 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      PROJECTS_DIR: /projects
+      # Optional AI review (sends repository source to Anthropic). Leave unset to keep everything local.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+      LLM_STREAM: ${LLM_STREAM:-}
+      TERMINAL_URL: http://terminal:8002
+      TERMINAL_TOKEN: ${TERMINAL_TOKEN:?run `make run` (it creates TERMINAL_TOKEN in .env)}
+      LLM_MAX_CHARS: ${LLM_MAX_CHARS:-}
+      # Clones use SSH through your forwarded ssh-agent; no private key is copied into the container.
+      SSH_AUTH_SOCK: /run/host-services/ssh-auth.sock
+    volumes:
+      - workspace:/workspace
+      - ${PROJECTS_DIR:-./projects}:/projects
+      - ./samples:/samples:ro
+      - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
+    networks: [default, sandbox-net]
+    depends_on:
+      sandbox:
+        condition: service_healthy
+      terminal:
+        condition: service_started
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]  # only for the entrypoint to drop from root to uid 1000
+    security_opt: ["no-new-privileges:true"]
+
+  # Builds and runs the code under review. No outbound network: it is only on an
+  # internal network shared with `web`.
+  sandbox:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile
+    environment:
+      ALLOWED_ROOTS: /workspace:/projects
+    volumes:
+      - workspace:/workspace
+      - ${PROJECTS_DIR:-./projects}:/projects
+    networks: [sandbox-net]
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # `claude` for the in-app terminal and the one-click review. It gets internet (to reach Anthropic) but none of the
+  # web app's secrets: no .env, no ssh-agent, no other sessions. It sees the projects folder read-only and works
+  # on throw-away copies in /scratch. Your Claude login lives in the `claude-home` volume.
+  terminal:
+    build:
+      context: .
+      dockerfile: terminal/Dockerfile
+    environment:
+      TERMINAL_TOKEN: ${TERMINAL_TOKEN:?run `make run` (it creates TERMINAL_TOKEN in .env)}
+    volumes:
+      - ${PROJECTS_DIR:-./projects}:/projects:ro
+      - claude-home:/home/term
+    tmpfs:
+      - /scratch:exec,size=1g,uid=1000,gid=1000   # `exec`: claude builds and runs the project here
+      - /tmp:size=256m,uid=1000,gid=1000
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+networks:
+  sandbox-net:
+    internal: true
+
+volumes:
+  workspace:
+  claude-home:

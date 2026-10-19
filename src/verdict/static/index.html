@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>verdict</title>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="titlebar">
+    <div class="brand">verdict</div>
+    <div class="actions">
+      <button id="btn-library" title="Pick subjects bundled with this install">Library…</button>
+      <button id="btn-upload" title="Upload one or more subject PDFs">Upload PDFs</button>
+      <button id="btn-clone" title="Clone the repository to review">Clone repo</button>
+      <button id="btn-run" class="primary" title="Run every check">▶ Run checks</button>
+      <button id="btn-terminal" title="Open claude in a terminal on this repository">⌨ Claude</button>
+      <button id="btn-ai" title="Ask an AI model to describe the repository and weigh the manual-review items">✨ AI review</button>
+      <button id="btn-export" title="Download verdict.md">⬇ verdict.md</button>
+    </div>
+    <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
+  </header>
+
+  <aside id="sidebar">
+    <section>
+      <h2>Subjects <span id="subjects-count" class="badge"></span></h2>
+      <ul id="subjects" class="list"></ul>
+      <p class="hint" id="subjects-hint">Drop PDFs here, or use Upload / Library.</p>
+    </section>
+    <section class="grow">
+      <h2>Repository</h2>
+      <div id="tree" class="tree"></div>
+      <p class="hint" id="tree-hint">No repository cloned yet.</p>
+    </section>
+  </aside>
+
+  <main id="editor">
+    <div id="tabs"></div>
+    <div id="views"></div>
+  </main>
+
+  <section id="panel">
+    <div id="panel-tabs">
+      <button data-tab="checks" class="active">Checklist</button>
+      <button data-tab="improvements">Improvements</button>
+      <button data-tab="rules">Subject rules</button>
+      <div class="filters" id="filters"></div>
+    </div>
+    <div id="panel-body"></div>
+  </section>
+
+  <footer id="statusbar">
+    <span id="st-repo">no repository</span>
+    <span id="st-ssh"></span>
+    <span id="st-sandbox"></span>
+    <span class="spacer"></span>
+    <span id="st-lang"></span>
+    <span id="st-state"></span>
+  </footer>
+
+  <div id="modal" hidden><div class="dialog" id="dialog"></div></div>
+  <div id="toast" hidden></div>
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
