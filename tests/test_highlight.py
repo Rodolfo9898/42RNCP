@@ -85,3 +85,37 @@ def test_subprocess_wrapper_gives_up_instead_of_hanging(monkeypatch):
     start = time.monotonic()
     assert highlight.highlight("a.c", "int a;\n") is None
     assert time.monotonic() - start < 3
+
+
+ELIOM = """\
+[%%shared
+  open Eliom_content.Html.D
+]
+let%server main = Eliom_service.create ()
+let%client alert s = Js.string s
+let%shared f x = [%client ~%x + 1]
+{client{ let old_style = 42 }}
+(* [%client in a comment *)
+"""
+
+
+def _classes(result):
+    return {text: cls for line in result["lines"] for cls, text in line}
+
+
+def test_eliom_files_are_highlighted_as_eliom():
+    for name in ("page.eliom", "page.eliomi"):
+        result = highlight.tokenize(name, ELIOM)
+        assert result is not None and result["language"] == "Eliom"
+
+
+def test_eliom_extensions_are_marked_and_ocaml_still_works():
+    result = highlight.tokenize("page.eliom", ELIOM)
+    by_text = _classes(result)
+    assert by_text["[%%"] == "pp" and by_text["shared"] == "k"
+    assert by_text["%"] == "pp" and by_text["client"] == "k"
+    assert by_text["~%x"] == "pp"
+    assert by_text["{client{"] == "pp"
+    assert by_text["open"] == "k"                       # plain OCaml is untouched
+    assert "\n".join("".join(t for _, t in line) for line in result["lines"]) == ELIOM
+    assert by_text["(* [%client in a comment *)"] == "c"    # comments win over the extensions

@@ -1,24 +1,9 @@
 "use strict";
 
 // Everything shown comes from untrusted input (PDFs, repositories): build DOM with
-// textContent only, never innerHTML.
+// textContent only, never innerHTML. Shared helpers (h, markdown, rainbow brackets) are in lib.js.
 
 const $ = (sel, root = document) => root.querySelector(sel);
-
-function h(tag, props = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (value == null || value === false) continue;
-    if (key === "class") el.className = value;
-    else if (key.startsWith("on")) el.addEventListener(key.slice(2), value);
-    else el.setAttribute(key, value === true ? "" : value);
-  }
-  for (const child of children.flat()) {
-    if (child == null || child === false) continue;
-    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return el;
-}
 
 const ICON = { fail: "✖", warn: "!", manual: "?", skipped: "–", pass: "✔" };
 const ORDER = ["fail", "warn", "manual", "skipped", "pass"];
@@ -412,105 +397,6 @@ function renderRules() {
 }
 
 
-// ------------------------------------------------------------------ markdown (safe: DOM nodes only)
-
-function inlineMarkdown(source) {
-  const out = [];
-  let buffer = "";
-  const flush = () => { if (buffer) { out.push(buffer); buffer = ""; } };
-  let i = 0;
-  while (i < source.length) {
-    const c = source[i];
-    if (c === "\\" && i + 1 < source.length) { buffer += source[i + 1]; i += 2; continue; }
-    if (c === "`") {
-      const ticks = source.slice(i).match(/^`+/)[0];
-      const end = source.indexOf(ticks, i + ticks.length);
-      if (end > -1) {
-        flush();
-        out.push(h("code", {}, source.slice(i + ticks.length, end).trim()));
-        i = end + ticks.length;
-        continue;
-      }
-    }
-    if (source.startsWith("**", i)) {
-      const end = source.indexOf("**", i + 2);
-      if (end > -1) { flush(); out.push(h("strong", {}, inlineMarkdown(source.slice(i + 2, end)))); i = end + 2; continue; }
-    }
-    if (c === "_" && (i === 0 || /\s|\(/.test(source[i - 1])) && source[i + 1] && !/\s/.test(source[i + 1])) {
-      let end = i + 1;
-      while ((end = source.indexOf("_", end)) > -1 && (source[end - 1] === "\\" || /\s/.test(source[end - 1]))) end++;
-      if (end > -1) { flush(); out.push(h("em", {}, inlineMarkdown(source.slice(i + 1, end)))); i = end + 1; continue; }
-    }
-    buffer += c;
-    i++;
-  }
-  flush();
-  return out;
-}
-
-function renderMarkdown(text) {
-  const root = h("div", { class: "markdown" });
-  const lines = text.split("\n");
-  const isItem = (l) => /^\s*- /.test(l);
-  const fenceOf = (l) => (l.match(/^\s*(`{3,})\s*$/) || [])[1];
-  const takeFence = (start) => {
-    const fence = fenceOf(lines[start]);
-    const body = [];
-    let j = start + 1;
-    while (j < lines.length && !(fenceOf(lines[j]) && fenceOf(lines[j]).length >= fence.length)) body.push(lines[j++].replace(/^ {0,2}/, ""));
-    return { node: h("pre", { class: "log" }, body.join("\n")), next: j + 1 };
-  };
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (!line.trim() || line.startsWith("<!--")) { i++; continue; }
-    if (fenceOf(line)) { const { node, next } = takeFence(i); root.append(node); i = next; continue; }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) { root.append(h(`h${heading[1].length}`, {}, inlineMarkdown(heading[2]))); i++; continue; }
-    if (line.startsWith("|") && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1] || "")) {
-      const cells = (l) => l.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((c) => c.trim());
-      const head = cells(line);
-      const rows = [];
-      i += 2;
-      while (i < lines.length && lines[i].startsWith("|")) rows.push(cells(lines[i++]));
-      root.append(h("table", {}, h("thead", {}, h("tr", {}, head.map((c) => h("th", {}, inlineMarkdown(c))))),
-        h("tbody", {}, rows.map((r) => h("tr", {}, r.map((c) => h("td", {}, inlineMarkdown(c))))))));
-      continue;
-    }
-    if (line.startsWith(">")) {
-      const quote = [];
-      while (i < lines.length && lines[i].startsWith(">")) quote.push(lines[i++].replace(/^>\s?/, ""));
-      root.append(h("blockquote", {}, inlineMarkdown(quote.join(" "))));
-      continue;
-    }
-    if (isItem(line)) {
-      const top = h("ul");
-      const stack = [{ depth: 0, list: top, last: null }];
-      while (i < lines.length && (isItem(lines[i]) || (fenceOf(lines[i]) && stack.at(-1).last))) {
-        if (fenceOf(lines[i])) { const { node, next } = takeFence(i); stack.at(-1).last.append(node); i = next; continue; }
-        const depth = Math.floor(lines[i].match(/^\s*/)[0].length / 2);
-        const li = h("li", {}, inlineMarkdown(lines[i].replace(/^\s*- /, "")));
-        while (stack.length > 1 && stack.at(-1).depth > depth) stack.pop();
-        if (depth > stack.at(-1).depth && stack.at(-1).last) {
-          const sub = h("ul");
-          stack.at(-1).last.append(sub);
-          stack.push({ depth, list: sub, last: null });
-        }
-        stack.at(-1).list.append(li);
-        stack.at(-1).last = li;
-        i++;
-        while (i < lines.length && !lines[i].trim() && isItem(lines[i + 1] || "")) i++;
-      }
-      root.append(top);
-      continue;
-    }
-    const para = [];
-    while (i < lines.length && lines[i].trim() && !isItem(lines[i]) && !/^(#{1,4}\s|>|\||`{3})/.test(lines[i])) para.push(lines[i++]);
-    root.append(h("p", {}, inlineMarkdown(para.join(" "))));
-  }
-  return root;
-}
-
 async function refreshVerdict(show) {
   if (!session.results.length) return;
   const text = await (await fetch(`/api/sessions/${sid}/verdict.md`)).text();
@@ -689,10 +575,14 @@ function closeTab(key) {
 // Highlighted files arrive as [class, text] pairs per line; build spans with textContent only.
 function sourceNodes(file, lines) {
   if (!file.tokens || file.tokens.length !== lines.length) return [file.content];
+  const tokens = rainbowEnabled(file.language) ? rainbow(file.tokens) : file.tokens;      // brackets coloured by nesting depth
   const nodes = [];
-  file.tokens.forEach((line, i) => {
-    for (const [cls, text] of line) nodes.push(cls ? h("span", { class: `t-${cls}` }, text) : text);
-    if (i < file.tokens.length - 1) nodes.push("\n");
+  tokens.forEach((line, i) => {
+    for (const [cls, text, level] of line) {
+      const classes = [cls && `t-${cls}`, level !== undefined && `rb rb-${level < 0 ? "x" : level}`].filter(Boolean).join(" ");
+      nodes.push(classes ? h("span", { class: classes }, text) : text);
+    }
+    if (i < tokens.length - 1) nodes.push("\n");
   });
   return nodes;
 }
@@ -702,19 +592,36 @@ async function openFile(path, line) {
   if (!tab) {
     const file = await api(`sessions/${sid}/file?path=${encodeURIComponent(path)}`);
     const view = h("div", { class: "view" });
+    let setMode = null;
     if (file.binary) view.append(h("div", { class: "notice" }, `${path} is a binary file (${file.size} bytes).`));
     else {
       const lines = file.content.split("\n");
-      if (file.truncated) view.append(h("div", { class: "notice" }, "File truncated to 1 MB."));
-      view.append(h("div", { class: "code" },
+      const notice = file.truncated ? h("div", { class: "notice" }, "File truncated to 1 MB.") : null;
+      const code = h("div", { class: "code" },
         h("div", { class: "gutter" }, lines.map((_, i) => i + 1).join("\n")),
-        h("pre", { class: "src" }, ...sourceNodes(file, lines))));
+        h("pre", { class: "src" }, ...sourceNodes(file, lines)));
+      if (isMarkdownPath(path)) {
+        const preview = h("div", { class: "md-preview" }, renderMarkdown(file.content));
+        const buttons = {
+          preview: h("button", { onclick: () => setMode("preview") }, "Preview"),
+          code: h("button", { onclick: () => setMode("code") }, "Code"),
+        };
+        setMode = (mode) => {
+          preview.hidden = mode !== "preview";
+          code.hidden = mode !== "code";
+          for (const [name, button] of Object.entries(buttons)) button.classList.toggle("active", name === mode);
+        };
+        appendNodes(view, h("div", { class: "md-bar" }, buttons.preview, buttons.code, h("span", {}, "Markdown")), notice, preview, code);
+      } else appendNodes(view, notice, code);
     }
     addTab(path, path.split("/").pop(), view);
     tab = tabs.get(path);
     tab.language = file.language || (file.binary ? "binary" : "plain text");
+    tab.setMode = setMode;
+    if (setMode) setMode(defaultViewMode(path, line));       // README.md opens rendered; a file:line reference opens the source
   }
   showTab(path);
+  if (line && tab.setMode) tab.setMode("code");
   tab.view.querySelectorAll(".hl").forEach((n) => n.remove());
   const code = $(".code", tab.view);
   if (line && code) {

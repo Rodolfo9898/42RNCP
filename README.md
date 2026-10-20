@@ -63,6 +63,13 @@ required functions must be present in the **built** `.a` (found with `nm`), not 
 
 - **Syntax highlighting:** the file viewer highlights every language Pygments knows (C, C++, Makefile, Python, shell,
   Dockerfile, YAML, JSON, Markdown, ...), tokenized in a throw-away subprocess with a timeout because repository files are untrusted.
+  `.eliom` / `.eliomi` files are OCaml plus Eliom's own syntax (`[%%shared ...]`, `let%client`, `[%client ...]`, `~%x`, old `{client{`).
+- **Rainbow brackets:** in the code view, `()`, `[]` and `{}` are coloured by nesting depth (six colours, then they cycle). A bracket
+  with no partner is red and underlined. Brackets inside strings and comments are left alone. Not applied to Markdown or plain text.
+- **Markdown opens rendered:** a `.md` file opens as a preview, with a **Preview / Code** switch. Opening it from a `file:line`
+  reference (for example a finding that points at README.md:12) goes straight to the code, because a line number only means something
+  there. The preview never interprets HTML, never loads images, and only makes `https:` and `mailto:` links clickable (relative links
+  and anchors are shown as plain text).
 
 ## AI review (optional)
 

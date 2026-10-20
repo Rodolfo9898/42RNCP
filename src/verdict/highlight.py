@@ -20,6 +20,7 @@ TIMEOUT = 6
 EXTRA_LEXERS = {
     ".tpp": "cpp", ".ipp": "cpp", ".cub": None, ".ft": None,
     ".mk": "make", ".conf": "ini", ".env": "bash", ".tpl": "html",
+    ".eliom": "eliom", ".eliomi": "eliom",
 }
 SPECIAL_NAMES = {"makefile": "make", "gnumakefile": "make", "dockerfile": "docker", ".gitignore": "text",
                  ".dockerignore": "text", ".bashrc": "bash", ".zshrc": "bash"}
@@ -45,6 +46,35 @@ def _short(token_type) -> str:
     return ""
 
 
+def _eliom_lexer():
+    """Eliom is OCaml plus a few extensions pygments has no lexer for: the `[%%shared ...]` sections, `let%client`
+    style annotations, `[%client ...]` expressions, `~%x` injections and the old `{client{ ... }}` sections. Those
+    are lexed first; everything else is left to the OCaml lexer."""
+    from pygments.lexer import bygroups, inherit
+    from pygments.lexers.ml import OcamlLexer
+    from pygments.token import Keyword, Name, Whitespace
+
+    side = r"(client|server|shared)\b"
+
+    class EliomLexer(OcamlLexer):
+        name = "Eliom"
+        aliases: list[str] = []
+        filenames: list[str] = []
+        mimetypes: list[str] = []
+        url = "https://ocsigen.org/eliom/"
+        tokens = {"root": [
+            (r"(\[%%?)(\s*)" + side, bygroups(Name.Decorator, Whitespace, Keyword.Declaration)),
+            (r"(\[%%?)(\s*)([A-Za-z_][\w.']*)", bygroups(Name.Decorator, Whitespace, Name.Decorator)),
+            (r"\b(let|and|module|open|type|val|external|exception|class|include|fun|function)(%)" + side,
+             bygroups(Keyword, Name.Decorator, Keyword.Declaration)),
+            (r"~%[A-Za-z_][\w']*", Name.Decorator),
+            (r"\{(?:shared|client|server)\{", Name.Decorator),
+            inherit,
+        ]}
+
+    return EliomLexer()
+
+
 def _lexer_for(filename: str, text: str):
     from pygments.lexers import get_lexer_by_name, get_lexer_for_filename, guess_lexer
     from pygments.util import ClassNotFound
@@ -55,6 +85,8 @@ def _lexer_for(filename: str, text: str):
         return get_lexer_by_name(SPECIAL_NAMES[lower])
     ext = "." + lower.rsplit(".", 1)[-1] if "." in lower else ""
     if ext in EXTRA_LEXERS:
+        if EXTRA_LEXERS[ext] == "eliom":
+            return _eliom_lexer()
         return get_lexer_by_name(EXTRA_LEXERS[ext]) if EXTRA_LEXERS[ext] else None
     try:
         return get_lexer_for_filename(name, text[:5000])

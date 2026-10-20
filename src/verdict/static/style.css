@@ -225,3 +225,24 @@ table.env td.mark { width: 18px; font-weight: 700; } table.env td.detail { color
 table.env tr.ok td.mark { color: var(--pass); } table.env tr.bad td.mark { color: var(--fail); } table.env tr.warn td.mark { color: var(--dim); }
 .env-ok { color: var(--pass); }
 button.linklike { background: none; border: 0; color: var(--manual); padding: 0; text-decoration: underline; cursor: pointer; }
+
+/* rainbow brackets: the colour is the nesting depth (6 levels, then it cycles); red = no partner */
+.rb { font-weight: 600; }
+.rb-0 { color: #ffd700; } .rb-1 { color: #da70d6; } .rb-2 { color: #179fff; }
+.rb-3 { color: #ff9f43; } .rb-4 { color: #7ee787; } .rb-5 { color: #ff6b9d; }
+.rb-x { color: #f44747; border-bottom: 1px solid #f44747; }
+
+/* markdown files open rendered */
+.code[hidden], .md-preview[hidden] { display: none; }
+.md-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--bg); border-bottom: 1px solid var(--border); color: var(--dim); font-size: 12px; }
+.md-bar button.active { background: var(--accent); color: #fff; }
+.md-bar span { margin-left: 8px; }
+.md-preview { padding: 0 28px 40px; }
+.markdown hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
+.markdown ol { padding-left: 24px; margin: 4px 0; }
+.markdown a { color: var(--manual); }
+.markdown del { color: var(--dim); }
+.markdown h4, .markdown h5, .markdown h6 { margin: 14px 0 4px; font-size: 13px; color: #fff; }
+.markdown pre.log[data-lang]::before { content: attr(data-lang); display: block; color: var(--dim); font-size: 11px; margin-bottom: 4px; }
+.md-image { color: var(--dim); font-style: italic; }
+.md-link-plain { text-decoration: underline dotted; text-underline-offset: 3px; }
