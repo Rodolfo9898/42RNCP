@@ -1,0 +1,2 @@
+VS Code Great Icons, https://github.com/EmmanuelBeziat/vscode-great-icons
+commit a82ff57880f53bf3e9920fccf6a1f6c5db605f44 (MIT, see LICENSE). Only icons/, icons.json and LICENSE are kept; served by the app, never fetched at runtime.

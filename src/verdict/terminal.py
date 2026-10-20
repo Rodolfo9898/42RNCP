@@ -7,8 +7,10 @@ Two endpoints, both reachable only from the web app (shared token, internal netw
 
 The container deliberately has no access to the web app's secrets (.env, ssh-agent, sessions) and sees the
 projects folder read-only. Repositories are untrusted, so `claude` never runs inside the original: it runs
-in a scratch copy from which the files that configure or instruct claude (.claude/, CLAUDE.md, .mcp.json),
-all symlinks and .git are left out. Anything an approved command does affects only that copy.
+in a scratch copy from which the files that configure or instruct claude (.claude/, CLAUDE.md, .mcp.json) and all
+symlinks are left out. The copy keeps the clone's .git, so git works in it, but never its hooks or its config: a fresh
+minimal config replaces it, so nothing in .git can make git run a program (core.fsmonitor, filters, aliases, ...).
+A .git anywhere deeper is left out. Anything an approved command does affects only that copy.
 """
 
 from __future__ import annotations
@@ -47,7 +49,9 @@ MAX_COPY_BYTES = 200 * 1024 * 1024
 MAX_COPY_FILES = 20_000
 REVIEW_FILE = "claude-review.md"
 MAX_REVIEW_BYTES = 200_000
-SKIPPED_NAMES = {".git", ".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".claude.json"}
+SKIPPED_NAMES = {".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".claude.json"}
+# Replaces .git/config in the copy: enough for git to read the history, nothing that runs a program.
+SAFE_GIT_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n"
 
 APPEND_PROMPT = (
     "You are helping a peer evaluator at the 42 programming school review a student's project. The current directory "
@@ -116,13 +120,17 @@ def sanitized_copy(source: Path) -> Path:
     destination = Path(tempfile.mkdtemp(prefix="repo-", dir=SCRATCH))
     total = count = 0
     for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in SKIPPED_NAMES and not (Path(dirpath) / d).is_symlink()]
         base = Path(dirpath).relative_to(source)
+        dirnames[:] = [d for d in dirnames if d not in SKIPPED_NAMES and not (Path(dirpath) / d).is_symlink()
+                       and not (d == ".git" and base != Path("."))         # only the clone's own .git ...
+                       and not (d == "hooks" and base == Path(".git"))]    # ... and never its hooks
         (destination / base).mkdir(parents=True, exist_ok=True)
         for name in filenames:
             path = Path(dirpath) / name
             if name in SKIPPED_NAMES or path.is_symlink() or not path.is_file():
                 continue
+            if base == Path(".git") and name == "config":
+                continue  # replaced below
             if base == Path(".") and name in GENERATED_VERDICT_NAMES and _is_ours(path):
                 continue  # claude judges the project afresh, not our previous verdict
             size = path.stat().st_size
@@ -130,6 +138,8 @@ def sanitized_copy(source: Path) -> Path:
             if count > MAX_COPY_FILES or total > MAX_COPY_BYTES:
                 raise ValueError("repository is too large to open in the terminal")
             shutil.copyfile(path, destination / base / name)
+    if (destination / ".git").is_dir():
+        (destination / ".git" / "config").write_text(SAFE_GIT_CONFIG)
     return destination
 
 

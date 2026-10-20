@@ -36,6 +36,7 @@ def test_clone_uses_ssh_agent_and_never_prompts(tmp_path, monkeypatch):
     assert cmd[-3:-1] == ["--", "git@github.com:user/repo.git"]
     assert "protocol.ssh.allow=always" in cmd and "protocol.allow=never" in cmd
     assert "core.hooksPath=/dev/null" in cmd
+    assert not any(arg.startswith("--depth") or arg.startswith("--shallow") for arg in cmd)    # a full clone, whole history
     env = kwargs["env"]
     assert env["SSH_AUTH_SOCK"] == "/run/agent.sock"
     assert "BatchMode=yes" in env["GIT_SSH_COMMAND"] and "StrictHostKeyChecking=accept-new" in env["GIT_SSH_COMMAND"]

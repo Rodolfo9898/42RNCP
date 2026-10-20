@@ -33,7 +33,9 @@ with different content is never replaced.
 C is detected when a subject says the project must be written in C or, when no subject names a language, when the
 repository has `.c` files and no C++ (vendored minilibx is ignored). The Norm then adds the norminette check and, as
 manual items, only the rules the Norm marks with (*), the ones norminette cannot check.
-Clone with an SSH URL, e.g. `git@github.com:user/repo.git`.
+Clone with an SSH URL, e.g. `git@github.com:user/repo.git`. The clone is a full git repository (whole history, with its
+`.git`), and git is installed in the sandbox and in claude's terminal: the checks' work copy and claude's copy are git
+repositories too (without hooks).
 
 ## Output
 
@@ -136,11 +138,13 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   design and readability. Each point must cite file:line, "unclear" is an accepted answer, and it asks before running
   anything. If a claude tab is already open, the prompt is pasted into it instead. claude saves its report as
   `claude-review.md` in its throw-away copy (you approve that one write); it is picked up automatically, or with
-  **💾 Save review to verdict.md** or by closing the tab, and merged into `verdict.md` between the improvements and the closing **Final verdict** section. The report is treated
-  as untrusted text (markup defused, headings demoted).
+  **💾 Save review to verdict.md** or by closing the tab, and merged into `verdict.md` between the improvements and the
+  closing **Final verdict** section. The report is treated as untrusted text (markup defused, headings demoted).
   Check Anthropic's terms for your plan before automating a subscription login this way.
 - **Safety:** claude never runs in the original repository. It runs in a throw-away copy (in memory, wiped when you close
-  the tab) from which `.git`, `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out, with `--setting-sources user`
+  the tab) from which `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out. It keeps the clone's `.git` (git
+  works there) but never its hooks or its config, which is replaced by a minimal one, so `.git` cannot make git run a
+  program. It runs with `--setting-sources user`
   so hooks and settings shipped in a student's repo are ignored. The interactive terminal asks before each command or edit;
   anything you approve affects only the copy. A student's repo can still try to talk the model into proposing something
   harmful, so read each request before approving it, and never approve one that reads `~/.claude` or sends data out.
@@ -182,3 +186,12 @@ docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; s
   not wrong behaviour. Per-project functional tests (sorting correctness for push_swap, etc.) are not written yet.
 - born2beroot, netpractice, inception and ft_transcendence are not repository checks; their rules are listed for manual review.
 - Dev: `uv sync && uv run pytest`. The sandbox-dependent checks are only fully exercised inside Docker.
+
+## Interface
+
+Laid out like VS Code: drag the sidebar's right edge or the bottom panel's top edge to resize them (sizes are remembered
+in your browser); the ⌄ button at the right of the panel hides it, and clicking a panel tab shows it again. The checklist
+follows `verdict.md`: a requirement claude has judged moves to where `verdict.md` lists it. File and folder icons are the
+[VS Code Great Icons](https://github.com/EmmanuelBeziat/vscode-great-icons) (MIT), bundled in
+`src/verdict/static/vendor/great-icons/` with their license and source commit; the terminal is
+[xterm.js](https://xtermjs.org) (MIT, `vendor/LICENSE-xterm`). Nothing is fetched from the internet at runtime.

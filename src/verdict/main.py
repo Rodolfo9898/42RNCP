@@ -803,10 +803,12 @@ def write_verdict(session: Session) -> None:
 
 def make_work_copy(session: Session, clone: Path) -> Path:
     """A disposable copy of the clone, where the checks build and run things. The clone itself is never built in,
-    so it always shows exactly what was committed (no .o files or binaries left over from a previous run)."""
+    so it always shows exactly what was committed (no .o files or binaries left over from a previous run).
+    The copy is a git repository too (its .git, without hooks), so git works in the sandbox."""
     work = WORKSPACE / session.id / "work"
     shutil.rmtree(work, ignore_errors=True)
-    shutil.copytree(clone, work, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    shutil.copytree(clone, work, symlinks=True,
+                    ignore=lambda folder, names: ["hooks"] if Path(folder) == clone / ".git" else [])
     return work
 
 

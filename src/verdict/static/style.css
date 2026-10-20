@@ -3,12 +3,13 @@
   --fg: #cccccc; --dim: #8b8b8b; --accent: #0e639c; --accent-h: #1177bb; --sel: #37373d;
   --fail: #f14c4c; --warn: #cca700; --pass: #89d185; --manual: #3794ff; --skip: #8b8b8b;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --side-w: 280px; --panel-h: 300px;    /* resizable (and remembered) like VS Code */
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
   background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif;
-  display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 36px 1fr 300px 24px;
+  display: grid; grid-template-columns: var(--side-w) 1fr; grid-template-rows: 36px 1fr var(--panel-h) 24px;
   grid-template-areas: "title title" "side editor" "side panel" "status status";
 }
 #titlebar { grid-area: title; background: var(--title); display: flex; align-items: center; gap: 16px; padding: 0 12px; border-bottom: 1px solid #000; }
@@ -43,6 +44,7 @@ button.primary:hover { background: var(--accent-h); }
 .tree .row.active { background: #094771; }
 .tree .twisty { width: 14px; text-align: center; color: var(--dim); font-size: 10px; flex: none; }
 .tree .children[hidden] { display: none; }
+.ficon { width: 16px; height: 16px; flex: none; margin-right: 6px; object-fit: contain; }
 
 #editor { grid-area: editor; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 #tabs { display: flex; background: var(--side); overflow-x: auto; flex: none; }
@@ -79,7 +81,18 @@ button.primary:hover { background: var(--accent-h); }
 #panel-tabs { display: flex; align-items: center; gap: 2px; padding: 0 8px; flex: none; border-bottom: 1px solid var(--border); }
 #panel-tabs > button { background: none; border-radius: 0; text-transform: uppercase; font-size: 11px; letter-spacing: .5px; color: var(--dim); padding: 6px 10px; border-bottom: 1px solid transparent; }
 #panel-tabs > button.active { color: #fff; border-bottom-color: var(--accent); }
-.filters { margin-left: auto; display: flex; gap: 4px; }
+.filters { display: flex; gap: 4px; }
+#panel-tabs > button.panel-toggle { font-size: 14px; padding: 2px 8px; margin-left: 6px; text-transform: none; }
+body.panel-min { --panel-h: 31px; }
+body.panel-min #panel-body { display: none; }
+
+/* drag handles: the sidebar's right edge and the panel's top edge */
+.resizer { position: fixed; z-index: 20; }
+.resizer:hover, .resizer.active { background: var(--accent); transition: background .1s .15s; }
+#side-resizer { top: 36px; bottom: 24px; left: calc(var(--side-w) - 2px); width: 5px; cursor: col-resize; }
+#panel-resizer { left: var(--side-w); right: 0; bottom: calc(24px + var(--panel-h) - 2px); height: 5px; cursor: row-resize; }
+body.panel-min #panel-resizer, body.term-focus #panel-resizer { display: none; }
+body.resizing { user-select: none; cursor: col-resize; }
 .chip { border-radius: 10px; padding: 1px 9px; background: none; border: 1px solid var(--border); font-size: 11px; }
 .chip.on { background: #3a3d41; }
 #panel-body { flex: 1; overflow: auto; }
@@ -194,7 +207,8 @@ a.page-link:hover { color: var(--manual); }
 /* terminal tab */
 .view.term { display: flex; flex-direction: column; overflow: hidden; background: #1e1e1e; }
 .view.term[hidden] { display: none; }
-.term-holder { flex: 1; min-height: 0; padding: 6px 0 0 8px; }
+/* margins, not padding: xterm's fit addon counts a padding as usable height and would cut off the last line */
+.term-holder { flex: 1; min-height: 0; margin: 6px 0 14px 8px; }
 .view.term .xterm { height: 100%; }
 .term-bar { display: flex; align-items: center; gap: 12px; padding: 4px 10px; background: var(--side); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); }
 .term-bar button { margin-left: auto; }

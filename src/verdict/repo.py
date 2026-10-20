@@ -11,7 +11,7 @@ from pathlib import Path
 
 MAX_FILE_BYTES = 1_000_000
 MAX_TREE_ENTRIES = 5000
-CLONE_TIMEOUT = 180
+CLONE_TIMEOUT = 300   # a full clone (whole history), not a shallow one
 
 # Accepted forms: git@host:owner/repo(.git)  and  ssh://git@host[:port]/owner/repo(.git)
 # Host and user must not start with "-" (ssh would read them as options, e.g. -oProxyCommand=...).
@@ -94,7 +94,7 @@ def clone(url: str, dest: Path, known_hosts: Path) -> RepoInfo:
     cmd = [
         "git", "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never",
         "-c", "protocol.ssh.allow=always", "-c", "core.symlinks=true",
-        "clone", "--depth", "1", "--no-recurse-submodules", "--", url, str(dest),
+        "clone", "--no-recurse-submodules", "--", url, str(dest),          # full history: a real repository with its .git
     ]
     try:
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=CLONE_TIMEOUT)

@@ -29,6 +29,7 @@ PROBES = [
     ("C compiler (cc)", ["cc", "--version"], True),
     ("C++ compiler (c++)", ["c++", "--version"], True),
     ("make", ["make", "--version"], True),
+    ("git", ["git", "--version"], True),
     ("docker client", ["docker", "--version"], True),
     ("docker compose", ["docker", "compose", "version"], True),
     ("docker daemon", ["docker", "info", "--format", "{{.ServerVersion}}"], True),

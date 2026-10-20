@@ -394,7 +394,9 @@ def test_ai_review_end_to_end_is_advisory_and_verified(client, monkeypatch):
     assert ai_state["reviews"][manual_ids[0]]["evidence"] == [{"file": "main.c", "line": 3, "snippet": ""}]
 
     # the AI never changes the deterministic result
-    assert after["summary"] == before["summary"] and after["results"] == before["results"]
+    assert after["results"] == before["results"]                       # the AI never rewrites a check result ...
+    moved = after["summary"]["mandatory"]
+    assert moved["manual"] == 0 and moved["fail"] >= before["summary"]["mandatory"]["fail"]   # ... but its answers count where verdict.md lists them
     ai_items = [i for i in after["improvements"] if i["source"] == "ai"]
     assert [i["title"] for i in ai_items] == ["main ignores arguments"]
     assert [(e["file"], e["line"]) for e in ai_items[0]["evidence"]] == [("main.c", 1)]      # ghost.c was invented
@@ -1234,3 +1236,30 @@ def test_a_review_saved_before_contexts_were_recorded_is_dropped(client, monkeyp
     main.store.get(sid).review_context = ""                                # as in a session.json from an earlier version
     c.get(f"/api/sessions/{sid}")
     assert_no_review(c, main, sid)
+
+
+def test_the_sandbox_copy_is_a_git_repository_without_hooks(client, tmp_path):
+    import subprocess
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    clone = attach_repo(main, sid, "gitcopy")
+    (clone / "main.c").write_text("int main(void){return 0;}\n")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(clone)]
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    subprocess.run(git + ["add", "main.c"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "first"], check=True)
+    (clone / ".git" / "hooks" / "post-checkout").write_text("#!/bin/sh\nexit 1\n")
+    work = main.make_work_copy(main.store.get(sid), clone)
+    assert (work / ".git" / "HEAD").is_file() and not (work / ".git" / "hooks").exists()
+    log = subprocess.run(["git", "-C", str(work), "log", "--format=%s"], capture_output=True, text=True, check=True)
+    assert log.stdout.strip() == "first"
+
+
+def test_the_vendored_file_icons_are_served_with_their_license(client):
+    c, main = client
+    theme = c.get("/vendor/great-icons/icons.json")
+    assert theme.status_code == 200
+    path = theme.json()["iconDefinitions"][theme.json()["fileExtensions"]["c"]]["iconPath"].removeprefix("./")
+    icon = c.get(f"/vendor/great-icons/{path}")
+    assert icon.status_code == 200 and icon.headers["content-type"].startswith("image/")
+    assert "MIT" in c.get("/vendor/great-icons/LICENSE").text

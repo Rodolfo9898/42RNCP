@@ -78,6 +78,7 @@ async function init() {
   sandboxUp = health.sandbox === true;
   llm = health.llm || llm;
   refreshSsh();
+  await loadIconTheme();   // before the first render, so the sidebar has its icons from the start
   addTab("overview", "Verdict", h("div", { class: "view overview" }), false);
   showTab("overview");
   render();
@@ -130,9 +131,11 @@ function renderSidebar() {
   const list = $("#subjects");
   list.replaceChildren(...session.subjects.map((s) => s.kind === "norm"
     ? h("li", { title: "C code was detected: norminette runs, and the Norm rules it cannot check go to the manual review" },
+      fileIcon(iconFor(s.name)),
       h("span", { class: "name link", onclick: () => guarded(() => openSubject(s.name)) }, s.name),
       h("span", { class: "meta" }, `Norm · auto (C) · ${s.rules.length} rules`))
     : h("li", { title: `${s.rules.length} rules extracted. Click to open the PDF.` },
+      fileIcon(iconFor(s.name)),
       h("span", { class: "name link", onclick: () => guarded(() => openSubject(s.name)) }, s.name),
       h("span", { class: "meta" }, [TRACK_LABEL[s.track], `${s.rules.length} rules`].filter(Boolean).join(" · ")),
       h("button", { class: "x", title: "Remove", onclick: () => guarded(async () => {
@@ -231,11 +234,6 @@ function aiReviewNodes(r) {
 }
 
 
-async function saveClaudeReview() {
-  const result = await post(`sessions/${sid}/claude-review/save`);
-  await afterReviewSaved(result);
-}
-
 // Show a saved review everywhere: the tree, the verdict tab, a message.
 async function afterReviewSaved(result) {
   session = await api(`sessions/${sid}`);
@@ -301,7 +299,7 @@ async function startAi() {
 
 function renderPanel() {
   for (const b of document.querySelectorAll("#panel-tabs > button")) b.classList.toggle("active", b.dataset.tab === panelTab);
-  const counts = Object.fromEntries(ORDER.map((k) => [k, session.results.filter((r) => r.status === k).length]));
+  const counts = Object.fromEntries(ORDER.map((k) => [k, session.results.filter((r) => shownStatus(r) === k).length]));
   $("#filters").replaceChildren(...ORDER.map((k) => h("button", {
     class: `chip ${shown.has(k) ? "on" : ""}`, title: `Toggle ${TITLES[k].toLowerCase()}`,
     onclick: () => { shown.has(k) ? shown.delete(k) : shown.add(k); renderPanel(); },
@@ -317,6 +315,14 @@ function renderPanel() {
 
 const expanded = new Set();
 
+// The checklist follows verdict.md: a requirement claude (or the AI) has judged moves to where verdict.md lists it.
+const REVIEWED_STATUS = { likely_problem: "fail", unclear: "manual", likely_ok: "pass", not_applicable: "pass" };
+
+function shownStatus(r) {
+  const review = r.status === "manual" && r.rule_id && session.ai.reviews ? session.ai.reviews[r.rule_id] : null;
+  return review ? (REVIEWED_STATUS[review.assessment] ?? "manual") : r.status;
+}
+
 function renderChecks() {
   if (!session.results.length) {
     return h("p", { class: "hint" }, session.state === "running" ? "Running…" : "No results yet. Add subjects, clone a repository and press Run checks.");
@@ -324,7 +330,7 @@ function renderChecks() {
   const out = h("div");
   for (const status of ORDER) {
     if (!shown.has(status)) continue;
-    const items = session.results.filter((r) => r.status === status);
+    const items = session.results.filter((r) => shownStatus(r) === status);
     if (!items.length) continue;
     out.append(h("div", { class: "group-title" }, `${TITLES[status]} (${items.length})`));
     for (const r of items) out.append(resultItem(r));
@@ -342,13 +348,13 @@ function resultItem(r) {
       e.line ? `${e.file}:${e.line}` : e.file, e.snippet && h("span", { class: "snip" }, e.snippet))),
     r.log && h("pre", { class: "log" }, r.log));
   const expandable = r.sources.length || r.evidence.length || r.log || ai.body.length;
-  return h("div", { class: `item st-${r.status}` },
+  return h("div", { class: `item st-${shownStatus(r)}` },
     h("div", { class: "item-head", onclick: () => {
       if (!expandable) return;
       body.hidden = !body.hidden;
       body.hidden ? expanded.delete(key) : expanded.add(key);
     } },
-      h("span", { class: "icon" }, ICON[r.status]),
+      h("span", { class: "icon" }, ICON[shownStatus(r)]),
       h("span", { class: "item-title" }, r.title, r.section === "bonus" ? " [bonus]" : ""),
       ai.chip,
       h("span", { class: "item-detail" }, r.detail)),
@@ -589,8 +595,7 @@ async function openTerminal(promptId) {
   const view = h("div", { class: "view term" });
   const holder = h("div", { class: "term-holder" });
   view.append(h("div", { class: "term-bar" },
-    h("span", {}, "claude saves its report in its throw-away copy (approve the write). It is merged into verdict.md automatically; no other file is added to the repository."),
-    h("button", { onclick: () => guarded(saveClaudeReview) }, "💾 Save review to verdict.md")), holder);
+    h("span", {}, "claude saves its report in its throw-away copy (approve the write). It is merged into verdict.md automatically; no other file is added to the repository.")), holder);
   addTab("terminal", "⌨ claude", view, true);
   tabs.get("terminal").onClose = () => {
     clearInterval(tabs.get("terminal")?.watcher);
@@ -740,7 +745,39 @@ async function openSubject(name, page = 1) {
 const pageLink = (pdf, page) => h("a", { href: "#", class: "page-link", onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); guarded(() => openSubject(pdf, page)); } },
   `${pdf} p.${page}`);
 
+// File and folder icons: VS Code Great Icons (vendor/great-icons, MIT), resolved the way VS Code resolves an icon theme:
+// exact file name, then the longest matching extension, then a few types the theme only knows by language.
+const ICON_BASE = "vendor/great-icons/";
+const ICON_LANGUAGE = { tpp: "cpp", ipp: "cpp", hh: "cpp", hxx: "cpp" };
+let iconTheme;   // undefined: not loaded yet; null: unavailable (rows simply have no icon)
+
+async function loadIconTheme() {
+  if (iconTheme !== undefined) return;
+  try { iconTheme = await (await fetch(`${ICON_BASE}icons.json`)).json(); } catch { iconTheme = null; }
+}
+
+function iconFor(name, type = "file", open = false) {
+  const t = iconTheme;
+  if (!t) return null;
+  const lower = name.toLowerCase();
+  let id;
+  if (type === "dir") {
+    id = (open ? t.folderNamesExpanded : t.folderNames)?.[lower] ?? (open ? t.folderExpanded : t.folder);
+  } else {
+    id = t.fileNames?.[lower];
+    const parts = lower.split(".");
+    for (let i = 1; !id && i < parts.length; i++) id = t.fileExtensions?.[parts.slice(i).join(".")];
+    if (!id && ICON_LANGUAGE[parts.at(-1)]) id = t.languageIds?.[ICON_LANGUAGE[parts.at(-1)]];
+    id ??= t.file;
+  }
+  const path = t.iconDefinitions?.[id]?.iconPath;
+  return path ? ICON_BASE + path.replace(/^\.\//, "") : null;
+}
+
+const fileIcon = (src) => src ? h("img", { class: "ficon", src, alt: "" }) : h("span", { class: "ficon" });
+
 async function loadTree() {
+  await loadIconTheme();
   const entries = await api(`sessions/${sid}/tree`).catch(() => []);
   const root = $("#tree");
   $("#tree-hint").hidden = entries.length > 0;
@@ -753,14 +790,17 @@ async function loadTree() {
       const kids = h("div", { class: "children", hidden: depth > 0 });
       nodes.set(entry.path, kids);
       const twisty = h("span", { class: "twisty" }, depth > 0 ? "▸" : "▾");
+      const icon = fileIcon(iconFor(name, "dir", depth === 0));
       const row = h("div", { class: "row", style: pad, onclick: () => {
         kids.hidden = !kids.hidden;
         twisty.textContent = kids.hidden ? "▸" : "▾";
-      } }, twisty, name);
+        const src = iconFor(name, "dir", !kids.hidden);
+        if (src && icon.tagName === "IMG") icon.src = src;
+      } }, twisty, icon, name);
       return [h("div", {}, row, kids)];
     }
     return [h("div", { class: "row", style: pad, "data-path": entry.path, onclick: () => guarded(() => openFile(entry.path)) },
-      h("span", { class: "twisty" }, ""), name)];
+      h("span", { class: "twisty" }, ""), fileIcon(iconFor(name)), name)];
   };
   // Directories first within each folder, as in VS Code.
   const sorted = [...entries].sort((a, b) => {
@@ -941,13 +981,54 @@ $("#btn-clone").onclick = () => guarded(openClone);
 $("#btn-run").onclick = () => guarded(run);
 $("#btn-ai").onclick = () => guarded(startAi);
 $("#btn-terminal").onclick = () => guarded(openTerminal);
-$("#btn-export").onclick = () => {
-  if (!session.results.length) return toast("Run the checks first.");
-  window.location.href = `/api/sessions/${sid}/verdict.md?download=true`;
-};
 $("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") closeDialog(); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeDialog(); });
-for (const b of document.querySelectorAll("#panel-tabs > button")) b.onclick = () => { panelTab = b.dataset.tab; renderPanel(); };
+// ------------------------------------------------------------------ layout: resizable sidebar and bottom panel, like VS Code
+
+const layout = (() => { try { return JSON.parse(localStorage.getItem("verdict.layout")) || {}; } catch { return {}; } })();
+
+function applyLayout() {
+  const root = document.documentElement.style;
+  if (layout.side) root.setProperty("--side-w", `${layout.side}px`);
+  if (layout.panel) root.setProperty("--panel-h", `${layout.panel}px`);
+  document.body.classList.toggle("panel-min", !!layout.panelMin);
+  $("#panel-toggle").textContent = layout.panelMin ? "⌃" : "⌄";
+  $("#panel-toggle").title = layout.panelMin ? "Show the panel" : "Hide the panel";
+}
+
+function saveLayout() {
+  try { localStorage.setItem("verdict.layout", JSON.stringify(layout)); } catch { /* storage unavailable: sizes last until reload */ }
+}
+
+function dragResize(handle, onMove) {
+  handle.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    handle.setPointerCapture(ev.pointerId);
+    handle.classList.add("active");
+    document.body.classList.add("resizing");
+    const move = (e) => { onMove(e); applyLayout(); };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("lostpointercapture", () => {    // after pointerup, and also when the drag is cancelled
+      handle.removeEventListener("pointermove", move);
+      handle.classList.remove("active");
+      document.body.classList.remove("resizing");
+      saveLayout();
+      window.dispatchEvent(new Event("resize"));   // the terminal re-fits itself
+    }, { once: true });
+  });
+}
+
+const clamp = (value, low, high) => Math.round(Math.min(Math.max(value, low), high));
+dragResize($("#side-resizer"), (e) => { layout.side = clamp(e.clientX, 160, window.innerWidth * 0.6); });
+dragResize($("#panel-resizer"), (e) => { layout.panel = clamp(window.innerHeight - 24 - e.clientY, 80, window.innerHeight - 36 - 24 - 120); });
+$("#panel-toggle").onclick = () => { layout.panelMin = !layout.panelMin; applyLayout(); saveLayout(); };
+applyLayout();
+
+for (const b of document.querySelectorAll("#panel-tabs > button[data-tab]")) b.onclick = () => {
+  panelTab = b.dataset.tab;
+  if (layout.panelMin) { layout.panelMin = false; applyLayout(); saveLayout(); }   // a tab click shows the panel again
+  renderPanel();
+};
 
 const side = $("#sidebar");
 side.addEventListener("dragover", (ev) => { ev.preventDefault(); side.classList.add("drag"); });

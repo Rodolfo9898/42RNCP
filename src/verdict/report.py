@@ -25,10 +25,19 @@ AI_NOTE = ("> Written by an AI model ({model}) from a bounded view of the reposi
 CATEGORY_TITLES = {"structure": "Structure", "code": "Code", "logic": "Logic", "readability": "Readability"}
 
 
+# Where a requirement that claude (or the AI) has judged is counted: the same place verdict.md lists it.
+REVIEWED_STATUS = {"likely_problem": "fail", "unclear": "manual", "likely_ok": "pass", "not_applicable": "pass"}
+
+
+def shown_status(r: CheckResult, ai: AIState | None) -> str:
+    review = ai.reviews.get(r.rule_id) if ai and r.status == "manual" and r.rule_id else None
+    return REVIEWED_STATUS.get(review.assessment, "manual") if review else r.status
+
+
 def summarize(results: list[CheckResult], ai: AIState | None = None, claude: ClaudeReport | None = None) -> dict:
     """The result follows the two lists of verdict.md (mandatory part, claude's answers included):
     anything under "Lacking" is a FAIL; otherwise anything under "Second look" is a PASS WITH ISSUES; otherwise PASS."""
-    counts = {sec: Counter(r.status for r in results if r.section == sec) for sec in ("mandatory", "bonus")}
+    counts = {sec: Counter(shown_status(r, ai) for r in results if r.section == sec) for sec in ("mandatory", "bonus")}
     if not results:
         overall = "NOT RUN"
     else:

@@ -39,7 +39,7 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ripgrep build-essential make valgrind gdb libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends ca-certificates git ripgrep build-essential make valgrind gdb libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker

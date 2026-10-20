@@ -18,7 +18,6 @@
       <button id="btn-run" class="primary" title="Run every check">▶ Run checks</button>
       <button id="btn-terminal" title="Open claude in a terminal on this repository">⌨ Claude</button>
       <button id="btn-ai" title="Ask an AI model to describe the repository and weigh the manual-review items">✨ AI review</button>
-      <button id="btn-export" title="Download verdict.md">⬇ verdict.md</button>
     </div>
     <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
   </header>
@@ -46,7 +45,9 @@
       <button data-tab="checks" class="active">Checklist</button>
       <button data-tab="improvements">Improvements</button>
       <button data-tab="rules">Subject rules</button>
+      <span class="spacer"></span>
       <div class="filters" id="filters"></div>
+      <button id="panel-toggle" class="panel-toggle" title="Hide the panel">⌄</button>
     </div>
     <div id="panel-body"></div>
   </section>
@@ -60,6 +61,8 @@
     <span id="st-state"></span>
   </footer>
 
+  <div id="side-resizer" class="resizer" title="Drag to resize the sidebar"></div>
+  <div id="panel-resizer" class="resizer" title="Drag to resize the panel"></div>
   <div id="modal" hidden><div class="dialog" id="dialog"></div></div>
   <div id="toast" hidden></div>
   <script src="vendor/xterm.js"></script>

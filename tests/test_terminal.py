@@ -49,6 +49,11 @@ def env(tmp_path, monkeypatch):
     (repo / ".mcp.json").write_text("{}")
     (repo / ".claude" / "settings.json").write_text('{"hooks": {}}')
     (repo / ".git" / "config").write_text("[core]\n\tfsmonitor = evil\n")
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (repo / ".git" / "hooks").mkdir()
+    (repo / ".git" / "hooks" / "post-checkout").write_text("#!/bin/sh\nrm -rf /\n")
+    (repo / "src" / ".git").mkdir()                                       # a .git deeper in the tree
+    (repo / "src" / ".git" / "config").write_text("[core]\n\tfsmonitor = evil\n")
     (repo / "link").symlink_to(secret)
     return SimpleEnv(projects, scratch, repo, secret)
 
@@ -74,8 +79,16 @@ def test_the_copy_leaves_out_everything_that_could_instruct_or_configure_claude(
     copy = terminal.sanitized_copy(env.repo)
     names = {p.relative_to(copy).as_posix() for p in copy.rglob("*")}
     assert {"README.md", "src", "src/a.c"} <= names
-    assert not names & {".claude", "CLAUDE.md", ".mcp.json", ".git", "link", ".claude/settings.json", ".git/config"}
+    assert not names & {".claude", "CLAUDE.md", ".mcp.json", "link", ".claude/settings.json", ".git/hooks", "src/.git"}
     assert copy.parent == env.scratch and copy != env.repo
+
+
+def test_the_copy_keeps_the_git_repository_but_not_what_could_run_a_program(env):
+    copy = terminal.sanitized_copy(env.repo)
+    assert (copy / ".git" / "HEAD").read_text() == "ref: refs/heads/main\n"           # git history and refs are kept
+    assert (copy / ".git" / "config").read_text() == terminal.SAFE_GIT_CONFIG            # never the original config
+    assert "fsmonitor" not in (copy / ".git" / "config").read_text()
+    assert not (copy / ".git" / "hooks").exists() and not (copy / "src" / ".git").exists()
 
 
 def test_the_copy_refuses_huge_repositories(env, monkeypatch):
@@ -158,7 +171,7 @@ def test_terminal_runs_claude_in_a_clean_copy_and_relays_input_and_resizes(env):
         assert f"CWD: {env.scratch.resolve()}" in banner or str(env.scratch.name) in banner
         files = banner.split("FILES:")[1].split("ENV:")[0]
         assert "README.md" in files and "src" in files
-        assert "CLAUDE.md" not in files and ".claude" not in files and ".git" not in files and "link" not in files
+        assert "CLAUDE.md" not in files and ".claude" not in files and "link" not in files and ".git" in files
         env_line = banner.split("ENV:")[1]
         assert "sk-must-not-leak" not in env_line and TOKEN not in env_line
 
@@ -404,7 +417,7 @@ def test_the_live_terminal_records_its_baseline_and_forgets_it(env):
     with client.websocket_connect("/pty?repo=42/ps&sid=sess-base01", headers={"x-terminal-token": TOKEN}) as ws:
         read_until(ws, "ENV:")
         assert terminal._baselines["sess-base01"] >= {"README.md", "src"}
-        assert ".git" not in terminal._baselines["sess-base01"]
+        assert ".git" in terminal._baselines["sess-base01"]                    # the repository itself is not something claude made
         workdir = next(env.scratch.iterdir())
         (workdir / "REVIEW.md").write_text("# found by pattern")
         assert client.get("/result", params={"sid": "sess-base01"}, headers={"x-terminal-token": TOKEN}).json()["name"] == "REVIEW.md"
