@@ -202,6 +202,27 @@ def test_clone_uses_chosen_name_and_destination(client, monkeypatch):
     assert again.status_code == 400 and "already exists" in again.json()["detail"]
 
 
+def test_an_existing_folder_can_be_used_instead_of_cloning(client, monkeypatch):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    (main.PROJECTS / "42" / "libft").mkdir(parents=True)
+    (main.PROJECTS / "42" / "libft" / "ft_a.c").write_text("int a;\n")
+    monkeypatch.setattr(main.repo_mod, "clone", lambda *a: pytest.fail("must not clone"))
+    assert {"path": "42/libft", "git": False} in c.get("/api/projects/existing").json()["folders"]
+    r = c.post(f"/api/sessions/{sid}/repo/existing", json={"path": "42/libft"})
+    assert r.status_code == 200
+    assert (r.json()["repo"]["path"], r.json()["repo"]["name"]) == ("42/libft", "libft")
+    assert [e["path"] for e in c.get(f"/api/sessions/{sid}/tree").json()] == ["ft_a.c"]
+    assert (main.PROJECTS / "42" / "libft" / "ft_a.c").read_text() == "int a;\n"
+
+
+@pytest.mark.parametrize("path", ["../x", "/etc", "nope", ""])
+def test_using_an_existing_folder_refuses_anything_outside_the_projects_folder(client, path):
+    c, _ = client
+    sid = c.post("/api/sessions").json()["id"]
+    assert c.post(f"/api/sessions/{sid}/repo/existing", json={"path": path}).status_code == 400
+
+
 def test_clone_defaults_the_name_from_the_url(client, monkeypatch):
     c, main = client
     sid = c.post("/api/sessions").json()["id"]
@@ -1263,3 +1284,27 @@ def test_the_vendored_file_icons_are_served_with_their_license(client):
     icon = c.get(f"/vendor/great-icons/{path}")
     assert icon.status_code == 200 and icon.headers["content-type"].startswith("image/")
     assert "MIT" in c.get("/vendor/great-icons/LICENSE").text
+
+
+def test_verdict_md_in_the_clone_follows_the_verdict_shown_in_the_app(client, tmp_path):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    session = main.store.get(sid)
+    (main.PROJECTS / "proj").mkdir(parents=True)
+    session.repo = main.RepoMeta(url="", commit="", name="proj", path="proj")
+    session.results = [main.CheckResult(rule_id="r1", title="Makefile has all", status="pass", section="mandatory")]
+    main.write_verdict(session)
+    file = main.PROJECTS / "proj" / "verdict.md"
+    assert "**PASS**" in file.read_text()
+    # the verdict changes after the file was written (something now needs a second look)
+    session.results.append(main.CheckResult(rule_id="r2", title="Check by hand", status="manual", section="mandatory"))
+    assert c.get(f"/api/sessions/{sid}").json()["summary"]["overall"] == "PASS WITH ISSUES"
+    assert "PASS WITH ISSUES" in file.read_text()
+    # unchanged: not rewritten again (only the generated time could differ)
+    before = file.read_text()
+    c.get(f"/api/sessions/{sid}")
+    assert file.read_text() == before
+    # a verdict.md that is the project's own is never touched
+    file.write_text("# my own notes\n")
+    c.get(f"/api/sessions/{sid}")
+    assert file.read_text() == "# my own notes\n"

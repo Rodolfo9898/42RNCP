@@ -424,6 +424,33 @@ def projects() -> dict:
     return {"root": PROJECTS.name, "folders": repo_mod.list_folders(PROJECTS)}
 
 
+class ExistingRequest(BaseModel):
+    path: str
+
+
+@app.get("/api/projects/existing")
+def existing_projects() -> dict:
+    """Folders already in the projects folder that can be reviewed without cloning."""
+    return {"root": PROJECTS.name, "folders": repo_mod.list_existing(PROJECTS)}
+
+
+@app.post("/api/sessions/{session_id}/repo/existing")
+def use_existing_repo(session_id: str, req: ExistingRequest) -> dict:
+    """Review a folder that is already in the projects folder instead of cloning one."""
+    session = session_or_404(session_id)
+    if session.state in ("cloning", "running"):
+        raise HTTPException(409, f"session is busy ({session.state})")
+    try:
+        path, info = repo_mod.use_existing(PROJECTS, req.path)
+    except repo_mod.RepoError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.repo = RepoMeta(**info.__dict__, name=path.name, path=path.relative_to(PROJECTS.resolve()).as_posix())
+    session.results, session.state, session.message = [], "idle", ""
+    refresh_context(session)
+    store.save(session)
+    return view(session)
+
+
 @app.post("/api/sessions/{session_id}/repo")
 def clone_repo(session_id: str, req: RepoRequest) -> dict:
     session = session_or_404(session_id)
@@ -511,14 +538,32 @@ def apply_claude_review(session: Session) -> None:
         session.review_context = review_context(session)
 
 
+_GENERATED_LINE = re.compile(r"^- Generated: .*$", re.M)
+
+
+def verdict_file_is_current(path: Path, text: str) -> bool:
+    """Does the verdict.md on disk say what the app says now? (Only the 'Generated' time may differ.) A file that is not
+    ours, or that cannot be read, is left alone and counts as current."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        disk = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    if not disk.startswith(VERDICT_MARKER):
+        return True
+    return _GENERATED_LINE.sub("", disk).strip() == _GENERATED_LINE.sub("", text).strip()
+
+
 def ensure_review_files(session: Session) -> bool:
-    """Make sure verdict.md exists in the clone whenever there is a review to show, and that no claude-review.md written
-    by an earlier version is left behind. (A verdict.md deleted by hand is healed here.)"""
+    """Keep verdict.md in the clone the same as the verdict shown in the app: it is written again when it is missing or no
+    longer says what the app says (the verdict can change after it was written), and a claude-review.md left by an earlier
+    version is removed. Never while a run is in progress."""
     root = repo_dir(session)
-    if root is None or not session.claude_review.strip():
+    if root is None or not session.results or session.state == "running" or session.ai.state == "running":
         return False
-    if (session.verdict_file and (root / session.verdict_file).is_file()
-            and not any(is_generated(root / name) for name in OLD_REVIEW_FILES)):
+    if (session.verdict_file and not any(is_generated(root / name) for name in OLD_REVIEW_FILES)
+            and verdict_file_is_current(root / session.verdict_file, verdict_text(session))):
         return False
     write_verdict(session)
     store.save(session)

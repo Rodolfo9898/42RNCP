@@ -813,6 +813,7 @@ async function openLibrary() {
 
 async function openClone() {
   const projects = await api("projects").catch(() => ({ root: "projects" }));
+  const existing = await api("projects/existing").catch(() => ({ folders: [] }));
   await refreshSsh();
   const nameFromUrl = (url) => {
     const last = url.trim().replace(/\/+$/, "").split(/[/:]/).pop().replace(/\.git$/, "");
@@ -829,12 +830,12 @@ async function openClone() {
   };
   name.addEventListener("input", () => { nameEdited = true; update(); });
   url.addEventListener("input", update);
-  const go = () => {
+  const submit = (endpoint, payload) => {
     closeDialog();
     session.state = "cloning"; render();
     guarded(async () => {
       try {
-        setSession(await post(`sessions/${sid}/repo`, { url: url.value, name: name.value }));
+        setSession(await post(`sessions/${sid}/${endpoint}`, payload));
         for (const k of [...tabs.keys()]) if (k !== "overview") closeTab(k);
         await loadTree();
       } catch (err) {
@@ -843,17 +844,54 @@ async function openClone() {
       }
     });
   };
+  const go = () => submit("repo", { url: url.value, name: name.value });
   for (const input of [url, name]) input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") go(); });
-  dialog("Clone a repository", h("div", {},
-    ssh && !ssh.ok && h("div", { class: "warning" }, "SSH is not ready: ", ssh.message),
-    field("Repository (SSH)", url),
-    field("Project name", name),
-    where), [
-    h("button", { onclick: closeDialog }, "Cancel"),
-    h("button", { class: "primary", onclick: go }, "Clone"),
-  ]);
-  update();
-  url.focus();
+
+  // An existing folder in the projects folder, reviewed where it is.
+  let chosen = session.repo?.path ?? "";
+  const filter = h("input", { type: "text", placeholder: "filter folders" });
+  const list = h("div", { class: "track-items folder-list" });
+  const fill = () => {
+    const needle = filter.value.trim().toLowerCase();
+    const rows = existing.folders.filter((f) => f.path.toLowerCase().includes(needle)).map((f) => {
+      const radio = h("input", { type: "radio", name: "existing-folder", value: f.path });
+      radio.checked = f.path === chosen;
+      radio.addEventListener("change", () => { chosen = f.path; });
+      return h("label", { class: "pick" }, radio, h("span", {}, f.path), h("span", { class: "dim" }, f.git ? "git repository" : "folder"));
+    });
+    list.replaceChildren(...(rows.length ? rows : [h("p", { class: "dim" }, existing.folders.length
+      ? "No folder matches."
+      : `No folders yet. Put the project inside the projects folder on your computer (./${projects.root}), then reopen this dialog.`)]));
+  };
+  filter.addEventListener("input", fill);
+  const useExisting = () => chosen ? submit("repo/existing", { path: chosen }) : toast("Choose a folder first.");
+
+  const show = (mode) => {
+    const tab = (id, label) => h("button", { class: mode === id ? "active" : "", onclick: () => show(id) }, label);
+    const switcher = h("div", { class: "md-bar" }, tab("clone", "Clone with SSH"), tab("existing", "Use an existing folder"));
+    if (mode === "clone") {
+      dialog("Open a project", h("div", {}, switcher,
+        ssh && !ssh.ok && h("div", { class: "warning" }, "SSH is not ready: ", ssh.message),
+        field("Repository (SSH)", url),
+        field("Project name", name),
+        where), [
+        h("button", { onclick: closeDialog }, "Cancel"),
+        h("button", { class: "primary", onclick: go }, "Clone"),
+      ]);
+      update();
+      url.focus();
+    } else {
+      fill();
+      dialog("Open a project", h("div", {}, switcher,
+        h("p", { class: "dim" }, `Reviews a folder that is already in ${projects.root}/. Nothing is cloned, copied or deleted; the verdict is saved inside that folder.`),
+        filter, list), [
+        h("button", { onclick: closeDialog }, "Cancel"),
+        h("button", { class: "primary", onclick: useExisting }, "Use this folder"),
+      ]);
+      filter.focus();
+    }
+  };
+  show(existing.folders.length && !session.repo?.url && session.repo ? "existing" : "clone");
 }
 
 async function run() {

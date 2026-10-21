@@ -37,6 +37,11 @@ Clone with an SSH URL, e.g. `git@github.com:user/repo.git`. The clone is a full 
 `.git`), and git is installed in the sandbox and in claude's terminal: the checks' work copy and claude's copy are git
 repositories too (without hooks).
 
+**Open project** also has a second tab, **Use an existing folder**, for a project that is already on your computer: put it
+inside the projects folder (`./projects`, or `PROJECTS_DIR`), pick it from the list and it is reviewed where it is. Nothing is
+cloned, copied or deleted, and `verdict.md` is saved inside that folder. Only folders inside the projects folder can be
+chosen (the containers see nothing else); symbolic links and `..` are refused.
+
 ## Output
 
 `verdict.md` is **one page** that answers three questions, whoever found the answer (a script or claude's review):

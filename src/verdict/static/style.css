@@ -246,3 +246,6 @@ button.linklike { background: none; border: 0; color: var(--manual); padding: 0;
 .markdown pre.log[data-lang]::before { content: attr(data-lang); display: block; color: var(--dim); font-size: 11px; margin-bottom: 4px; }
 .md-image { color: var(--dim); font-style: italic; }
 .md-link-plain { text-decoration: underline dotted; text-underline-offset: 3px; }
+.dialog .md-bar { position: static; margin: -4px -4px 10px; padding: 0 0 8px; }
+.dialog .folder-list { max-height: 36vh; overflow: auto; padding: 6px 4px; }
+.dialog input[type=radio] { margin: 0; }
