@@ -1308,3 +1308,29 @@ def test_verdict_md_in_the_clone_follows_the_verdict_shown_in_the_app(client, tm
     file.write_text("# my own notes\n")
     c.get(f"/api/sessions/{sid}")
     assert file.read_text() == "# my own notes\n"
+
+
+def test_closing_the_claude_tab_asks_the_terminal_service_to_end_the_session(client, monkeypatch):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    assert c.post(f"/api/sessions/{sid}/terminal/end").json() == {"ended": False}      # no terminal configured
+    seen = {}
+
+    class Reply:
+        def json(self):
+            return {"ended": True}
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, params=None, headers=None):
+            seen.update(url=url, params=params, token=headers["x-terminal-token"])
+            return Reply()
+
+    import httpx
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    assert c.post(f"/api/sessions/{sid}/terminal/end").json() == {"ended": True}
+    assert seen == {"url": "http://terminal:8002/pty/end", "params": {"sid": sid}, "token": "tok"}

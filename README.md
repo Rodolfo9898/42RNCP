@@ -143,6 +143,10 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 
 - **⌨ Claude** opens a real terminal tab on the cloned repository. The first time, type `/login` inside claude and
   sign in with your Claude account; the login is kept in the `claude-home` Docker volume (`make fclean` deletes it).
+  claude keeps running when the page is reloaded, the connection drops or the laptop sleeps: the tab reconnects by itself
+  (or, after a reload, **⌨ Claude** picks the same session up and shows the screen again). Closing the tab ends it. There is no idle
+  time limit; a session nobody came back to is ended after 12 hours (`TERMINAL_DETACHED_SECONDS`), and `TERMINAL_IDLE_SECONDS` /
+  `TERMINAL_MAX_SECONDS` can set optional limits (0 = none).
 - **✨ AI review** (with `LLM_PROVIDER=claude-cli` in `.env`; `CLAUDE_MODEL` optionally names a claude model, and no other `LLM_*`
   setting is read) runs the review in the terminal, using your Claude login. **Run** opens the Claude tab and claude starts
   with a prompt built from this run. It lists what the scripts verified (so claude does not redo it) and asks claude to judge

@@ -728,14 +728,33 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
             await asyncio.shield(asyncio.get_running_loop().run_in_executor(None, collect_claude_review, session, context))
         except (Exception, asyncio.CancelledError):
             pass
+        code = getattr(upstream, "close_code", None)
         try:
             await upstream.close()
         except Exception:
             pass
         try:
-            await ws.close()
+            await ws.close(code=code if code in (4410, 4411) else 1000)    # 4410: claude ended, 4411: opened in another tab
         except RuntimeError:
             pass
+
+
+@app.post("/api/sessions/{session_id}/terminal/end")
+def end_terminal(session_id: str) -> dict:
+    """The claude tab was closed on purpose: take what claude saved, then stop it (it otherwise keeps running, so that a
+    reload or a dropped connection does not lose the conversation)."""
+    session = session_or_404(session_id)
+    if not (TERMINAL_URL and TERMINAL_TOKEN):
+        return {"ended": False}
+    collect_claude_review(session, review_context(session))
+    try:
+        import httpx
+
+        with httpx.Client(trust_env=False, timeout=10) as client:
+            response = client.post(f"{TERMINAL_URL}/pty/end", params={"sid": session_id}, headers={"x-terminal-token": TERMINAL_TOKEN})
+        return {"ended": bool(response.json().get("ended"))}
+    except Exception:
+        return {"ended": False}
 
 
 def review_prompt_for(session: Session) -> tuple[str, dict]:

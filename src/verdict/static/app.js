@@ -249,7 +249,7 @@ async function reviewInTerminal() {
     pasteIntoTerminal(existing, text);
     return;
   }
-  if (existing) closeTab("terminal");               // a dead session: start a fresh claude that begins with the prompt
+  if (existing) { existing.keep = true; closeTab("terminal"); }   // not connected: a fresh claude begins with the prompt (the server replaces the old one)
   const { id } = await post(`sessions/${sid}/terminal-prompt`);
   await openTerminal(id);
 }
@@ -485,7 +485,11 @@ async function openTerminal(promptId) {
   addTab("terminal", "⌨ claude", view, true);
   tabs.get("terminal").onClose = () => {
     clearInterval(tabs.get("terminal")?.watcher);
+    clearTimeout(tabs.get("terminal")?.retry);
+    if (tabs.get("terminal")) tabs.get("terminal").closing = true;
     tabs.get("terminal")?.socket?.close();
+    // Closing the tab ends claude on purpose. (A reload or a lost connection does not: the session keeps running.)
+    if (!tabs.get("terminal")?.keep) fetch(`/api/sessions/${sid}/terminal/end`, { method: "POST" }).catch(() => {});
     tabs.get("terminal")?.term?.dispose();
     // The server collects the saved report as the terminal closes; show it once it has.
     setTimeout(async () => { session = await api(`sessions/${sid}`); render(); loadTree(); refreshVerdict(false).catch(() => {}); }, 2000);
@@ -519,9 +523,18 @@ async function openTerminal(promptId) {
     socket.binaryType = "arraybuffer";
     tab.socket = socket;
     socket.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
-    socket.onclose = () => {
-      if (tab.socket !== socket) return;
-      term.writeln("\r\n\x1b[2m[disconnected — press Enter to reconnect]\x1b[0m");
+    socket.onopen = () => { tab.attempts = 0; };
+    socket.onclose = (ev) => {
+      if (tab.socket !== socket || tab.closing) return;
+      // 4410: claude itself ended. 4411: the session was opened in another tab. Anything else is a dropped connection:
+      // claude is still running on the server, so reconnect by itself and carry on where it was.
+      if (ev.code !== 4410 && ev.code !== 4411 && (tab.attempts = (tab.attempts || 0) + 1) <= 30) {
+        if (tab.attempts === 1) term.writeln("\r\n\x1b[2m[connection lost, reconnecting…]\x1b[0m");
+        tab.retry = setTimeout(() => { term.reset(); connect(); }, Math.min(1000 * tab.attempts, 5000));   // the server replays the screen
+        return;
+      }
+      const why = ev.code === 4410 ? "claude ended" : ev.code === 4411 ? "opened in another tab" : "disconnected";
+      term.writeln(`\r\n\x1b[2m[${why} — press Enter to start again]\x1b[0m`);
       tab.disconnected = true;
     };
   };
