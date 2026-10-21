@@ -172,6 +172,59 @@ def list_folders(root: Path, depth: int = 2) -> list[str]:
     return out
 
 
+def list_existing(root: Path, depth: int = 3) -> list[dict]:
+    """Folders under `root` that can be reviewed in place: {"path", "git"}. A git repository is not searched inside."""
+    out: list[dict] = []
+
+    def walk(base: Path, prefix: str, level: int) -> None:
+        if level > depth or not base.is_dir():
+            return
+        for child in sorted(base.iterdir()):
+            if child.is_symlink() or not child.is_dir() or child.name.startswith(".") or not NAME_RE.match(child.name):
+                continue
+            rel = f"{prefix}{child.name}"
+            is_git = (child / ".git").exists()
+            out.append({"path": rel, "git": is_git})
+            if not is_git:
+                walk(child, rel + "/", level + 1)
+
+    walk(root, "", 1)
+    return out
+
+
+def use_existing(root: Path, rel: str) -> tuple[Path, RepoInfo]:
+    """An existing folder inside the projects folder, reviewed where it is (no clone, nothing copied or deleted)."""
+    rel = rel.strip().strip("/")
+    parts = [p for p in rel.split("/") if p]
+    if not parts or rel.startswith("~") or "\\" in rel or not all(NAME_RE.match(p) for p in parts):
+        raise RepoError("Choose a folder inside the projects folder, e.g. 42/common-core/push_swap.")
+    root = root.resolve()
+    path = root.joinpath(*parts)
+    if any(root.joinpath(*parts[:i]).is_symlink() for i in range(1, len(parts) + 1)):
+        raise RepoError("That folder is a symbolic link; choose the real folder.")
+    if not path.is_dir() or not path.resolve().is_relative_to(root):
+        raise RepoError(f"{rel} is not a folder inside the projects folder.")
+    return path, _folder_info(path)
+
+
+def _folder_info(path: Path) -> RepoInfo:
+    """Remote, last commit of a folder; empty fields when it is not a git repository."""
+    if not (path / ".git").exists():
+        return RepoInfo(url="", commit="", subject="", author="")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_TERMINAL_PROMPT": "0"}
+    base = ["git", "-c", f"safe.directory={path}", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(path)]
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run([*base, *args], env=env, capture_output=True, text=True, timeout=20, check=False).stdout
+        except (subprocess.TimeoutExpired, OSError):
+            return ""
+
+    log = git("log", "-1", "--format=%h%n%s%n%an").splitlines() + ["", "", ""]
+    return RepoInfo(url=git("config", "--get", "remote.origin.url").strip(), commit=log[0], subject=log[1], author=log[2])
+
+
 def safe_path(root: Path, rel: str) -> Path:
     """Resolve `rel` inside `root`; refuse traversal and symlinks that leave the repo."""
     root = root.resolve()

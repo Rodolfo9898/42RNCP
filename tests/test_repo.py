@@ -110,3 +110,48 @@ def test_list_folders_suggests_only_plain_folders(tmp_path):
     (tmp_path / "42" / "common-core" / "deep" / "deeper").mkdir(parents=True)
     (tmp_path / "libft" / ".git").mkdir(parents=True)
     assert repo.list_folders(tmp_path) == ["42", "42/common-core"]  # two levels deep, no repos
+
+
+def test_list_existing_marks_repositories_and_does_not_search_inside_them(tmp_path):
+    (tmp_path / "libft" / ".git").mkdir(parents=True)
+    (tmp_path / "libft" / "src").mkdir()
+    (tmp_path / "42" / "push_swap").mkdir(parents=True)
+    (tmp_path / ".hidden").mkdir()
+    assert repo.list_existing(tmp_path) == [
+        {"path": "42", "git": False}, {"path": "42/push_swap", "git": False}, {"path": "libft", "git": True}]
+
+
+def test_use_existing_accepts_a_folder_and_reads_its_git_state(tmp_path):
+    folder = tmp_path / "42" / "libft"
+    folder.mkdir(parents=True)
+    git = ["git", "-C", str(folder)]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "remote", "add", "origin", "git@github.com:me/libft.git"], check=True)
+    (folder / "a.c").write_text("int a;\n")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "-c", "user.name=Me", "-c", "user.email=m@e", "commit", "-qm", "first"], check=True)
+    path, info = repo.use_existing(tmp_path, "42/libft")
+    assert path == tmp_path.resolve() / "42" / "libft"
+    assert (info.url, info.subject, info.author) == ("git@github.com:me/libft.git", "first", "Me") and info.commit
+    assert (folder / "a.c").read_text() == "int a;\n"             # nothing touched
+
+
+def test_use_existing_accepts_a_plain_folder_without_git(tmp_path):
+    (tmp_path / "plain").mkdir()
+    _, info = repo.use_existing(tmp_path, "plain")
+    assert info == repo.RepoInfo(url="", commit="", subject="", author="")
+
+
+@pytest.mark.parametrize("rel", ["", "/", "../outside", "a/../../x", "/etc", "~", "missing", "a\\b", ".git"])
+def test_use_existing_rejects_escapes_and_missing_folders(tmp_path, rel):
+    (tmp_path / "a").mkdir()
+    with pytest.raises(repo.RepoError):
+        repo.use_existing(tmp_path, rel)
+
+
+def test_use_existing_refuses_symlinks_leaving_the_root(tmp_path):
+    outside, root = tmp_path / "outside", tmp_path / "root"
+    outside.mkdir(); root.mkdir()
+    (root / "escape").symlink_to(outside)
+    with pytest.raises(repo.RepoError):
+        repo.use_existing(root, "escape")

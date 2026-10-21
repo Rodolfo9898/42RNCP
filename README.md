@@ -37,6 +37,11 @@ Clone with an SSH URL, e.g. `git@github.com:user/repo.git`. The clone is a full 
 `.git`), and git is installed in the sandbox and in claude's terminal: the checks' work copy and claude's copy are git
 repositories too (without hooks).
 
+**Open project** also has a second tab, **Use an existing folder**, for a project that is already on your computer: put it
+inside the projects folder (`./projects`, or `PROJECTS_DIR`), pick it from the list and it is reviewed where it is. Nothing is
+cloned, copied or deleted, and `verdict.md` is saved inside that folder. Only folders inside the projects folder can be
+chosen (the containers see nothing else); symbolic links and `..` are refused.
+
 ## Output
 
 `verdict.md` is **one page** that answers three questions, whoever found the answer (a script or claude's review):
@@ -138,6 +143,10 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 
 - **⌨ Claude** opens a real terminal tab on the cloned repository. The first time, type `/login` inside claude and
   sign in with your Claude account; the login is kept in the `claude-home` Docker volume (`make fclean` deletes it).
+  claude keeps running when the page is reloaded, the connection drops or the laptop sleeps: the tab reconnects by itself
+  (or, after a reload, **⌨ Claude** picks the same session up and shows the screen again). Closing the tab ends it. There is no idle
+  time limit; a session nobody came back to is ended after 12 hours (`TERMINAL_DETACHED_SECONDS`), and `TERMINAL_IDLE_SECONDS` /
+  `TERMINAL_MAX_SECONDS` can set optional limits (0 = none).
 - **✨ AI review** (with `LLM_PROVIDER=claude-cli` in `.env`; `CLAUDE_MODEL` optionally names a claude model, and no other `LLM_*`
   setting is read) runs the review in the terminal, using your Claude login. **Run** opens the Claude tab and claude starts
   with a prompt built from this run. It lists what the scripts verified (so claude does not redo it) and asks claude to judge

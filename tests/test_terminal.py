@@ -55,7 +55,9 @@ def env(tmp_path, monkeypatch):
     (repo / "src" / ".git").mkdir()                                       # a .git deeper in the tree
     (repo / "src" / ".git" / "config").write_text("[core]\n\tfsmonitor = evil\n")
     (repo / "link").symlink_to(secret)
-    return SimpleEnv(projects, scratch, repo, secret)
+    yield SimpleEnv(projects, scratch, repo, secret)
+    for live in list(terminal._live.values()):          # no claude outlives its test
+        terminal.finish(live)
 
 
 class SimpleEnv:
@@ -312,6 +314,7 @@ def test_result_returns_the_saved_report_of_a_live_session(env):
         got = client.get("/result", params={"sid": "sess-abc123"}, headers=headers).json()
         assert got["found"] and "ready to pass" in got["text"] and got["name"] == "claude-review.md"
         assert client.get("/result", params={"sid": "another-session"}, headers=headers).json()["found"] is False
+    assert client.post("/pty/end", params={"sid": "sess-abc123"}, headers=headers).json() == {"ended": True}
     for _ in range(50):
         if "sess-abc123" not in terminal._workdirs:
             break
@@ -421,6 +424,7 @@ def test_the_live_terminal_records_its_baseline_and_forgets_it(env):
         workdir = next(env.scratch.iterdir())
         (workdir / "REVIEW.md").write_text("# found by pattern")
         assert client.get("/result", params={"sid": "sess-base01"}, headers={"x-terminal-token": TOKEN}).json()["name"] == "REVIEW.md"
+    assert client.post("/pty/end", params={"sid": "sess-base01"}, headers={"x-terminal-token": TOKEN}).json() == {"ended": True}
     for _ in range(50):
         if "sess-base01" not in terminal._baselines:
             break
@@ -457,3 +461,82 @@ def test_selftest_really_builds_and_runs_inside_the_terminals_environment(env, m
     for step in ("C compiler (cc)", "C++ compiler (c++)", "make", "build C and C++ with make", "run the C program", "run the C++ program"):
         assert named[step]["ok"], named[step]
     assert list(env.scratch.iterdir()) == []                               # the scratch build is cleaned up
+
+
+# ---------------------------------------------------------------- a session outlives the connection
+
+
+def wait_for(condition, seconds=5):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
+
+
+def test_a_dropped_connection_keeps_claude_running_and_the_next_one_picks_it_up(env):
+    client = TestClient(terminal.app)
+    headers = {"x-terminal-token": TOKEN}
+    url = "/pty?repo=42/ps&sid=sess-keep01&cols=100&rows=30"
+    with client.websocket_connect(url, headers=headers) as ws:
+        read_until(ws, "ENV:")
+        ws.send_text('{"t":"i","d":"first\\n"}')
+        read_until(ws, "GOT:first")
+    live = terminal._live["sess-keep01"]
+    time.sleep(0.5)
+    assert len(list(env.scratch.iterdir())) == 1 and live.process.poll() is None and live.detached_at is not None
+    # said while nobody was watching: it is in the backlog the next connection is shown
+    with client.websocket_connect(url, headers=headers) as ws:
+        again = read_until(ws, "GOT:first")
+        assert "reconnected" in again and "ENV:" in again                      # the screen is replayed, not a fresh claude
+        ws.send_text('{"t":"i","d":"second\\n"}')
+        assert "GOT:second" in read_until(ws, "GOT:second")
+        assert terminal._live["sess-keep01"] is live and live.process.poll() is None
+    assert client.get("/result", params={"sid": "sess-keep01"}, headers=headers).status_code == 200
+    assert client.post("/pty/end", params={"sid": "sess-keep01"}, headers=headers).json() == {"ended": True}
+    assert wait_for(lambda: not list(env.scratch.iterdir()) and live.process.poll() is not None)
+    assert "sess-keep01" not in terminal._live and terminal._open_terminals == 0
+
+
+def test_ending_needs_the_token_and_is_harmless_for_unknown_sessions(env):
+    client = TestClient(terminal.app)
+    assert client.post("/pty/end", params={"sid": "x"}).status_code == 401
+    assert client.post("/pty/end", params={"sid": "nothing-here"}, headers={"x-terminal-token": TOKEN}).json() == {"ended": False}
+
+
+def test_a_new_review_prompt_replaces_the_session_instead_of_joining_it(env):
+    client = TestClient(terminal.app)
+    headers = {"x-terminal-token": TOKEN}
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-new001", headers=headers) as ws:
+        read_until(ws, "ENV:")
+    old = terminal._live["sess-new001"]
+    prompt_id = client.post("/prompts", json={"text": "Review it"}, headers=headers).json()["id"]
+    with client.websocket_connect(f"/pty?repo=42/ps&sid=sess-new001&prompt={prompt_id}", headers=headers) as ws:
+        assert "Review it" in read_until(ws, "FILES:")
+    assert terminal._live["sess-new001"] is not old and wait_for(lambda: old.process.poll() is not None)
+
+
+def test_a_claude_that_exited_is_not_reattached(env):
+    client = TestClient(terminal.app)
+    headers = {"x-terminal-token": TOKEN}
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-exit01", headers=headers) as ws:
+        read_until(ws, "ENV:")
+        terminal._live["sess-exit01"].process.kill()
+        with pytest.raises(WebSocketDisconnect) as info:
+            for _ in range(50):
+                ws.receive_bytes()
+        assert info.value.code == 4410                                          # "claude ended": the browser starts afresh
+    assert wait_for(lambda: "sess-exit01" not in terminal._live)
+
+
+def test_nobody_coming_back_ends_the_session_but_idleness_alone_does_not(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-reap01", headers={"x-terminal-token": TOKEN}) as ws:
+        read_until(ws, "ENV:")
+    live = terminal._live["sess-reap01"]
+    live.last_activity -= 10 * 3600                                             # hours without a keystroke or output
+    assert terminal.IDLE_SECONDS == 0 and terminal.MAX_SESSION_SECONDS == 0     # no idle or time limit by default
+    live.detached_at = time.monotonic() - terminal.DETACHED_SECONDS - 1        # but nobody came back for far too long
+    terminal.reap_once()
+    assert "sess-reap01" not in terminal._live and live.process.poll() is not None

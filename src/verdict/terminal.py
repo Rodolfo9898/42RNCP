@@ -42,8 +42,12 @@ CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 HOME = os.environ.get("TERMINAL_HOME", "/home/term")
 
 MAX_TERMINALS = 2
-MAX_SESSION_SECONDS = 2 * 3600
-IDLE_SECONDS = 30 * 60
+# A claude session is kept until it is ended on purpose: closing the browser tab, a reload, a sleeping laptop or a network
+# drop only detach from it, and the next connection picks it up again. The limits are safety nets (0 = no limit).
+MAX_SESSION_SECONDS = int(os.environ.get("TERMINAL_MAX_SECONDS", 0))
+IDLE_SECONDS = int(os.environ.get("TERMINAL_IDLE_SECONDS", 0))          # no input and no output for this long
+DETACHED_SECONDS = int(os.environ.get("TERMINAL_DETACHED_SECONDS", 12 * 3600))   # nobody connected for this long
+BACKLOG_BYTES = 512 * 1024                                               # what a returning browser is shown again
 REVIEW_TIMEOUT = 900
 MAX_COPY_BYTES = 200 * 1024 * 1024
 MAX_COPY_FILES = 20_000
@@ -316,23 +320,132 @@ async def store_prompt(request: Request) -> dict:
     return {"id": stash_prompt(text)}
 
 
+class Live:
+    """One claude on a PTY. It outlives the browser connection: a thread keeps reading its output into a backlog, and whoever
+    connects next (same web session) is shown the backlog and continues where the last one left off."""
+
+    def __init__(self, sid: str, process: subprocess.Popen, master: int, workdir: Path) -> None:
+        self.sid, self.process, self.master, self.workdir = sid, process, master, workdir
+        self.lock = threading.Lock()
+        self.backlog = bytearray()
+        self.sink = None                 # callable(bytes | None | str) of the connection that is watching, if any
+        self.kick = None                 # tells that connection it was replaced
+        self.detached_at: float | None = None
+        self.started = self.last_activity = time.monotonic()
+        self.ended = self.finished = False
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self) -> None:
+        while True:
+            try:
+                data = os.read(self.master, 65536)
+            except OSError:
+                data = b""
+            with self.lock:
+                if data:
+                    self.backlog += data
+                    del self.backlog[:-BACKLOG_BYTES]
+                    self.last_activity = time.monotonic()
+                else:
+                    self.ended = True
+                sink = self.sink
+            if sink:
+                sink(data or None)
+            if not data:
+                return
+
+    def say(self, text: bytes) -> None:
+        with self.lock:
+            sink = self.sink
+        if sink:
+            sink(text)
+
+
+_live: dict[str, Live] = {}
+_live_lock = threading.Lock()
+_reaper_started = False
+
+
+def finish(live: Live) -> bool:
+    """End a session for good: stop claude, forget its report location, delete its working copy."""
+    global _open_terminals
+    with _live_lock:
+        if live.finished:
+            return False
+        live.finished = True
+        if _live.get(live.sid) is live:
+            del _live[live.sid]
+        _open_terminals -= 1
+    for key in [k for k, v in _workdirs.items() if v == live.workdir]:
+        del _workdirs[key]
+        _baselines.pop(key, None)
+    terminate(live.process)
+    live.reader.join(timeout=3)
+    try:
+        os.close(live.master)
+    except OSError:
+        pass
+    cleanup(live.workdir)
+    return True
+
+
+def reap_once() -> None:
+    """Safety nets only: a session nobody came back to, or one past an optional time limit, is ended."""
+    now = time.monotonic()
+    for live in list(_live.values()):
+        reason = ""
+        if live.detached_at is not None and now - live.detached_at > DETACHED_SECONDS:
+            reason = "nobody came back to it"
+        elif MAX_SESSION_SECONDS and now - live.started > MAX_SESSION_SECONDS:
+            reason = "time limit"
+        elif IDLE_SECONDS and now - live.last_activity > IDLE_SECONDS:
+            reason = "idle"
+        if reason:
+            live.say(f"\r\n[terminal] closed ({reason})\r\n".encode())
+            finish(live)
+
+
+def _reaper() -> None:
+    while True:
+        time.sleep(30)
+        reap_once()
+
+
+def _start_reaper() -> None:
+    global _reaper_started
+    with _live_lock:
+        if _reaper_started:
+            return
+        _reaper_started = True
+    threading.Thread(target=_reaper, daemon=True).start()
+
+
+def alive(live: Live | None) -> bool:
+    return live is not None and not live.ended and live.process.poll() is None
+
+
 @app.websocket("/pty")
 async def pty_socket(ws: WebSocket) -> None:
     global _open_terminals
     if not authorised(ws.headers.get("x-terminal-token")):
         await ws.close(code=4401)
         return
-    if _open_terminals >= MAX_TERMINALS:
-        await ws.close(code=4429)
-        return
     try:
-        source = resolve_repo(ws.query_params.get("repo", ""))
         cols, rows = int(ws.query_params.get("cols", 80)), int(ws.query_params.get("rows", 24))
-        workdir = sanitized_copy(source)
-        requested = ws.query_params.get("prompt")
-        prompt = take_prompt(requested)
         session_id = ws.query_params.get("sid", "")
         session_id = session_id if re.fullmatch(r"[A-Za-z0-9_-]{6,32}", session_id) else ""
+        requested = ws.query_params.get("prompt")
+        live = _live.get(session_id) if session_id else None
+        if live is not None and (requested or not alive(live)):
+            finish(live)             # a new review prompt, or a claude that has exited, starts a fresh session
+            live = None
+        prompt = take_prompt(requested)
+        if live is None:
+            if _open_terminals >= MAX_TERMINALS:
+                await ws.close(code=4429)
+                return
+            workdir = sanitized_copy(resolve_repo(ws.query_params.get("repo", "")))
     except (ValueError, OSError) as exc:
         await ws.accept()
         await ws.send_bytes(f"\r\n[terminal] {exc}\r\n".encode())
@@ -340,98 +453,113 @@ async def pty_socket(ws: WebSocket) -> None:
         return
 
     await ws.accept()
-    if session_id:
-        _workdirs[session_id] = workdir
-        _baselines[session_id] = {p.name for p in workdir.iterdir()}
+    loop = asyncio.get_running_loop()
+    output: asyncio.Queue = asyncio.Queue()
     if requested and prompt is None:
         await ws.send_bytes(b"\r\n[terminal] the review prompt expired; click AI review again.\r\n")
-    _open_terminals += 1
-    loop = asyncio.get_running_loop()
-    process = master = None
-    try:
-        process, master = spawn(interactive_argv(prompt), workdir, cols, rows)
-        os.set_blocking(master, False)
-        output: asyncio.Queue[bytes | None] = asyncio.Queue()
+    if live is None:
+        process = master = None
+        try:
+            process, master = spawn(interactive_argv(prompt), workdir, cols, rows)
+        except OSError as exc:
+            cleanup(workdir)
+            await ws.send_bytes(f"\r\n[terminal] could not start claude: {exc}\r\n".encode())
+            await ws.close(code=4400)
+            return
+        with _live_lock:
+            _open_terminals += 1
+        live = Live(session_id or secrets.token_hex(8), process, master, workdir)
+        with _live_lock:
+            _live[live.sid] = live
+        if session_id:
+            _workdirs[session_id] = workdir
+            _baselines[session_id] = {p.name for p in workdir.iterdir()}
+        _start_reaper()
+    else:
+        set_size(live.master, cols, rows)
+        try:
+            os.killpg(live.process.pid, signal.SIGWINCH)
+        except (ProcessLookupError, PermissionError):
+            pass
 
-        def readable() -> None:
-            try:
-                data = os.read(master, 65536)
-            except OSError:
-                data = b""
-            output.put_nowait(data or None)
-            if not data:
-                loop.remove_reader(master)
+    def deliver(item) -> None:
+        try:
+            loop.call_soon_threadsafe(output.put_nowait, item)
+        except RuntimeError:             # that connection's event loop is gone
+            pass
 
-        loop.add_reader(master, readable)
-        last_activity = time.monotonic()
-        started = time.monotonic()
+    with live.lock:                  # the backlog and the live stream join up without a gap or a repeat
+        if live.kick:
+            live.kick()
+        if live.backlog:
+            note = b"\x1b[2m[reconnected: claude kept running while you were away]\x1b[0m\r\n" if live.detached_at is not None else b""
+            output.put_nowait(note + bytes(live.backlog))
+        live.sink, live.detached_at = deliver, None
+        live.kick = lambda: deliver("replaced")
+        mine = live.sink
+    if live.ended:
+        output.put_nowait(None)
 
-        async def pump_output() -> None:
-            while True:
-                data = await output.get()
-                if data is None:
-                    return
-                await ws.send_bytes(data)
+    async def pump_output() -> None:
+        while True:
+            item = await output.get()
+            if item is None or item == "replaced":
+                return item
+            await ws.send_bytes(item)
 
-        async def pump_input() -> None:
-            nonlocal last_activity
-            while True:
-                message = await ws.receive()
-                if message["type"] == "websocket.disconnect":
-                    return
-                last_activity = time.monotonic()
-                if message.get("bytes"):
-                    os.write(master, message["bytes"])
-                elif message.get("text"):
+    async def pump_input() -> None:
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            live.last_activity = time.monotonic()
+            if message.get("bytes"):
+                os.write(live.master, message["bytes"])
+            elif message.get("text"):
+                try:
+                    event = json.loads(message["text"])
+                except ValueError:
+                    continue
+                if event.get("t") == "i":
+                    os.write(live.master, str(event.get("d", "")).encode())
+                elif event.get("t") == "r":
+                    set_size(live.master, event.get("c", cols), event.get("r", rows))
                     try:
-                        event = json.loads(message["text"])
-                    except ValueError:
-                        continue
-                    if event.get("t") == "i":
-                        os.write(master, str(event.get("d", "")).encode())
-                    elif event.get("t") == "r":
-                        set_size(master, event.get("c", cols), event.get("r", rows))
-                        try:
-                            os.killpg(process.pid, signal.SIGWINCH)
-                        except ProcessLookupError:
-                            pass
+                        os.killpg(live.process.pid, signal.SIGWINCH)
+                    except (ProcessLookupError, PermissionError):
+                        pass
 
-        async def watchdog() -> None:
-            while True:
-                await asyncio.sleep(5)
-                if time.monotonic() - last_activity > IDLE_SECONDS or time.monotonic() - started > MAX_SESSION_SECONDS:
-                    await ws.send_bytes(b"\r\n[terminal] closed (idle or time limit)\r\n")
-                    return
-
-        tasks = [asyncio.create_task(f()) for f in (pump_output, pump_input, watchdog)]
+    close_code = 1000
+    tasks = [asyncio.ensure_future(pump_output()), asyncio.ensure_future(pump_input())]
+    try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in tasks:
-            task.cancel()
+        if tasks[0].done() and not tasks[0].cancelled() and tasks[0].exception() is None:
+            close_code = 4410 if tasks[0].result() is None else 4411      # 4410: claude ended; 4411: opened elsewhere
     except (WebSocketDisconnect, RuntimeError, OSError):
         pass
     finally:
-        _open_terminals -= 1
-        if master is not None:
-            try:
-                loop.remove_reader(master)
-                os.close(master)
-            except (OSError, ValueError):
-                pass
+        for task in tasks:
+            task.cancel()
+        with live.lock:
+            if live.sink is mine:                      # (not when another browser took the session over)
+                live.sink, live.kick = None, None
+                live.detached_at = time.monotonic()
         # A plain thread, not an await: this block also runs when the connection's task is being cancelled.
-        threading.Thread(target=_finish, args=(process, workdir), daemon=True).start()
+        if close_code == 4410 or not session_id:
+            threading.Thread(target=finish, args=(live,), daemon=True).start()
         try:
-            await ws.close()
+            await ws.close(code=close_code)
         except (RuntimeError, asyncio.CancelledError):
             pass
 
 
-def _finish(process: subprocess.Popen | None, workdir: Path) -> None:
-    for key in [k for k, v in _workdirs.items() if v == workdir]:
-        del _workdirs[key]
-        _baselines.pop(key, None)
-    if process is not None:
-        terminate(process)
-    cleanup(workdir)
+@app.post("/pty/end")
+def end_session(request: Request, sid: str = "") -> dict:
+    """The user closed the claude tab on purpose: stop claude and delete its working copy."""
+    if not authorised(request.headers.get("x-terminal-token")):
+        raise HTTPException(401, "bad token")
+    live = _live.get(sid)
+    return {"ended": bool(live and finish(live))}
 
 
 @app.post("/review")
