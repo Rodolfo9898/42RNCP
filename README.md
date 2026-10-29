@@ -162,7 +162,7 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   works there) but never its hooks or its config, which is replaced by a minimal one, so `.git` cannot make git run a
   program. It runs with `--setting-sources user`
   so hooks and settings shipped in a student's repo are ignored. The interactive terminal asks before each command or edit;
-  anything you approve affects only the copy. A student's repo can still try to talk the model into proposing something
+  anything you approve affects only the copy, until you send changes back yourself with **⬇ Apply to project** (below). A student's repo can still try to talk the model into proposing something
   harmful, so read each request before approving it, and never approve one that reads `~/.claude` or sends data out.
 - The terminal websocket only accepts pages served by this app (Origin check) and the two containers share a random
   `TERMINAL_TOKEN`, created in `.env` by `make`.
@@ -173,7 +173,7 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 and in the **same throw-away copy** of the repository that claude is working in, so you can watch what claude changed, run
 `make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it. Without a
 claude running it gets a copy of its own. A copy is deleted when the last tab using it closes; the original repository is
-never touched. Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
+only changed by **⬇ Apply to project** (below). Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
 
 It is the terminal container, not the sandbox: same toolchain (cc, c++, make, valgrind, gdb, norminette, the readline and X11
 headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
@@ -185,6 +185,30 @@ experiment:
   receives the build context, so bind mounts such as `-v "$PWD":/work` do not see your files; put them in the image with
   `COPY`. `pip install --user` and `npm install` into your home work (it is the `claude-home` volume).
 - Only the copy in `/scratch` is writable apart from your home and `/tmp`; it is memory, so a very large build can fill it.
+
+### ⬇ Apply to project: getting the changes back onto your machine
+
+The working copy lives in the terminal container's memory and disappears when its last tab closes, and that container can only
+*read* your projects folder. To keep what claude or you changed there, **apply it before closing the tab**: **⬇ Apply to
+project** lists every file that differs from the moment the copy was made, with its diff (click a name), and writes the ones
+you tick into the folder the repository was cloned into (`./projects/<name>`). Nothing is sent back by itself, and the
+terminal container stays read-only: the web app, which already owns the projects folder, does the writing.
+
+- **Only the working tree comes back.** Files appear in the project as ordinary uncommitted changes (new, modified, deleted):
+  review them with `git diff`, then commit them yourself. Commits made inside the copy are not transferred (their file changes
+  are); to publish those, push from the terminal (below) or commit on your machine.
+- **Your own edits are never overwritten.** Each file is compared with what it held when the copy was made. If you changed
+  it in the project since, it is listed as "changed on your machine" and skipped. Run it again after merging by hand.
+- **Never sent back:** `.git/` (history, hooks, config), `.claude/`, `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json`, symbolic
+  links, anything larger than 2 MB, and this app's own report files. An agent that could write those could configure git or the
+  next claude that opens your project. Folders an editor or shell may run things from (`.vscode`, `.devcontainer`, `.idea`,
+  `.cursor`, `.husky`, `.githooks`, `.envrc`) are shown with a warning and left unticked.
+- **Build output stays out.** What `.gitignore` covers (objects, binaries) is not listed. Binary files are listed but unticked.
+- **Checked twice.** The terminal container lists the changes, but the web app re-checks every path itself before writing: no
+  `..`, no absolute path, no link anywhere on the way into the project or at the end of it, files written to a temporary
+  name and moved into place (a half-written file is never left), existing files keep their permissions, and a file whose
+  content changed between the list and the write is skipped. Applying is refused while the checks are running.
+- The checklist and `verdict.md` are from before the change: run the checks again afterwards.
 
 ### `git push` from the terminal (opt-in)
 

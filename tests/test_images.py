@@ -117,7 +117,7 @@ def test_the_terminal_keeps_the_projects_read_only_and_none_of_the_apps_secrets(
 def test_the_terminal_has_every_package_the_sandbox_has():
     sandbox, terminal = apt_packages(SANDBOX), apt_packages(TERMINAL)
     assert sandbox <= terminal, f"missing from the terminal image: {sorted(sandbox - terminal)}"
-    for needed in ("build-essential", "make", "valgrind", "libreadline-dev", "libx11-dev", "libxext-dev", "libbsd-dev", "zlib1g-dev"):
+    for needed in ("build-essential", "make", "valgrind", "vim", "nano", "libreadline-dev", "libx11-dev", "libxext-dev", "libbsd-dev", "zlib1g-dev"):
         assert needed in sandbox and needed in terminal
 
 

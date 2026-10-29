@@ -103,6 +103,7 @@ function render() {
   const ai = $("#btn-ai");
   $("#btn-terminal").disabled = !session.repo;
   $("#btn-shell").disabled = !session.repo;
+  $("#btn-apply").disabled = !session.repo || busy();
   ai.disabled = busy() || !session.results.length || !llm.configured;
   ai.title = !llm.configured ? "Not configured: set ANTHROPIC_API_KEY, or LLM_BASE_URL + LLM_API_KEY + LLM_MODEL, in .env (see the README)"
     : !session.results.length ? "Run the checks first"
@@ -309,6 +310,74 @@ async function openFixPrompt() {
   ]);
 }
 
+// What claude or the shell changed in the terminal's throw-away copy. Nothing goes back by itself: the files are listed with
+// their differences, you tick the ones you want, and the app writes them into the project folder the repository was cloned into.
+const CHANGE_CHIP = { added: ["+", "added"], modified: ["~", "modified"], deleted: ["−", "deleted"] };
+
+function diffNodes(text) {
+  return text.split("\n").map((line, i, all) => h("span", { class: line.startsWith("@@") ? "hunk" : line.startsWith("+") && !line.startsWith("+++") ? "add"
+    : line.startsWith("-") && !line.startsWith("---") ? "del" : "" }, line + (i < all.length - 1 ? "\n" : "")));
+}
+
+async function openChanges() {
+  if (!session.repo) return toast("Clone a repository first.");
+  const data = await api(`sessions/${sid}/changes`);
+  const close = h("button", { class: "primary", onclick: closeDialog }, "Close");
+  if (!data.found) {
+    return dialog("Nothing to apply yet", h("p", {}, "There is no working copy right now. The changes live in the copy that ⌨ Claude or ⌨ Shell works in, and it exists only while one of those tabs is open."), [close]);
+  }
+  if (!data.files.length) {
+    return dialog("Nothing to apply yet", h("p", {}, "Nothing has changed in the working copy since it was made."), [close]);
+  }
+  const rows = data.files.map((f) => {
+    const box = h("input", { type: "checkbox" });
+    box.checked = f.selected;
+    box.disabled = f.action !== "apply";
+    const [sign, kind] = CHANGE_CHIP[f.status];
+    const diff = h("pre", { class: "diff", hidden: true });
+    let loaded = false;
+    const toggle = () => guarded(async () => {
+      diff.hidden = !diff.hidden;
+      if (diff.hidden || loaded) return;
+      loaded = true;
+      const d = await api(`sessions/${sid}/changes/diff?path=${encodeURIComponent(f.path)}`);
+      diff.replaceChildren(...(d.diff ? diffNodes(d.diff) : [d.note || "(no differences to show)"]), ...(d.truncated ? ["\n… cut"] : []));
+    });
+    const notes = [f.action !== "apply" && f.note, f.warn, f.binary && "binary file"].filter(Boolean).join(" · ");
+    const row = h("div", { class: "change" },
+      h("label", {}, box, h("span", { class: `chg-chip ${kind}` }, sign),
+        h("button", { class: "name", title: "Show what would change", onclick: (ev) => { ev.preventDefault(); toggle(); } }, f.path)),
+      notes && h("span", { class: `note ${f.action !== "apply" || f.warn ? "bad" : ""}` }, notes), diff);
+    return { box, path: f.path, row };
+  });
+  const apply = h("button", { class: "primary" });
+  const refresh = () => {
+    const n = rows.filter((r) => r.box.checked).length;
+    apply.textContent = `Apply ${n} file${n === 1 ? "" : "s"}`;
+    apply.disabled = n === 0;
+  };
+  rows.forEach((r) => r.box.addEventListener("change", refresh));
+  refresh();
+  apply.onclick = () => guarded(async () => {
+    const paths = rows.filter((r) => r.box.checked).map((r) => r.path);
+    apply.disabled = true;
+    const result = await post(`sessions/${sid}/changes/apply`, { paths });
+    closeDialog();
+    session = await api(`sessions/${sid}`);
+    render();
+    loadTree();
+    const left = result.skipped.length ? ` ${result.skipped.length} skipped: ${result.skipped.slice(0, 3).map((s) => `${s.path} (${s.reason})`).join("; ")}.` : "";
+    toast(`${result.applied.length} file(s) written into projects/${result.project}.${left} The checks above are from before: run them again.`, result.applied.length > 0 && !left);
+  });
+  dialog("Apply the changes to your project?", h("div", { class: "changes" },
+    h("p", {}, `${data.files.length} file(s) differ between the working copy and projects/${data.project}. Ticked files are written there, and nothing else: `,
+      "your own newer edits are never overwritten, and git history, .git and claude's own files never go back. Click a name to see what would change."),
+    data.truncated && h("p", { class: "warning" }, "There are more changes than can be listed; only the first ones are shown."),
+    h("div", { class: "change-list" }, rows.map((r) => r.row)),
+    h("p", { class: "hint" }, "The files appear as uncommitted changes in the project: review them with git diff, then commit them yourself.")),
+    [h("button", { onclick: closeDialog }, "Cancel"), apply]);
+}
+
 function renderPanel() {
   for (const b of document.querySelectorAll("#panel-tabs > button")) b.classList.toggle("active", b.dataset.tab === panelTab);
   const counts = Object.fromEntries(ORDER.map((k) => [k, session.results.filter((r) => shownStatus(r) === k).length]));
@@ -513,8 +582,8 @@ async function openTerminal(promptId, kind = "claude") {
   const view = h("div", { class: "view term" });
   const holder = h("div", { class: "term-holder" });
   view.append(h("div", { class: "term-bar" }, h("span", {}, shell
-    ? "A plain shell in the same throw-away copy claude works in (its own copy if claude is not running). Nothing here touches the original repository, and the copy is deleted when the last tab using it closes."
-    : "claude saves its report in its throw-away copy (approve the write). It is merged into verdict.md automatically; no other file is added to the repository.")), holder);
+    ? "A plain shell in the same throw-away copy claude works in (its own copy if claude is not running). Nothing here touches your project until you use ⬇ Apply to project, and the copy is deleted when the last tab using it closes."
+    : "claude works in a throw-away copy. Its report is merged into verdict.md automatically; to keep any other change, use ⬇ Apply to project before you close this tab.")), holder);
   addTab(key, `⌨ ${name}`, view, true);
   tabs.get(key).onClose = () => {
     clearInterval(tabs.get(key)?.watcher);
@@ -980,6 +1049,7 @@ $("#btn-ai").onclick = () => guarded(startAi);
 $("#btn-fix").onclick = () => guarded(openFixPrompt);
 $("#btn-terminal").onclick = () => guarded(() => openTerminal());
 $("#btn-shell").onclick = () => guarded(() => openTerminal(null, "shell"));
+$("#btn-apply").onclick = () => guarded(openChanges);
 $("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") closeDialog(); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeDialog(); });
 // ------------------------------------------------------------------ layout: resizable sidebar and bottom panel, like VS Code

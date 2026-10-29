@@ -30,7 +30,7 @@ FROM python:3.14-slim
 
 # Toolchains used to build and check the repositories under review (keep in step with terminal/Dockerfile).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git build-essential make valgrind libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends git build-essential make valgrind vim nano libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker

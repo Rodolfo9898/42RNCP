@@ -122,6 +122,19 @@ pre.log { margin: 6px 0 0; padding: 8px; background: #151515; border: 1px solid 
 #modal[hidden] { display: none; }
 .dialog { background: var(--side); border: 1px solid var(--border); box-shadow: 0 8px 30px #000a; min-width: 460px; max-width: 640px; max-height: 70vh; overflow: auto; padding: 16px; }
 .dialog h3 { margin: 0 0 10px; font-size: 14px; }
+.dialog:has(.changes) { max-width: 900px; width: 90vw; }
+.changes .change-list { max-height: 48vh; overflow: auto; border: 1px solid var(--border); padding: 4px 8px; }
+.changes .change { padding: 2px 0; }
+.changes .change label { display: flex; gap: 8px; align-items: baseline; }
+.changes button.name { background: none; border: 0; padding: 0; color: inherit; font: 12px var(--mono); cursor: pointer; text-align: left; }
+.changes button.name:hover { text-decoration: underline; }
+.changes .note { display: block; margin-left: 52px; font-size: 12px; color: var(--dim); }
+.changes .note.bad { color: var(--warn); }
+.changes .chg-chip { display: inline-block; width: 16px; text-align: center; font-weight: 700; }
+.changes .chg-chip.added { color: var(--pass); } .changes .chg-chip.modified { color: var(--manual); } .changes .chg-chip.deleted { color: var(--fail); }
+pre.diff { margin: 4px 0 8px 26px; padding: 6px; background: #151515; border: 1px solid var(--border); max-height: 240px; overflow: auto; font: 12px/1.4 var(--mono); white-space: pre; }
+pre.diff[hidden] { display: none; }
+pre.diff .add { color: var(--pass); } pre.diff .del { color: var(--fail); } pre.diff .hunk { color: var(--manual); }
 .dialog textarea.prompt { width: 100%; height: 42vh; box-sizing: border-box; padding: 8px; background: #151515; border: 1px solid var(--border); color: inherit; font: 12px/1.4 var(--mono); resize: vertical; }
 .dialog input[type=text] { width: 100%; padding: 6px 8px; background: #3c3c3c; border: 1px solid var(--border); color: #fff; font: inherit; }
 .dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }

@@ -39,7 +39,7 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat ripgrep build-essential make valgrind gdb libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat ripgrep build-essential make valgrind gdb vim nano libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # git over ssh, for `git push` from claude's terminal or the shell tab. It only works when docker-compose.ssh.yml gives the
