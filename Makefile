@@ -33,7 +33,7 @@ SSH_KEYS ?=
 all: build
 
 # norminette is cloned from GitHub over SSH through the same agent (falls back to HTTPS).
-build: token ssh
+build: token ssh pubkeys
 	$(if $(wildcard $(AGENT_SOCK)),SSH_AUTH_SOCK=$(AGENT_SOCK) $(COMPOSE) build --ssh default,$(COMPOSE) build)
 
 run: build token
@@ -57,6 +57,12 @@ token:
 ssh:
 	@VERDICT_OWN_AGENT=$(OWN_AGENT) sh scripts/ssh-setup.sh "$(AGENT_SOCK)" $(SSH_KEYS)
 
+# Your PUBLIC keys for claude's terminal and the shell tab: ~/.ssh/*.pub, and nothing else, are copied into .ssh-pub/, which the
+# terminal container sees read-only as ~/.ssh. The private keys never leave your ~/.ssh. Refreshed on every build.
+pubkeys:
+	@rm -rf .ssh-pub && mkdir -p .ssh-pub && chmod 755 .ssh-pub
+	@for k in $(HOME)/.ssh/*.pub; do [ -f "$$k" ] && cp "$$k" .ssh-pub/ && chmod 644 ".ssh-pub/$${k##*/}"; done; true
+
 # Lists the models offered by the server in .env (LLM_BASE_URL / LLM_API_KEY). The key is never printed.
 models:
 	@base="$${LLM_BASE_URL:-$$(grep -m1 '^LLM_BASE_URL=' .env 2>/dev/null | cut -d= -f2-)}"; \
@@ -74,4 +80,4 @@ cursus:
 cursus-sort:
 	@sh scripts/cursus.sh sort $(MAP)
 
-.PHONY: all build run clean fclean re models token ssh cursus cursus-sort
+.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort

@@ -20,6 +20,7 @@ let activeTab = "overview";
 const tabs = new Map(); // key -> { title, view, closable }
 const shown = new Set(ORDER);
 let polling = false;
+let pulling = false;
 
 async function api(path, options = {}) {
   const res = await fetch(`/api/${path}`, options);
@@ -113,6 +114,29 @@ function render() {
   fix.disabled = busy() || !session.results.length;
   fix.title = session.results.length ? "Write a prompt that asks an AI to fix everything the review found" : "Run the checks first";
   $("#btn-clone").disabled = busy();
+  const pull = $("#btn-pull");
+  pull.disabled = !session.repo || !session.repo.url || busy() || pulling;
+  pull.title = !session.repo ? "Open a project first"
+    : !session.repo.url ? "This folder is not a git repository with a remote"
+    : "git pull the project being reviewed (fast-forward only, through your ssh-agent)";
+  pull.textContent = pulling ? "⟳ Pulling…" : "⟳ Pull";
+}
+
+async function pullRepo() {
+  pulling = true;
+  render();
+  try {
+    const next = await post(`sessions/${sid}/repo/pull`);
+    session = next;
+    await loadTree();
+    for (const [key, tab] of [...tabs]) if (tab.repoFile) closeTab(key);   // their contents are from before the pull
+    toast(next.pull.changed
+      ? `Pulled: now at ${next.repo.commit}. ${next.pull.summary} Run the checks again; an open ⌨ Claude or ⌨ Shell still has the old copy until you close and reopen it.`
+      : `Already up to date (${next.repo.commit}).`, true);
+  } finally {
+    pulling = false;
+    render();
+  }
 }
 
 const TRACK_LABEL = { "common-core": "Common Core", "post-common-core": "Post Common Core", rncp: "RNCP" };
@@ -744,6 +768,7 @@ async function openFile(path, line) {
     tab = tabs.get(path);
     tab.language = file.language || (file.binary ? "binary" : "plain text");
     tab.setMode = setMode;
+    tab.repoFile = true;
     if (setMode) setMode(defaultViewMode(path, line));       // README.md opens rendered; a file:line reference opens the source
   }
   showTab(path);
@@ -1049,6 +1074,7 @@ $("#file-input").onchange = (ev) => { const pdfs = pdfsOf(ev.target.files); guar
 $("#btn-library").onclick = () => guarded(openLibrary);
 $("#btn-env").onclick = () => guarded(openEnvironment);
 $("#btn-clone").onclick = () => guarded(openClone);
+$("#btn-pull").onclick = () => guarded(pullRepo);
 $("#btn-run").onclick = () => guarded(run);
 $("#btn-ai").onclick = () => guarded(startAi);
 $("#btn-fix").onclick = () => guarded(openFixPrompt);

@@ -6,3 +6,4 @@ samples
 tests
 projects/
 .env
+.ssh-pub

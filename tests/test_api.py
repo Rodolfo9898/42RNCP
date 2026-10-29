@@ -216,6 +216,22 @@ def test_an_existing_folder_can_be_used_instead_of_cloning(client, monkeypatch):
     assert (main.PROJECTS / "42" / "libft" / "ft_a.c").read_text() == "int a;\n"
 
 
+def test_pull_updates_the_commit_shown_and_refuses_without_a_repository(client, monkeypatch):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    assert c.post(f"/api/sessions/{sid}/repo/pull").status_code == 404
+    (main.PROJECTS / "libft").mkdir()
+    c.post(f"/api/sessions/{sid}/repo/existing", json={"path": "libft"})
+    monkeypatch.setattr(main.repo_mod, "pull", lambda path, kh: (main.repo_mod.RepoInfo("git@github.com:me/libft.git", "b2", "second", "Me"), "1 file changed"))
+    r = c.post(f"/api/sessions/{sid}/repo/pull")
+    assert r.status_code == 200
+    assert (r.json()["repo"]["commit"], r.json()["repo"]["path"], r.json()["pull"]) == ("b2", "libft", {"changed": True, "summary": "1 file changed"})
+    def refuse(path, kh):
+        raise main.repo_mod.RepoError("git pull failed: diverged")
+    monkeypatch.setattr(main.repo_mod, "pull", refuse)
+    assert c.post(f"/api/sessions/{sid}/repo/pull").json()["detail"] == "git pull failed: diverged"
+
+
 @pytest.mark.parametrize("path", ["../x", "/etc", "nope", ""])
 def test_using_an_existing_folder_refuses_anything_outside_the_projects_folder(client, path):
     c, _ = client

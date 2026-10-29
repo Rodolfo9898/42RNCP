@@ -107,7 +107,23 @@ def test_the_terminal_gets_the_projects_folder_read_write_by_default_and_only_th
     mounts = re.findall(r"^\s+- (\S+:/projects\S*)", block, re.M)
     assert mounts == ["${PROJECTS_DIR:-./projects}:/projects:${TERMINAL_PROJECTS_MODE:-rw}"]      # read-write unless TERMINAL_PROJECTS_MODE=ro
     others = re.findall(r"^\s+- (\S+:\S+)", block.split("volumes:", 1)[1].split("tmpfs:", 1)[0], re.M)
-    assert others == [mounts[0], "claude-home:/home/term"], others                                # nothing else of yours is mounted
+    assert others == [mounts[0], "claude-home:/home/term", "./.ssh-pub:/home/term/.ssh:ro"], others    # nothing else of yours is mounted
+
+
+def test_the_terminal_gets_only_your_public_keys_and_read_only():
+    recipe = MAKEFILE.split("\npubkeys:", 1)[1].split("\n\n", 1)[0]
+    assert "$(HOME)/.ssh/*.pub" in recipe and not re.search(r"\.ssh/(\*|id_)[^.\s]*\s", recipe)              # never a private key
+    assert re.search(r"^build: .*\bpubkeys\b", MAKEFILE, re.M)                                                 # refreshed on every build
+    assert ".ssh-pub" in (ROOT / ".gitignore").read_text() and ".ssh-pub" in (ROOT / ".dockerignore").read_text()
+
+
+def test_the_shell_tab_runs_zsh_with_oh_my_zsh_without_writing_into_the_image():
+    final = final_stage(TERMINAL)
+    assert "zsh" in apt_packages(TERMINAL)
+    assert "TERMINAL_SHELL=/usr/bin/zsh" in final and "ZDOTDIR=/etc/verdict-zsh" in final
+    assert "COPY terminal/zshrc /etc/verdict-zsh/.zshrc" in final and "/opt/oh-my-zsh" in final
+    zshrc = (ROOT / "terminal" / "zshrc").read_text()
+    assert 'ZSH_CACHE_DIR="$HOME/' in zshrc and "':omz:update' mode disabled" in zshrc                       # the image is read-only
 
 
 def test_the_terminal_keeps_its_isolation_and_none_of_the_apps_secrets():

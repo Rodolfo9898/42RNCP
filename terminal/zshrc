@@ -1,0 +1,17 @@
+# zsh + Oh My Zsh for the ⌨ Shell tab. The image puts this file at $ZDOTDIR/.zshrc, so zsh does not start its first-run
+# wizard on the empty claude-home volume. History, Oh My Zsh's cache and your own ~/.zshrc live in that volume.
+export ZSH=/opt/oh-my-zsh
+export ZSH_CACHE_DIR="$HOME/.cache/oh-my-zsh"     # the image is read-only
+ZSH_COMPDUMP="$ZSH_CACHE_DIR/.zcompdump"
+ZSH_THEME="robbyrussell"
+plugins=(git)
+zstyle ':omz:update' mode disabled                # updated by rebuilding the image
+mkdir -p "$ZSH_CACHE_DIR/completions"
+
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=10000
+SAVEHIST=10000
+
+source "$ZSH/oh-my-zsh.sh"
+
+[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc"

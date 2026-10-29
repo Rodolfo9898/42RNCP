@@ -962,3 +962,12 @@ def test_folders_nobody_uses_are_pruned_but_a_live_reviews_is_kept(env):
         post_pdfs(client, [("a.pdf", PDF_A)], sid="sess-new001")                              # any new handover prunes
         assert not (terminal.SUBJECTS_ROOT / "sess-old001").exists()
         assert (terminal.SUBJECTS_ROOT / "sess-old002").is_dir() and (terminal.SUBJECTS_ROOT / "sess-new001").is_dir()
+
+
+def test_the_shell_gets_its_shell_and_zsh_config_but_claude_does_not(env, monkeypatch):
+    monkeypatch.setattr(terminal, "SHELL", "/usr/bin/zsh")
+    monkeypatch.setenv("ZDOTDIR", "/etc/verdict-zsh")
+    shell = terminal.shell_env()
+    assert (shell["SHELL"], shell["ZDOTDIR"]) == ("/usr/bin/zsh", "/etc/verdict-zsh")
+    assert {k: v for k, v in shell.items() if k not in ("SHELL", "ZDOTDIR")} == terminal.child_env()
+    assert "SHELL" not in terminal.child_env() and "ZDOTDIR" not in terminal.child_env()

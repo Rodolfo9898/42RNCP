@@ -225,6 +225,63 @@ def _folder_info(path: Path) -> RepoInfo:
     return RepoInfo(url=git("config", "--get", "remote.origin.url").strip(), commit=log[0], subject=log[1], author=log[2])
 
 
+# The only settings a repository's own .git/config may hold before it is pulled. claude and the shell can write to the
+# projects folder, so anything else (core.sshCommand, core.fsmonitor, a filter driver, an include, ...) could run a command
+# here, in the container that has your ssh-agent. A plain clone only has these.
+PULL_SAFE_CONFIG = re.compile(
+    r"core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks)"
+    r"|remote\.[^\s]+\.(url|fetch|pushurl|prune|tagopt)"
+    r"|branch\.[^\s]+\.(remote|merge|rebase)"
+    r"|submodule\.[^\s]+\.(url|active)"
+    r"|user\.(name|email)|pull\.(rebase|ff)|init\.defaultbranch"
+)
+PULL_TIMEOUT = 300
+
+
+def pull(path: Path, known_hosts: Path) -> tuple[RepoInfo, str]:
+    """Fast-forward `path` to its upstream (git pull --ff-only), through the ssh-agent. Returns the new state and git's summary."""
+    if not (path / ".git").is_dir():
+        raise RepoError("This folder is not a git repository, so there is nothing to pull.")
+    known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(known_hosts.parent),
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+        "GIT_SSH_COMMAND": ("ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new "
+                            f"-o UserKnownHostsFile={known_hosts}"),
+    }
+    if os.environ.get("SSH_AUTH_SOCK"):
+        env["SSH_AUTH_SOCK"] = os.environ["SSH_AUTH_SOCK"]
+    base = ["git", "-c", f"safe.directory={path}", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+            "-c", "protocol.allow=never", "-c", "protocol.ssh.allow=always", "-C", str(path)]
+
+    def git(*args: str, timeout: int = 20) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run([*base, *args], env=env, capture_output=True, text=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RepoError(f"git {args[0]} timed out after {timeout}s") from exc
+
+    # --local reads only .git/config and does not follow includes, so an include shows up as a key and is refused.
+    config = [line.split("=", 1) + [""] for line in git("config", "--local", "--list").stdout.splitlines() if line]
+    unsafe = sorted({k for k, *_ in config if not PULL_SAFE_CONFIG.fullmatch(k)})
+    if unsafe:
+        raise RepoError(f"Not pulling: .git/config has settings that could run commands ({', '.join(unsafe[:5])}). "
+                        "Pull from your own terminal after checking them.")
+    urls = [v for k, v, *_ in config if re.fullmatch(r"remote\..+\.url", k)]
+    if not urls:
+        raise RepoError("This repository has no remote to pull from.")
+    for url in urls:   # every remote, since the branch may track one other than origin
+        validate_url(url)
+    proc = git("pull", "--ff-only", "--no-recurse-submodules", timeout=PULL_TIMEOUT)
+    if proc.returncode != 0:
+        raise RepoError(explain_clone_failure(proc.stderr, proc.returncode).replace("git clone failed", "git pull failed", 1))
+    lines = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
+    return _folder_info(path), (lines[-1] if lines else "Already up to date.")
+
+
 def safe_path(root: Path, rel: str) -> Path:
     """Resolve `rel` inside `root`; refuse traversal and symlinks that leave the repo."""
     root = root.resolve()

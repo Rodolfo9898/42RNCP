@@ -480,6 +480,27 @@ def use_existing_repo(session_id: str, req: ExistingRequest) -> dict:
     return view(session)
 
 
+@app.post("/api/sessions/{session_id}/repo/pull")
+def pull_repo(session_id: str) -> dict:
+    """git pull (fast-forward only) in the project being reviewed, through the ssh-agent, then show the new commit."""
+    session = session_or_404(session_id)
+    if session.state in ("cloning", "running"):
+        raise HTTPException(409, f"session is busy ({session.state})")
+    root = repo_dir(session)
+    if root is None or not root.is_dir():
+        raise HTTPException(404, "no repository to pull")
+    try:
+        info, summary = repo_mod.pull(root, WORKSPACE / "known_hosts")
+    except repo_mod.RepoError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    changed = info.commit != session.repo.commit
+    session.repo = RepoMeta(**info.__dict__, name=session.repo.name, path=session.repo.path)
+    if changed:
+        session.state, session.message = "idle", ""
+    refresh_context(session)
+    store.save(session)
+    return {**view(session), "pull": {"changed": changed, "summary": summary}}
+
 @app.post("/api/sessions/{session_id}/repo")
 def clone_repo(session_id: str, req: RepoRequest) -> dict:
     session = session_or_404(session_id)

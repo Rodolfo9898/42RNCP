@@ -39,8 +39,17 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat ripgrep build-essential make valgrind gdb vim nano libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat ripgrep build-essential make valgrind gdb vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# The ⌨ Shell tab runs zsh (TERMINAL_SHELL below) with Oh My Zsh. Both live in the image (no auto-update: the image is
+# read-only); the rc file also sources your own ~/.zshrc if you add one. OH_MY_ZSH_REF pins a branch, tag or commit.
+ARG OH_MY_ZSH_REF=master
+RUN git clone --quiet https://github.com/ohmyzsh/ohmyzsh.git /opt/oh-my-zsh \
+    && git -C /opt/oh-my-zsh checkout --quiet "$OH_MY_ZSH_REF" \
+    && git -C /opt/oh-my-zsh log -1 --format='oh-my-zsh %h %cs' \
+    && rm -rf /opt/oh-my-zsh/.git
+COPY terminal/zshrc /etc/verdict-zsh/.zshrc
 
 # git over ssh, for `git push` from claude's terminal or the shell tab. It only works when docker-compose.ssh.yml gives the
 # container your ssh-agent (off by default); there are no keys in the image. GitHub's ED25519 host key is trusted, checked
@@ -77,6 +86,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 USER term
 ENV PROJECTS_DIR=/projects SCRATCH_DIR=/scratch TERMINAL_HOME=/home/term \
-    CLAUDE_CONFIG_DIR=/home/term/.claude PYTHONDONTWRITEBYTECODE=1
+    CLAUDE_CONFIG_DIR=/home/term/.claude PYTHONDONTWRITEBYTECODE=1 \
+    TERMINAL_SHELL=/usr/bin/zsh ZDOTDIR=/etc/verdict-zsh
 EXPOSE 8002
 CMD ["uvicorn", "verdict.terminal:app", "--host", "0.0.0.0", "--port", "8002"]

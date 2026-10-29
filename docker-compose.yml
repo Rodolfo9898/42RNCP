@@ -65,7 +65,7 @@ services:
   # `claude` for the in-app terminal and the one-click review. It gets internet (to reach Anthropic) but none of the
   # web app's secrets: no .env, no ssh-agent, no other sessions. The projects folder is mounted read-write (set
   # TERMINAL_PROJECTS_MODE=ro to make it read-only again), and claude and the shell work on throw-away copies in /scratch.
-  # Your Claude login lives in the `claude-home` volume.
+  # Your Claude login lives in the `claude-home` volume. Your public keys (~/.ssh/*.pub only) are in ~/.ssh, read-only.
   terminal:
     build:
       context: .
@@ -77,6 +77,7 @@ services:
     volumes:
       - ${PROJECTS_DIR:-./projects}:/projects:${TERMINAL_PROJECTS_MODE:-rw}
       - claude-home:/home/term
+      - ./.ssh-pub:/home/term/.ssh:ro   # your ~/.ssh/*.pub only (`make pubkeys`); no private key
     tmpfs:
       - /scratch:exec,size=1g,uid=1000,gid=1000   # `exec`: claude builds and runs the project here
       - /tmp:size=256m,uid=1000,gid=1000

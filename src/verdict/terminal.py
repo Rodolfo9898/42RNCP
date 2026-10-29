@@ -120,6 +120,14 @@ def shell_argv() -> list[str]:
     """A plain interactive shell for the user to type in: the same environment as claude, nothing more."""
     return [SHELL, "-i"]
 
+
+def shell_env(session_id: str = "") -> dict[str, str]:
+    """claude's environment, plus what tells programs (and zsh, for its rc file) which shell this is. claude keeps bash."""
+    env = {**child_env(session_id), "SHELL": SHELL}
+    if os.environ.get("ZDOTDIR"):
+        env["ZDOTDIR"] = os.environ["ZDOTDIR"]
+    return env
+
 def review_argv(prompt: str, schema: dict, model: str | None) -> list[str]:
     argv = [
         CLAUDE, "-p", prompt, "--output-format", "json", "--json-schema", json.dumps(schema),
@@ -744,7 +752,10 @@ async def pty_socket(ws: WebSocket) -> None:
     if live is None:
         process = master = None
         try:
-            process, master = spawn(interactive_argv(prompt) if kind == "claude" else shell_argv(), workdir, cols, rows, child_env(session_id))
+            if kind == "claude":
+                process, master = spawn(interactive_argv(prompt), workdir, cols, rows, child_env(session_id))
+            else:
+                process, master = spawn(shell_argv(), workdir, cols, rows, shell_env(session_id))
         except OSError as exc:
             if not borrowed:
                 cleanup(workdir)
