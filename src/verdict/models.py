@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 Section = Literal["mandatory", "bonus"]
-Status = Literal["pass", "fail", "warn", "manual", "skipped"]
+Status = Literal["pass", "fail", "warn", "manual", "skipped", "na"]   # na: the rule does not apply to this project (counts as ok)
 
 
 class Source(BaseModel):

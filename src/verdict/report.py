@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from .checks import VERDICT_MARKER
 from .models import AIReview, AIState, CheckResult, ClaudeReport, Evidence, Improvement
 
-ORDER = ("fail", "warn", "manual", "skipped", "pass")
+ORDER = ("fail", "warn", "manual", "skipped", "na", "pass")
 AI_NOTE = ("> Written by an AI model ({model}) from a bounded view of the repository. It is advisory and unverified: "
            "it never changes the result, and file/line citations are checked against what the model was shown.")
 CATEGORY_TITLES = {"structure": "Structure", "code": "Code", "logic": "Logic", "readability": "Readability"}
@@ -135,6 +135,8 @@ def bucket(results: list[CheckResult], ai: AIState | None) -> Buckets:
             (out.not_submitted if r.title.startswith("Bonus part not submitted") else out.second).append(entry)
         elif r.status == "pass":
             out.ok.append(entry)
+        elif r.status == "na":
+            out.not_applicable.append(entry)
     return out
 
 

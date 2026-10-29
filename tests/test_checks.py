@@ -153,3 +153,13 @@ def test_without_a_sandbox_only_the_sources_can_be_checked(tmp_path):
     results = review(library_repo(tmp_path), None, pages=LIB_SUBJECT)
     check = by_title(results, "Required functions are defined")
     assert check.status == "pass" and "sources" in check.detail and "libft.a" not in check.detail
+
+
+def test_a_missing_bonus_rule_is_not_applicable_when_there_are_no_bonus_files(tmp_path):
+    from verdict.models import Rule
+    (tmp_path / "Makefile").write_text("all:\n\tcc main.c\n")
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
+    rule = Rule(id="r1", kind="bonus_rule", title="Makefile has a bonus rule")
+    out = []
+    run_checks(Ctx(repo=tmp_path.resolve(), rules=[rule], sandbox=None, lang="c"), out.append)
+    assert [r.status for r in out if r.rule_id == "r1"] == ["na"]

@@ -103,7 +103,7 @@ body.resizing { user-select: none; cursor: col-resize; }
 .item-head:hover { background: var(--sel); margin: 0 -12px; padding: 0 12px; }
 .icon { flex: none; width: 14px; text-align: center; font-weight: 700; }
 .st-fail .icon { color: var(--fail); } .st-warn .icon { color: var(--warn); } .st-pass .icon { color: var(--pass); }
-.st-manual .icon { color: var(--manual); } .st-skipped .icon { color: var(--skip); }
+.st-manual .icon { color: var(--manual); } .st-skipped .icon { color: var(--skip); } .st-na .icon { color: var(--skip); }
 .item-title { font-weight: 600; }
 .item-detail { color: var(--dim); }
 .item-body { margin: 4px 0 6px 22px; }

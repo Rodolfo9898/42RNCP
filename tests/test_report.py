@@ -230,3 +230,16 @@ def test_escaping_still_protects_names_with_underscores_and_stars():
     ai = AIState(reviews={"r1": AIReview(rule_id="r1", assessment="likely_problem", finding="ft_strchr.c is wrong", by="Claude")})
     md = render_markdown(repo=None, subjects=[], results=results, ai=ai)
     assert "ft\\_strchr and ft\\_\\*.c must exist." in md and "ft\\_strchr.c is wrong" in md
+
+
+def test_not_applicable_is_listed_as_such_and_does_not_need_a_second_look():
+    na = result("na", title="Makefile has a bonus rule", detail="No bonus files in the repository, so no bonus rule is required.")
+    assert summarize([result("pass"), na])["overall"] == "PASS"
+    assert summarize([result("pass"), na])["mandatory"]["na"] == 1
+    md = render_markdown(repo=None, subjects=[], results=[result("pass"), na], improvements=[])
+    assert "### Not applicable to this project (1)" in md and "Makefile has a bonus rule" in md
+    assert "Warnings and checks that could not run" not in md
+    # anything else that was skipped is still a warning
+    skipped = result("skipped", title="Passes norminette", detail="norminette is not installed.")
+    assert summarize([result("pass"), na, skipped])["overall"] == "PASS WITH ISSUES"
+    assert "### Warnings and checks that could not run (1)" in render_markdown(repo=None, subjects=[], results=[na, skipped], improvements=[])

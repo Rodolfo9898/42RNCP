@@ -196,7 +196,7 @@ def cpp_no_stl(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
 def bonus_rule(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     bonus_files = [p for p in ctx.files() if re.search(r"bonus", p.name, re.I) and p.suffix in (".c", ".h", ".cpp", ".hpp")]
     if not bonus_files:
-        yield result(rule, "skipped", "No bonus files in the repository, so no bonus rule is required.")
+        yield result(rule, "na", "No bonus files in the repository, so no bonus rule is required.")
         return
     path = ctx.unit_dir(rule.unit) / "Makefile"
     text = path.read_text(errors="replace") if path.is_file() else ""

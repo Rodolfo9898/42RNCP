@@ -5,10 +5,10 @@
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
-const ICON = { fail: "✖", warn: "!", manual: "?", skipped: "–", pass: "✔" };
-const ORDER = ["fail", "warn", "manual", "skipped", "pass"];
-const SHORT = { fail: "Failed", warn: "Warnings", manual: "Manual", skipped: "Skipped", pass: "Passed" };
-const TITLES = { fail: "Failed", warn: "Warnings", manual: "Needs manual review", skipped: "Not checked", pass: "Passed" };
+const ICON = { fail: "✖", warn: "!", manual: "?", skipped: "–", na: "∅", pass: "✔" };
+const ORDER = ["fail", "warn", "manual", "skipped", "na", "pass"];
+const SHORT = { fail: "Failed", warn: "Warnings", manual: "Manual", skipped: "Skipped", na: "N/A", pass: "Passed" };
+const TITLES = { fail: "Failed", warn: "Warnings", manual: "Needs manual review", skipped: "Not checked", na: "Not applicable", pass: "Passed" };
 
 let sid = null;
 let session = null;
