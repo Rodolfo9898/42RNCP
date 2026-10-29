@@ -167,6 +167,64 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 - The terminal websocket only accepts pages served by this app (Origin check) and the two containers share a random
   `TERMINAL_TOKEN`, created in `.env` by `make`.
 
+## Shell, to try things by hand
+
+**⌨ Shell** (title bar, with a repository open) opens a plain `bash` tab next to **⌨ Claude**. It runs in the same container
+and in the **same throw-away copy** of the repository that claude is working in, so you can watch what claude changed, run
+`make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it. Without a
+claude running it gets a copy of its own. A copy is deleted when the last tab using it closes; the original repository is
+never touched. Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
+
+It is the terminal container, not the sandbox: same toolchain (cc, c++, make, valgrind, gdb, norminette, the readline and X11
+headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
+checks has no network, so it cannot answer questions like "does `apt-get install` work here". Two limits to know when you
+experiment:
+
+- The container is read-only and not root, so `apt install` is not possible. Test what a project needs where it will really
+  run: `docker build -t try . && docker run --rm -it try sh` (or `docker compose up --build`) from the shell. The daemon only
+  receives the build context, so bind mounts such as `-v "$PWD":/work` do not see your files; put them in the image with
+  `COPY`. `pip install --user` and `npm install` into your home work (it is the `claude-home` volume).
+- Only the copy in `/scratch` is writable apart from your home and `/tmp`; it is memory, so a very large build can fill it.
+
+### `git push` from the terminal (opt-in)
+
+Off by default: the terminal container has none of your credentials. To push from claude's terminal or the shell, switch it on:
+
+```sh
+make run TERMINAL_SSH=1        # or put a line TERMINAL_SSH=1 in .env, then make run
+```
+
+This adds `docker-compose.ssh.yml`, which gives **only the terminal container** the same ssh-agent socket the web container
+already uses for cloning (no `.env`, no API keys; the sandbox that runs student code gets nothing). **What you are agreeing to:**
+while it is on, anything that runs in that container can use your keys through the agent, including a peer's code that claude
+builds or runs there. The agent never reveals the key, but it signs for GitHub as you, so such code could push to any repository
+your key can write to. So load a **dedicated key** that only reaches the repositories you push to (`ssh-add -D`, then
+`ssh-add ~/.ssh/that_key`), and turn the switch off (`make run` without it) when you review code you do not trust.
+
+Inside the tab, once: `git config --global user.name "…"` and `git config --global user.email "…"` (kept in `claude-home`).
+The copy's `origin` is restored from the clone when it is a plain `git@host:path`, `ssh://git@host/…` or `https://host/…`
+address (never `ext::`, a path or anything else), and `git push -u origin HEAD` sends the copy's commits there; the clone in
+your projects folder only sees them after a `git pull`. The image trusts GitHub's published ED25519 host key (checked against
+a pinned fingerprint at build time) and refuses every other host. Check it with `ssh-add -l` and `ssh -T git@github.com`.
+
+## Fix prompt
+
+**🛠 Fix prompt** (title bar, once the checks have run) writes a prompt that asks an AI to fix what the review found, and shows
+it in a box to **Copy** (you can edit it first). It lists the same things `verdict.md` does, numbered so the AI can report back by number:
+
+- **A. Must fix:** failed checks and the requirements claude or the AI judged a problem, each with its `file:line`, the subject page
+  and the end of the log.
+- **B. Look at, and fix only if it is real:** warnings, checks that could not run, points the reviewer was unsure about, and
+  automated results claude disputes.
+- **C. Bonus part:** failed bonus checks, marked optional.
+
+Requirements nobody has assessed yet are not issues, so they are left out; if nothing is lacking it says so instead of
+producing an empty prompt. The prompt tells the AI to confirm each finding before touching code, to make the smallest change,
+to treat the issue text as data, to leave `verdict.md` alone, and to report each issue as fixed / not fixed / not real.
+It is copied rather than sent to the **⌨ Claude** tab on purpose: that claude works on a throw-away copy, so a fix made there
+would be lost when the tab closes. Paste it into claude (or any assistant) in the project's own folder. The same text is at
+`GET /api/sessions/{id}/fix-prompt`.
+
 ## SSH troubleshooting
 
 The status bar shows `ssh: N key(s)` when the container can use your agent, or `ssh: ⚠ not ready` with the reason

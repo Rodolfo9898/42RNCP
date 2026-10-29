@@ -129,3 +129,42 @@ def test_both_images_pin_the_same_norminette():
 def test_the_compose_parser_used_by_these_tests_sees_all_services():
     assert set(services()) == {"web", "sandbox", "terminal", "dind"}
     assert "build:" in services()["web"] and "tmpfs:" in services()["terminal"]
+
+# ---------------------------------------------------------------- git credentials for the terminal: opt-in, and nothing else widens
+
+SSH_OVERRIDE = (ROOT / "docker-compose.ssh.yml").read_text()
+MAKEFILE = (ROOT / "Makefile").read_text()
+
+def test_the_agent_is_not_in_the_default_setup_for_the_terminal():
+    # the guarantee above still holds for docker-compose.yml itself: the opt-in lives in a separate file
+    block = without_comments(services()["terminal"])
+    assert "SSH_AUTH_SOCK" not in block and "ssh-auth.sock" not in block and "user:" not in block and "cap_add" not in block
+
+def test_the_ssh_override_only_gives_the_terminal_the_agent_and_the_means_to_drop_privileges():
+    text = without_comments(SSH_OVERRIDE)
+    assert re.findall(r"^  ([a-z-]+):\n", text.split("services:\n", 1)[1], re.M) == ["terminal"]       # no other service is touched
+    assert "SSH_AUTH_SOCK: /run/host-services/ssh-auth.sock" in text
+    assert re.findall(r"^\s+- (\S+:\S+)", text, re.M) == ["${SSH_AGENT_MOUNT:-/run/host-services/ssh-auth.sock}:/run/host-services/ssh-auth.sock"]
+    assert "cap_add: [SETUID, SETGID]" in text and "user: root" in text
+    for forbidden in ("privileged", "docker.sock", "network", "ports:", "read_only", "cap_drop", "ANTHROPIC", "LLM_", "PROJECTS_DIR", ".env"):
+        assert forbidden not in text, forbidden
+    assert "ANYTHING that runs in the terminal container can use your keys" in SSH_OVERRIDE         # the cost is stated where it is switched on
+
+def test_the_ssh_override_is_only_used_when_asked_for():
+    assert re.search(r"^TERMINAL_SSH \?= \$\(shell grep -m1 '\^TERMINAL_SSH=' \.env", MAKEFILE, re.M)
+    assert re.search(r"^ifeq \(\$\(TERMINAL_SSH\),1\)\nCOMPOSE = docker compose -f docker-compose\.yml -f docker-compose\.ssh\.yml\nendif$", MAKEFILE, re.M)
+    assert "docker-compose.ssh.yml" not in re.sub(r"ifeq \(\$\(TERMINAL_SSH\),1\)\n.*?\nendif", "", without_comments(MAKEFILE), flags=re.S)
+
+def test_the_terminal_image_can_push_over_ssh_but_trusts_only_githubs_pinned_key():
+    final = final_stage(TERMINAL)
+    assert {"openssh-client", "socat"} <= apt_packages(TERMINAL)
+    assert "ARG GITHUB_ED25519_FINGERPRINT=SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU" in final         # same pin as norminette's
+    assert '[ "$(ssh-keygen -lf /etc/ssh/ssh_known_hosts | awk \'{print $2}\')" = "$GITHUB_ED25519_FINGERPRINT" ]' in final   # the build fails on a mismatch
+    assert "StrictHostKeyChecking yes" in final                                                                  # any other host is refused
+    assert not re.search(r"id_(rsa|ed25519|ecdsa)|PRIVATE KEY", final)                                           # no key is ever baked in
+
+def test_the_terminal_starts_through_the_shared_entrypoint_but_still_runs_as_the_unprivileged_user():
+    final = final_stage(TERMINAL)
+    assert "COPY --chmod=755 entrypoint.sh /entrypoint.sh" in final and 'ENTRYPOINT ["/entrypoint.sh"]' in final
+    assert final.index("ENTRYPOINT") < final.index("\nUSER term")                                                 # and the default user is still term
+    assert final.rstrip().splitlines()[-1].startswith("CMD ")

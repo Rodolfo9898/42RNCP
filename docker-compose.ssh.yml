@@ -1,0 +1,18 @@
+# Optional: lets the terminal container (claude's terminal and the ⌨ Shell tab) use your ssh-agent, so `git push` works there.
+# Turn it on with TERMINAL_SSH=1 (`make run TERMINAL_SSH=1`, or a line TERMINAL_SSH=1 in .env); make adds this file for you.
+#
+# What you are agreeing to: while it is on, ANYTHING that runs in the terminal container can use your keys through the agent,
+# including code from a project under review that claude builds or runs there. The agent never hands out the key itself, but
+# it will sign for GitHub (or any host in the container's known_hosts: only github.com) as you. Prefer a dedicated key with
+# access to the repositories you push to: load only that one (`ssh-add -D`, then `ssh-add ~/.ssh/that_key`).
+# The web container already works the same way for cloning; this gives the terminal container the same access, nothing else:
+# no .env, no API keys, and it is still not on the sandbox network.
+services:
+  terminal:
+    user: root                       # only to relay the agent socket (entrypoint.sh), which then drops to uid 1000
+    cap_add: [SETUID, SETGID]        # only for that drop; every other capability stays dropped
+    environment:
+      SSH_AUTH_SOCK: /run/host-services/ssh-auth.sock
+    volumes:
+      # your ssh-agent's socket (set by `make`: your $SSH_AUTH_SOCK on Linux, Docker Desktop's path on macOS)
+      - ${SSH_AGENT_MOUNT:-/run/host-services/ssh-auth.sock}:/run/host-services/ssh-auth.sock

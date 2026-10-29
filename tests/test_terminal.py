@@ -23,6 +23,13 @@ while read -r line; do echo "GOT:$line SIZE:$(stty size)"; done
 """
 
 
+SHELL_STUB = """#!/bin/sh
+echo "SHELL-CWD: $(pwd)"
+echo "SHELL-ENV: $(env | grep -E 'SSH_AUTH_SOCK|TOKEN|API_KEY|SECRET' | tr '\\n' ' ')"
+while read -r line; do echo "SH-GOT:$line"; done
+"""
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     projects, scratch, home = tmp_path / "projects", tmp_path / "scratch", tmp_path / "home"
@@ -35,6 +42,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(terminal, "SCRATCH", scratch)
     monkeypatch.setattr(terminal, "CLAUDE", str(stub))
     monkeypatch.setattr(terminal, "HOME", str(home))
+    shell = tmp_path / "shell-stub"
+    shell.write_text(SHELL_STUB)
+    shell.chmod(shell.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(terminal, "SHELL", str(shell))
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)           # whatever agent the developer has, tests start without one
     monkeypatch.setenv("TERMINAL_TOKEN", TOKEN)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-must-not-leak")
     secret = tmp_path / "outside-secret.txt"
@@ -540,3 +552,152 @@ def test_nobody_coming_back_ends_the_session_but_idleness_alone_does_not(env):
     live.detached_at = time.monotonic() - terminal.DETACHED_SECONDS - 1        # but nobody came back for far too long
     terminal.reap_once()
     assert "sess-reap01" not in terminal._live and live.process.poll() is not None
+
+
+# ---------------------------------------------------------------- the shell next to claude
+
+HEADERS = {"x-terminal-token": TOKEN}
+
+
+def shell_url(sid, extra=""):
+    return f"/pty?repo=42/ps&sid={sid}&kind=shell&cols=100&rows=30{extra}"
+
+
+def test_a_shell_opens_in_the_same_working_copy_as_claude(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-shl001", headers=HEADERS) as claude:
+        read_until(claude, "ENV:")
+        workdir = terminal._live["sess-shl001"].workdir
+        with client.websocket_connect(shell_url("sess-shl001"), headers=HEADERS) as shell:
+            first = read_until(shell, "SHELL-ENV:")
+            assert "claude's working copy" in first and f"SHELL-CWD: {workdir}" in first
+            assert len(list(env.scratch.iterdir())) == 1                       # no second copy
+            shell.send_text('{"t":"i","d":"touch from-shell && echo typed\\n"}')
+            assert "SH-GOT:touch from-shell && echo typed" in read_until(shell, "SH-GOT:")
+        assert terminal._live["sess-shl001:shell"].kind == "shell" and terminal._live["sess-shl001"].kind == "claude"
+
+
+def test_the_copy_lives_until_the_last_session_using_it_ends(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-shl002", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+    with client.websocket_connect(shell_url("sess-shl002"), headers=HEADERS) as ws:
+        read_until(ws, "SHELL-ENV:")
+    claude, shell = terminal._live["sess-shl002"], terminal._live["sess-shl002:shell"]
+    assert client.post("/pty/end", params={"sid": "sess-shl002"}, headers=HEADERS).json() == {"ended": True}      # claude first
+    assert wait_for(lambda: claude.process.poll() is not None)
+    assert shell.process.poll() is None and len(list(env.scratch.iterdir())) == 1                               # the shell still has its copy
+    assert "sess-shl002" not in terminal._workdirs                                                              # but claude's report is forgotten
+    assert client.post("/pty/end", params={"sid": "sess-shl002", "kind": "shell"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: not list(env.scratch.iterdir()) and shell.process.poll() is not None)
+    assert terminal._open_terminals == 0 and not terminal._live
+
+
+def test_ending_the_shell_leaves_claude_and_its_copy_alone(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-shl003", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+    with client.websocket_connect(shell_url("sess-shl003"), headers=HEADERS) as ws:
+        read_until(ws, "SHELL-ENV:")
+    claude = terminal._live["sess-shl003"]
+    assert client.post("/pty/end", params={"sid": "sess-shl003", "kind": "shell"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: "sess-shl003:shell" not in terminal._live)
+    assert claude.process.poll() is None and claude.workdir.is_dir() and terminal._workdirs["sess-shl003"] == claude.workdir
+
+
+def test_without_claude_a_shell_gets_its_own_copy_and_takes_it_away_when_it_ends(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect(shell_url("sess-shl004"), headers=HEADERS) as ws:
+        first = read_until(ws, "SHELL-ENV:")
+        assert "claude is not running" in first
+        assert len(list(env.scratch.iterdir())) == 1
+        assert "sess-shl004" not in terminal._workdirs                         # a shell's copy is never mistaken for claude's report
+        ws.send_text('{"t":"i","d":"hello\\n"}')
+        assert "SH-GOT:hello" in read_until(ws, "SH-GOT:")
+        terminal._live["sess-shl004:shell"].process.kill()                    # `exit` in the shell
+        with pytest.raises(WebSocketDisconnect) as info:
+            for _ in range(50):
+                ws.receive_bytes()
+        assert info.value.code == 4410
+    assert wait_for(lambda: not list(env.scratch.iterdir()) and not terminal._live)
+
+
+def test_a_dropped_connection_keeps_the_shell_running(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect(shell_url("sess-shl005"), headers=HEADERS) as ws:
+        read_until(ws, "SHELL-ENV:")
+        ws.send_text('{"t":"i","d":"one\\n"}')
+        read_until(ws, "SH-GOT:one")
+    shell = terminal._live["sess-shl005:shell"]
+    with client.websocket_connect(shell_url("sess-shl005"), headers=HEADERS) as ws:
+        again = read_until(ws, "SH-GOT:one")
+        assert "reconnected: shell kept running" in again
+    assert terminal._live["sess-shl005:shell"] is shell and shell.process.poll() is None
+
+
+def test_a_shell_needs_a_session_and_a_known_kind(env):
+    client = TestClient(terminal.app)
+    for url in ("/pty?repo=42/ps&kind=shell", "/pty?repo=42/ps&sid=sess-shl006&kind=root"):
+        with client.websocket_connect(url, headers=HEADERS) as ws:
+            assert "unknown kind of terminal" in ws.receive_bytes().decode()
+    assert not terminal._live and not list(env.scratch.iterdir())
+
+
+def test_the_shell_needs_the_token_and_has_no_secrets(env, monkeypatch):
+    with pytest.raises(WebSocketDisconnect) as info, TestClient(terminal.app).websocket_connect(shell_url("sess-shl007"), headers={"x-terminal-token": "wrong"}):
+        pass
+    assert info.value.code == 4401
+    with TestClient(terminal.app).websocket_connect(shell_url("sess-shl007"), headers=HEADERS) as ws:
+        env_line = read_until(ws, "SHELL-ENV:").split("SHELL-ENV:")[1]
+        assert "sk-must-not-leak" not in env_line and TOKEN not in env_line and "SSH_AUTH_SOCK" not in env_line
+
+
+def test_a_claude_and_a_shell_each_count_towards_the_limit(env, monkeypatch):
+    monkeypatch.setattr(terminal, "MAX_TERMINALS", 1)
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-shl008", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+        with pytest.raises(WebSocketDisconnect) as info, client.websocket_connect(shell_url("sess-shl008"), headers=HEADERS):
+            pass
+        assert info.value.code == 4429
+
+
+# ---------------------------------------------------------------- git credentials (only when the operator mounts an ssh-agent)
+
+
+def test_the_agent_reaches_the_children_only_when_the_operator_set_one(env, monkeypatch):
+    assert "SSH_AUTH_SOCK" not in terminal.child_env()
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+    assert terminal.child_env()["SSH_AUTH_SOCK"] == "/tmp/ssh-agent.sock"
+
+
+@pytest.mark.parametrize("url,carried", [
+    ("git@github.com:Rodolfo9898/libft.git", True),
+    ("ssh://git@github.com/Rodolfo9898/libft.git", True),
+    ("https://github.com/Rodolfo9898/libft.git", True),
+    ("ext::sh -c touch /tmp/pwned", False),
+    ("-oProxyCommand=touch /tmp/pwned", False),
+    ("/etc/passwd", False),
+    ("file:///etc/passwd", False),
+    ("git@github.com:u/r.git;touch /tmp/pwned", False),
+    ("http://github.com/u/r.git", False),
+])
+def test_the_copy_gets_the_clones_origin_only_with_an_agent_and_only_if_it_is_an_ordinary_address(env, monkeypatch, url, carried):
+    (env.repo / ".git" / "config").write_text(f'[core]\n\tfsmonitor = evil\n[remote "origin"]\n\turl = {url}\n')
+    without = (terminal.sanitized_copy(env.repo) / ".git" / "config").read_text()
+    assert "origin" not in without and without == terminal.SAFE_GIT_CONFIG          # no agent, no remote: nothing changes
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+    config = (terminal.sanitized_copy(env.repo) / ".git" / "config").read_text()
+    assert ('[remote "origin"]' in config and f"url = {url}" in config) is carried
+    assert config.startswith(terminal.SAFE_GIT_CONFIG) and "fsmonitor" not in config
+
+
+def test_a_clone_without_a_remote_or_with_a_linked_config_gets_none(env, monkeypatch, tmp_path):
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+    assert (terminal.sanitized_copy(env.repo) / ".git" / "config").read_text() == terminal.SAFE_GIT_CONFIG
+    outside = tmp_path / "outside-config"
+    outside.write_text('[remote "origin"]\n\turl = git@github.com:u/r.git\n')
+    config = env.repo / ".git" / "config"
+    config.unlink()
+    config.symlink_to(outside)
+    assert terminal.origin_url(env.repo) is None

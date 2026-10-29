@@ -23,7 +23,7 @@ from . import improve as improve_mod
 from . import repo as repo_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
-from .prompts import build_review_prompt, find_docker_files, manual_items
+from .prompts import build_fix_prompt, build_review_prompt, find_docker_files, manual_items
 from .checks import EXCLUDED_DIRS, VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
 from .pdfread import read_pages, render_page
@@ -672,6 +672,7 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
     if not session.repo or not session.repo.path:
         await ws.close(code=4404)
         return
+    shell = ws.query_params.get("kind") == "shell"     # a plain shell in claude's working copy; it has no report to collect
     context = review_context(session)   # what claude in this terminal reviews; its report is only kept for that
     await ws.accept()
     if not (TERMINAL_URL and TERMINAL_TOKEN):
@@ -680,9 +681,9 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
         return
     url = (TERMINAL_URL.replace("http", "ws", 1) + f"/pty?repo={quote(session.repo.path)}"
            f"&cols={int(ws.query_params.get('cols', 80))}&rows={int(ws.query_params.get('rows', 24))}")
-    url += f"&sid={session_id}"
+    url += f"&sid={session_id}" + ("&kind=shell" if shell else "")
     prompt_id = ws.query_params.get("prompt", "")
-    if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", prompt_id):
+    if not shell and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", prompt_id):
         url += f"&prompt={prompt_id}"
     try:
         upstream = await open_upstream(url, TERMINAL_TOKEN)
@@ -714,7 +715,7 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
             except Exception:
                 pass
 
-    tasks = [asyncio.create_task(to_browser()), asyncio.create_task(to_terminal()), asyncio.create_task(watch_for_report())]
+    tasks = [asyncio.create_task(to_browser()), asyncio.create_task(to_terminal())] + ([] if shell else [asyncio.create_task(watch_for_report())])
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except WebSocketDisconnect:
@@ -725,7 +726,8 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
         try:
             # Collect claude's saved report before the working copy is deleted. The thread starts at once; shield and
             # catch cancellation, because this block also runs while the connection's task is being cancelled.
-            await asyncio.shield(asyncio.get_running_loop().run_in_executor(None, collect_claude_review, session, context))
+            if not shell:
+                await asyncio.shield(asyncio.get_running_loop().run_in_executor(None, collect_claude_review, session, context))
         except (Exception, asyncio.CancelledError):
             pass
         code = getattr(upstream, "close_code", None)
@@ -757,6 +759,22 @@ def end_terminal(session_id: str) -> dict:
         return {"ended": False}
 
 
+@app.post("/api/sessions/{session_id}/shell/end")
+def end_shell(session_id: str) -> dict:
+    """The shell tab was closed on purpose: stop it. (Claude and the working copy stay while claude is still running.)"""
+    session_or_404(session_id)
+    if not (TERMINAL_URL and TERMINAL_TOKEN):
+        return {"ended": False}
+    try:
+        import httpx
+
+        with httpx.Client(trust_env=False, timeout=10) as client:
+            response = client.post(f"{TERMINAL_URL}/pty/end", params={"sid": session_id, "kind": "shell"}, headers={"x-terminal-token": TERMINAL_TOKEN})
+        return {"ended": bool(response.json().get("ended"))}
+    except Exception:
+        return {"ended": False}
+
+
 def review_prompt_for(session: Session) -> tuple[str, dict]:
     if not session.results or session.repo is None:
         raise HTTPException(400, "run the checks first")
@@ -773,6 +791,17 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
 def review_prompt(session_id: str) -> dict:
     """The review request for claude, built from what the checks did and did not cover."""
     text, stats = review_prompt_for(session_or_404(session_id))
+    return {"text": text, **stats}
+
+
+@app.get("/api/sessions/{session_id}/fix-prompt")
+def fix_prompt(session_id: str) -> dict:
+    """A prompt that asks an AI to fix what the review found. `text` is empty when there is nothing to fix."""
+    session = session_or_404(session_id)
+    if not session.results or session.repo is None:
+        raise HTTPException(400, "run the checks first")
+    text, stats = build_fix_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
+                                   lang=session.lang(), results=session.results, ai=session.ai, claude=session.claude)
     return {"text": text, **stats}
 
 

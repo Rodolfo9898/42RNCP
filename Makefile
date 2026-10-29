@@ -1,5 +1,13 @@
 COMPOSE = docker compose
 
+# TERMINAL_SSH=1 (on the command line, or a line TERMINAL_SSH=1 in .env) gives claude's terminal and the shell tab your
+# ssh-agent so `git push` works there. Off by default: while it is on, anything running in that container, including a
+# project's code that claude builds, can use your keys. See docker-compose.ssh.yml.
+TERMINAL_SSH ?= $(shell grep -m1 '^TERMINAL_SSH=' .env 2>/dev/null | cut -d= -f2-)
+ifeq ($(TERMINAL_SSH),1)
+COMPOSE = docker compose -f docker-compose.yml -f docker-compose.ssh.yml
+endif
+
 # Host folder that holds the cloned projects (mounted at /projects in the containers).
 PROJECTS_DIR ?= ./projects
 export PROJECTS_DIR

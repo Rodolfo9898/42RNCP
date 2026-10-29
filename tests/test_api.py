@@ -626,6 +626,44 @@ def test_terminal_proxy_relays_both_ways_with_the_token(client, monkeypatch):
     assert upstream.closed
 
 
+def test_the_shell_tab_connects_to_the_shell_kind_and_never_collects_a_report(client, monkeypatch):
+    c, main = client
+    sid = terminal_session(c, main, monkeypatch, "term3")
+    upstream, opened, collected = FakeUpstream(), {}, []
+
+    async def fake_open(url, token):
+        opened.update(url=url, token=token)
+        return upstream
+
+    monkeypatch.setattr(main, "open_upstream", fake_open)
+    monkeypatch.setattr(main, "collect_claude_review", lambda *a, **k: collected.append(a))
+    with c.websocket_connect(f"/api/sessions/{sid}/terminal?kind=shell&cols=90&rows=20&prompt=abcdefgh1234", headers={"origin": "http://testserver"}) as ws:
+        assert ws.receive_bytes() == b"claude> "
+        ws.send_bytes(b"ls")
+        assert ws.receive_bytes() == b"echo:ls"
+    assert opened["url"].endswith(f"&sid={sid}&kind=shell") and "prompt=" not in opened["url"] and "cols=90&rows=20" in opened["url"]
+    import time
+    time.sleep(0.5)
+    assert collected == []                                  # a shell has no claude report: nothing is merged into verdict.md
+
+
+def test_ending_the_shell_tab_asks_the_terminal_service_to_end_only_the_shell(client, monkeypatch):
+    import httpx
+    c, main = client
+    sid = terminal_session(c, main, monkeypatch, "term4")
+    seen = {}
+    real_client = httpx.Client
+
+    def handler(request):
+        seen.update(url=str(request.url), token=request.headers["x-terminal-token"])
+        return httpx.Response(200, json={"ended": True})
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler)))
+    assert c.post(f"/api/sessions/{sid}/shell/end").json() == {"ended": True}
+    assert seen["url"] == f"http://terminal:8002/pty/end?sid={sid}&kind=shell" and seen["token"] == "tok"
+    assert c.post("/api/sessions/nope/shell/end").status_code == 404
+
+
 @pytest.mark.parametrize("origin", [None, "http://evil.example", "http://testserver.evil.example", "null"])
 def test_a_page_from_another_site_cannot_open_the_terminal(client, monkeypatch, origin):
     from starlette.websockets import WebSocketDisconnect
@@ -690,6 +728,21 @@ def test_review_prompt_reflects_this_sessions_results(client, monkeypatch):
     assert data["items"] > 0 and data["chars"] == len(data["text"])
     assert "A. Requirements from the subject that need judgement" in data["text"] and "project: ps." in data["text"]
     assert "Failed:" in data["text"] and "Do not edit any other file" in data["text"]
+
+
+def test_fix_prompt_is_built_from_what_this_session_found(client):
+    c, main = client
+    sid, _ = prepared_session(c, main, "fp1")
+    assert c.get(f"/api/sessions/{sid}/fix-prompt").status_code == 400                # nothing was checked yet
+    assert c.get("/api/sessions/nope/fix-prompt").status_code == 404
+    state = run_to_completion(c, sid)
+    data = c.get(f"/api/sessions/{sid}/fix-prompt").json()
+    failed = [r for r in state["results"] if r["status"] == "fail" and r["section"] == "mandatory"]
+    assert failed and data["must_fix"] == len(failed)                                 # no reviewer yet: lacking = the failed checks
+    assert data["issues"] == data["must_fix"] + data["look_at"] + data["bonus"] and data["chars"] == len(data["text"])
+    assert "project: ps." in data["text"] and "A. MUST FIX" in data["text"] and "Do not edit verdict.md" in data["text"]
+    assert failed[0]["title"] in data["text"]
+    assert "Not reviewed yet" not in data["text"]                                    # unjudged requirements are not issues
 
 
 def test_a_new_terminal_session_gets_the_prompt_via_the_terminal_service(client, monkeypatch):

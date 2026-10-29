@@ -39,8 +39,16 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git ripgrep build-essential make valgrind gdb libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat ripgrep build-essential make valgrind gdb libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# git over ssh, for `git push` from claude's terminal or the shell tab. It only works when docker-compose.ssh.yml gives the
+# container your ssh-agent (off by default); there are no keys in the image. GitHub's ED25519 host key is trusted, checked
+# against the pinned fingerprint (the build fails if it differs), and every other host is refused instead of asked about.
+ARG GITHUB_ED25519_FINGERPRINT=SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
+RUN echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > /etc/ssh/ssh_known_hosts \
+    && [ "$(ssh-keygen -lf /etc/ssh/ssh_known_hosts | awk '{print $2}')" = "$GITHUB_ED25519_FINGERPRINT" ] \
+    && printf 'Host *\n\tStrictHostKeyChecking yes\n' > /etc/ssh/ssh_config.d/verdict.conf
 
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -61,6 +69,11 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir .
+
+# The same entrypoint as the web app. As `term` (the default) it only starts the service. With docker-compose.ssh.yml the container
+# starts as root, relays the ssh-agent socket so that uid 1000 can open it (Docker Desktop's is root-owned), then drops to uid 1000.
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
 USER term
 ENV PROJECTS_DIR=/projects SCRATCH_DIR=/scratch TERMINAL_HOME=/home/term \

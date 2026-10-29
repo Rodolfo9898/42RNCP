@@ -102,11 +102,15 @@ function render() {
   $("#btn-run").disabled = busy();
   const ai = $("#btn-ai");
   $("#btn-terminal").disabled = !session.repo;
+  $("#btn-shell").disabled = !session.repo;
   ai.disabled = busy() || !session.results.length || !llm.configured;
   ai.title = !llm.configured ? "Not configured: set ANTHROPIC_API_KEY, or LLM_BASE_URL + LLM_API_KEY + LLM_MODEL, in .env (see the README)"
     : !session.results.length ? "Run the checks first"
     : "Ask an AI model to describe the repository and weigh the manual-review items";
   ai.textContent = session.ai.state === "running" ? "✨ AI working…" : "✨ AI review";
+  const fix = $("#btn-fix");
+  fix.disabled = busy() || !session.results.length;
+  fix.title = session.results.length ? "Write a prompt that asks an AI to fix everything the review found" : "Run the checks first";
   $("#btn-clone").disabled = busy();
 }
 
@@ -279,6 +283,29 @@ async function startAi() {
     h("p", { class: "hint" }, "The student's code leaves this computer. Its answers count in the result (a requirement it judges a problem makes it FAIL), and every file and line it cites is checked against what it was shown.")), [
     h("button", { onclick: closeDialog }, "Cancel"),
     h("button", { class: "primary", onclick: background }, "Send and review"),
+  ]);
+}
+
+// A prompt that asks an AI to fix what the review found. It is shown to copy rather than sent to the claude tab, because that
+// claude works on a throw-away copy: a fix made there would be gone when the tab closes.
+async function openFixPrompt() {
+  const { text, must_fix: mustFix, look_at: lookAt, bonus } = await api(`sessions/${sid}/fix-prompt`);
+  if (!text) return toast("Nothing to fix: no check failed and nothing needs a second look.", true);
+  const box = h("textarea", { class: "prompt", spellcheck: "false" });
+  box.value = text;
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(box.value); } catch {
+      box.select();
+      if (!document.execCommand("copy")) return toast("Could not copy: select the text and press Ctrl/Cmd+C.");
+    }
+    toast("Prompt copied.", true);
+  };
+  dialog("Prompt to fix what the review found", h("div", {},
+    h("p", {}, `${mustFix} to fix, ${lookAt} to look at${bonus ? `, ${bonus} in the bonus part` : ""}. Paste it into claude (or any assistant) in the project's own folder. You can edit it first.`),
+    box,
+    h("p", { class: "hint" }, "It is not run here: the claude tab works on a throw-away copy, so a fix made there would be lost when the tab closes.")), [
+    h("button", { onclick: closeDialog }, "Close"),
+    h("button", { class: "primary", onclick: () => guarded(copy) }, "Copy"),
   ]);
 }
 
@@ -471,30 +498,37 @@ async function environmentHint(line) {
 
 // ------------------------------------------------------------------ claude terminal (xterm.js <-> PTY in the terminal container)
 
-async function openTerminal(promptId) {
+// kind "claude": claude on a throw-away copy of the repository. kind "shell": a plain shell in that same copy (or in its own
+// when claude is not running), to build, run, use docker or git by hand and see what the project needs.
+async function openTerminal(promptId, kind = "claude") {
   if (!session.repo) return toast("Clone a repository first.");
   if (typeof Terminal === "undefined" || typeof FitAddon === "undefined") return toast("The terminal files failed to load.");
-  const existing = tabs.get("terminal");
-  if (existing) return showTab("terminal");
+  const shell = kind === "shell";
+  const key = shell ? "shell" : "terminal";
+  const name = shell ? "shell" : "claude";
+  const existing = tabs.get(key);
+  if (existing) return showTab(key);
 
   const status = await api("terminal").catch(() => ({ configured: false }));
   const view = h("div", { class: "view term" });
   const holder = h("div", { class: "term-holder" });
-  view.append(h("div", { class: "term-bar" },
-    h("span", {}, "claude saves its report in its throw-away copy (approve the write). It is merged into verdict.md automatically; no other file is added to the repository.")), holder);
-  addTab("terminal", "⌨ claude", view, true);
-  tabs.get("terminal").onClose = () => {
-    clearInterval(tabs.get("terminal")?.watcher);
-    clearTimeout(tabs.get("terminal")?.retry);
-    if (tabs.get("terminal")) tabs.get("terminal").closing = true;
-    tabs.get("terminal")?.socket?.close();
-    // Closing the tab ends claude on purpose. (A reload or a lost connection does not: the session keeps running.)
-    if (!tabs.get("terminal")?.keep) fetch(`/api/sessions/${sid}/terminal/end`, { method: "POST" }).catch(() => {});
-    tabs.get("terminal")?.term?.dispose();
+  view.append(h("div", { class: "term-bar" }, h("span", {}, shell
+    ? "A plain shell in the same throw-away copy claude works in (its own copy if claude is not running). Nothing here touches the original repository, and the copy is deleted when the last tab using it closes."
+    : "claude saves its report in its throw-away copy (approve the write). It is merged into verdict.md automatically; no other file is added to the repository.")), holder);
+  addTab(key, `⌨ ${name}`, view, true);
+  tabs.get(key).onClose = () => {
+    clearInterval(tabs.get(key)?.watcher);
+    clearTimeout(tabs.get(key)?.retry);
+    if (tabs.get(key)) tabs.get(key).closing = true;
+    tabs.get(key)?.socket?.close();
+    // Closing the tab ends claude (or the shell) on purpose. (A reload or a lost connection does not: the session keeps running.)
+    if (!tabs.get(key)?.keep) fetch(`/api/sessions/${sid}/${shell ? "shell" : "terminal"}/end`, { method: "POST" }).catch(() => {});
+    tabs.get(key)?.term?.dispose();
+    if (shell) return;
     // The server collects the saved report as the terminal closes; show it once it has.
     setTimeout(async () => { session = await api(`sessions/${sid}`); render(); loadTree(); refreshVerdict(false).catch(() => {}); }, 2000);
   };
-  showTab("terminal");
+  showTab(key);
 
   const term = new Terminal({
     cursorBlink: true, fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
@@ -503,7 +537,7 @@ async function openTerminal(promptId) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(holder);
-  const tab = tabs.get("terminal");
+  const tab = tabs.get(key);
   tab.term = term;
   fit.fit();
 
@@ -511,7 +545,7 @@ async function openTerminal(promptId) {
     term.writeln("\x1b[33mThe terminal service is not running.\x1b[0m Start everything with \x1b[1mmake run\x1b[0m, then reopen this tab.");
     return;
   }
-  if (!status.claude) term.writeln("\x1b[33mclaude is not installed in the terminal container.\x1b[0m Rebuild with \x1b[1mmake re\x1b[0m.");
+  if (!status.claude && !shell) term.writeln("\x1b[33mclaude is not installed in the terminal container.\x1b[0m Rebuild with \x1b[1mmake re\x1b[0m.");
 
   const send = (event) => { if (tab.socket && tab.socket.readyState === WebSocket.OPEN) tab.socket.send(JSON.stringify(event)); };
   tab.send = send;
@@ -519,7 +553,7 @@ async function openTerminal(promptId) {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const withPrompt = promptId && !tab.promptUsed ? `&prompt=${encodeURIComponent(promptId)}` : "";   // only the first connection carries it
     tab.promptUsed = true;
-    const socket = new WebSocket(`${scheme}://${location.host}/api/sessions/${sid}/terminal?cols=${term.cols}&rows=${term.rows}${withPrompt}`);
+    const socket = new WebSocket(`${scheme}://${location.host}/api/sessions/${sid}/terminal?cols=${term.cols}&rows=${term.rows}${shell ? "&kind=shell" : withPrompt}`);
     socket.binaryType = "arraybuffer";
     tab.socket = socket;
     socket.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
@@ -533,7 +567,7 @@ async function openTerminal(promptId) {
         tab.retry = setTimeout(() => { term.reset(); connect(); }, Math.min(1000 * tab.attempts, 5000));   // the server replays the screen
         return;
       }
-      const why = ev.code === 4410 ? "claude ended" : ev.code === 4411 ? "opened in another tab" : "disconnected";
+      const why = ev.code === 4410 ? `${name} ended` : ev.code === 4411 ? "opened in another tab" : "disconnected";
       term.writeln(`\r\n\x1b[2m[${why} — press Enter to start again]\x1b[0m`);
       tab.disconnected = true;
     };
@@ -544,17 +578,21 @@ async function openTerminal(promptId) {
   });
   term.onResize(({ cols, rows }) => send({ t: "r", c: cols, r: rows }));
   new ResizeObserver(() => { if (!view.hidden) { try { fit.fit(); } catch { /* not laid out yet */ } } }).observe(holder);
-  let known = session.claude_review_at || "";
-  tab.watcher = setInterval(async () => {
-    try {
-      const latest = await api(`sessions/${sid}`);
-      if ((latest.claude_review_at || "") !== known) {
-        known = latest.claude_review_at || "";
-        await afterReviewSaved({ verdict_file: latest.verdict_file });
-      }
-    } catch { /* offline or restarting: try again next time */ }
-  }, 4000);
-  term.writeln("\x1b[2mFirst time? Type /login inside claude to sign in with your Claude account.\x1b[0m");
+  if (shell) {
+    term.writeln("\x1b[2mThe tools claude has: cc, make, valgrind, norminette, and docker on the separate daemon. Try: make, docker build ., docker compose up.\x1b[0m");
+  } else {
+    let known = session.claude_review_at || "";
+    tab.watcher = setInterval(async () => {
+      try {
+        const latest = await api(`sessions/${sid}`);
+        if ((latest.claude_review_at || "") !== known) {
+          known = latest.claude_review_at || "";
+          await afterReviewSaved({ verdict_file: latest.verdict_file });
+        }
+      } catch { /* offline or restarting: try again next time */ }
+    }, 4000);
+    term.writeln("\x1b[2mFirst time? Type /login inside claude to sign in with your Claude account.\x1b[0m");
+  }
   term.focus();
   connect();
 }
@@ -570,8 +608,9 @@ function showTab(key) {
   activeTab = key;
   for (const [k, t] of tabs) t.view.hidden = k !== key;
   $("#st-lang").textContent = tabs.get(key)?.language ?? "";
-  document.body.classList.toggle("term-focus", key === "terminal");   // the terminal gets the full height
-  if (key === "terminal") requestAnimationFrame(() => { tabs.get("terminal")?.term?.focus(); window.dispatchEvent(new Event("resize")); });
+  const isTerminal = key === "terminal" || key === "shell";
+  document.body.classList.toggle("term-focus", isTerminal);   // the terminal gets the full height
+  if (isTerminal) requestAnimationFrame(() => { tabs.get(key)?.term?.focus(); window.dispatchEvent(new Event("resize")); });
   $("#tabs").replaceChildren(...[...tabs].map(([k, t]) => h("div", { class: `tab ${k === key ? "active" : ""}`, onclick: () => showTab(k) },
     t.title, t.closable && h("span", { class: "close", onclick: (ev) => { ev.stopPropagation(); closeTab(k); } }, "×"))));
   document.querySelectorAll(".tree .row").forEach((row) => row.classList.toggle("active", row.dataset.path === key));
@@ -938,7 +977,9 @@ $("#btn-env").onclick = () => guarded(openEnvironment);
 $("#btn-clone").onclick = () => guarded(openClone);
 $("#btn-run").onclick = () => guarded(run);
 $("#btn-ai").onclick = () => guarded(startAi);
-$("#btn-terminal").onclick = () => guarded(openTerminal);
+$("#btn-fix").onclick = () => guarded(openFixPrompt);
+$("#btn-terminal").onclick = () => guarded(() => openTerminal());
+$("#btn-shell").onclick = () => guarded(() => openTerminal(null, "shell"));
 $("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") closeDialog(); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeDialog(); });
 // ------------------------------------------------------------------ layout: resizable sidebar and bottom panel, like VS Code

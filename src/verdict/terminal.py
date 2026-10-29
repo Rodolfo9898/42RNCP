@@ -2,11 +2,12 @@
 
 Two endpoints, both reachable only from the web app (shared token, internal network):
 
-* WS  /pty     an interactive `claude` on a PTY, streamed to the browser's terminal emulator
+* WS  /pty     an interactive `claude` on a PTY (or, with kind=shell, a plain shell in the same working copy), streamed
+               to the browser's terminal emulator
 * POST /review `claude -p`, read-only tools, for the one-click AI review
 
-The container deliberately has no access to the web app's secrets (.env, ssh-agent, sessions) and sees the
-projects folder read-only. Repositories are untrusted, so `claude` never runs inside the original: it runs
+The container deliberately has no access to the web app's secrets (.env, sessions) and sees the projects folder
+read-only. It has no ssh-agent either, unless the operator turned that on (docker-compose.ssh.yml) so that `git push` works. Repositories are untrusted, so `claude` never runs inside the original: it runs
 in a scratch copy from which the files that configure or instruct claude (.claude/, CLAUDE.md, .mcp.json) and all
 symlinks are left out. The copy keeps the clone's .git, so git works in it, but never its hooks or its config: a fresh
 minimal config replaces it, so nothing in .git can make git run a program (core.fsmonitor, filters, aliases, ...).
@@ -40,8 +41,9 @@ PROJECTS = Path(os.environ.get("PROJECTS_DIR", "/projects"))
 SCRATCH = Path(os.environ.get("SCRATCH_DIR", "/scratch"))
 CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 HOME = os.environ.get("TERMINAL_HOME", "/home/term")
+SHELL = os.environ.get("TERMINAL_SHELL", "bash")
 
-MAX_TERMINALS = 2
+MAX_TERMINALS = 4                                                        # a claude and a shell for each of two reviews
 # A claude session is kept until it is ended on purpose: closing the browser tab, a reload, a sleeping laptop or a network
 # drop only detach from it, and the next connection picks it up again. The limits are safety nets (0 = no limit).
 MAX_SESSION_SECONDS = int(os.environ.get("TERMINAL_MAX_SECONDS", 0))
@@ -56,6 +58,8 @@ MAX_REVIEW_BYTES = 200_000
 SKIPPED_NAMES = {".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".claude.json"}
 # Replaces .git/config in the copy: enough for git to read the history, nothing that runs a program.
 SAFE_GIT_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n"
+# The only remote addresses carried into the copy: plain ssh or https, never `ext::`, a local path or anything that starts with "-".
+SAFE_REMOTE_URL = re.compile(r"(git@[A-Za-z0-9.-]+:|ssh://git@[A-Za-z0-9.-]+(:[0-9]+)?/|https://[A-Za-z0-9.-]+/)[A-Za-z0-9._~/+-]+")
 
 APPEND_PROMPT = (
     "You are helping a peer evaluator at the 42 programming school review a student's project. The current directory "
@@ -87,6 +91,8 @@ def child_env() -> dict[str, str]:
     }
     if os.environ.get("DOCKER_HOST"):      # the separate daemon (never the host's); passed on only if the operator set one
         env["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
+    if os.environ.get("SSH_AUTH_SOCK"):    # your ssh-agent, only when docker-compose.ssh.yml mounted it (see the README)
+        env["SSH_AUTH_SOCK"] = os.environ["SSH_AUTH_SOCK"]
     return env
 
 
@@ -94,6 +100,10 @@ def interactive_argv(prompt: str | None = None) -> list[str]:
     """claude's interactive UI; an initial prompt (the review request) is its last, positional argument."""
     return [CLAUDE, *SAFE_FLAGS] + ([prompt] if prompt else [])
 
+
+def shell_argv() -> list[str]:
+    """A plain interactive shell for the user to type in: the same environment as claude, nothing more."""
+    return [SHELL, "-i"]
 
 def review_argv(prompt: str, schema: dict, model: str | None) -> list[str]:
     argv = [
@@ -143,8 +153,26 @@ def sanitized_copy(source: Path) -> Path:
                 raise ValueError("repository is too large to open in the terminal")
             shutil.copyfile(path, destination / base / name)
     if (destination / ".git").is_dir():
-        (destination / ".git" / "config").write_text(SAFE_GIT_CONFIG)
+        config = SAFE_GIT_CONFIG
+        url = origin_url(source) if os.environ.get("SSH_AUTH_SOCK") else None     # a remote is only useful when you can push
+        if url:
+            config += f'[remote "origin"]\n\turl = {url}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+        (destination / ".git" / "config").write_text(config)
     return destination
+
+
+def origin_url(source: Path) -> str | None:
+    """The clone's `origin`, read as data by `git config --file` (which runs nothing), and only if it is an ordinary address."""
+    config = source / ".git" / "config"
+    if config.is_symlink() or not config.is_file():
+        return None
+    try:
+        done = subprocess.run(["git", "config", "--file", str(config), "--get", "remote.origin.url"], capture_output=True, text=True,
+                              timeout=5, env={**child_env(), "GIT_CONFIG_NOSYSTEM": "1"}, stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    url = done.stdout.strip()
+    return url if done.returncode == 0 and SAFE_REMOTE_URL.fullmatch(url) else None
 
 
 def _is_ours(path: Path) -> bool:
@@ -321,11 +349,11 @@ async def store_prompt(request: Request) -> dict:
 
 
 class Live:
-    """One claude on a PTY. It outlives the browser connection: a thread keeps reading its output into a backlog, and whoever
+    """One claude (or one shell) on a PTY. It outlives the browser connection: a thread keeps reading its output into a backlog, and whoever
     connects next (same web session) is shown the backlog and continues where the last one left off."""
 
-    def __init__(self, sid: str, process: subprocess.Popen, master: int, workdir: Path) -> None:
-        self.sid, self.process, self.master, self.workdir = sid, process, master, workdir
+    def __init__(self, sid: str, process: subprocess.Popen, master: int, workdir: Path, kind: str = "claude") -> None:
+        self.sid, self.process, self.master, self.workdir, self.kind = sid, process, master, workdir, kind
         self.lock = threading.Lock()
         self.backlog = bytearray()
         self.sink = None                 # callable(bytes | None | str) of the connection that is watching, if any
@@ -368,7 +396,8 @@ _reaper_started = False
 
 
 def finish(live: Live) -> bool:
-    """End a session for good: stop claude, forget its report location, delete its working copy."""
+    """End a session for good: stop claude (or the shell), forget claude's report location, and delete the working copy
+    unless another session (the shell next to claude, or claude next to the shell) is still working in it."""
     global _open_terminals
     with _live_lock:
         if live.finished:
@@ -377,16 +406,19 @@ def finish(live: Live) -> bool:
         if _live.get(live.sid) is live:
             del _live[live.sid]
         _open_terminals -= 1
-    for key in [k for k, v in _workdirs.items() if v == live.workdir]:
-        del _workdirs[key]
-        _baselines.pop(key, None)
+        shared = any(other.workdir == live.workdir for other in _live.values())
+    if live.kind == "claude":
+        for key in [k for k, v in _workdirs.items() if v == live.workdir]:
+            del _workdirs[key]
+            _baselines.pop(key, None)
     terminate(live.process)
     live.reader.join(timeout=3)
     try:
         os.close(live.master)
     except OSError:
         pass
-    cleanup(live.workdir)
+    if not shared:
+        cleanup(live.workdir)
     return True
 
 
@@ -435,17 +467,24 @@ async def pty_socket(ws: WebSocket) -> None:
         cols, rows = int(ws.query_params.get("cols", 80)), int(ws.query_params.get("rows", 24))
         session_id = ws.query_params.get("sid", "")
         session_id = session_id if re.fullmatch(r"[A-Za-z0-9_-]{6,32}", session_id) else ""
-        requested = ws.query_params.get("prompt")
-        live = _live.get(session_id) if session_id else None
+        kind = ws.query_params.get("kind", "claude")
+        if kind not in ("claude", "shell") or (kind == "shell" and not session_id):
+            raise ValueError("unknown kind of terminal")
+        key = session_id if kind == "claude" else f"{session_id}:shell"
+        requested = ws.query_params.get("prompt") if kind == "claude" else None
+        live = _live.get(key) if session_id else None
         if live is not None and (requested or not alive(live)):
             finish(live)             # a new review prompt, or a claude that has exited, starts a fresh session
             live = None
         prompt = take_prompt(requested)
+        borrowed = False             # a shell next to a running claude works in claude's own copy
         if live is None:
             if _open_terminals >= MAX_TERMINALS:
                 await ws.close(code=4429)
                 return
-            workdir = sanitized_copy(resolve_repo(ws.query_params.get("repo", "")))
+            claude = _live.get(session_id) if kind == "shell" else None
+            borrowed = alive(claude)
+            workdir = claude.workdir if borrowed else sanitized_copy(resolve_repo(ws.query_params.get("repo", "")))
     except (ValueError, OSError) as exc:
         await ws.accept()
         await ws.send_bytes(f"\r\n[terminal] {exc}\r\n".encode())
@@ -460,20 +499,25 @@ async def pty_socket(ws: WebSocket) -> None:
     if live is None:
         process = master = None
         try:
-            process, master = spawn(interactive_argv(prompt), workdir, cols, rows)
+            process, master = spawn(interactive_argv(prompt) if kind == "claude" else shell_argv(), workdir, cols, rows)
         except OSError as exc:
-            cleanup(workdir)
-            await ws.send_bytes(f"\r\n[terminal] could not start claude: {exc}\r\n".encode())
+            if not borrowed:
+                cleanup(workdir)
+            await ws.send_bytes(f"\r\n[terminal] could not start {kind}: {exc}\r\n".encode())
             await ws.close(code=4400)
             return
         with _live_lock:
             _open_terminals += 1
-        live = Live(session_id or secrets.token_hex(8), process, master, workdir)
+        live = Live(key or secrets.token_hex(8), process, master, workdir, kind)
         with _live_lock:
             _live[live.sid] = live
-        if session_id:
+        if kind == "claude" and session_id:
             _workdirs[session_id] = workdir
             _baselines[session_id] = {p.name for p in workdir.iterdir()}
+        if kind == "shell":
+            where = "claude's working copy" if borrowed else "its own throw-away copy (claude is not running)"
+            with live.lock:
+                live.backlog += f"\x1b[2m[shell in {where}: {workdir}]\x1b[0m\r\n".encode()
         _start_reaper()
     else:
         set_size(live.master, cols, rows)
@@ -492,7 +536,7 @@ async def pty_socket(ws: WebSocket) -> None:
         if live.kick:
             live.kick()
         if live.backlog:
-            note = b"\x1b[2m[reconnected: claude kept running while you were away]\x1b[0m\r\n" if live.detached_at is not None else b""
+            note = f"\x1b[2m[reconnected: {live.kind} kept running while you were away]\x1b[0m\r\n".encode() if live.detached_at is not None else b""
             output.put_nowait(note + bytes(live.backlog))
         live.sink, live.detached_at = deliver, None
         live.kick = lambda: deliver("replaced")
@@ -554,11 +598,11 @@ async def pty_socket(ws: WebSocket) -> None:
 
 
 @app.post("/pty/end")
-def end_session(request: Request, sid: str = "") -> dict:
-    """The user closed the claude tab on purpose: stop claude and delete its working copy."""
+def end_session(request: Request, sid: str = "", kind: str = "claude") -> dict:
+    """The user closed the claude tab (or the shell tab) on purpose: stop it. The working copy goes with the last session using it."""
     if not authorised(request.headers.get("x-terminal-token")):
         raise HTTPException(401, "bad token")
-    live = _live.get(sid)
+    live = _live.get(sid if kind == "claude" else f"{sid}:shell")
     return {"ended": bool(live and finish(live))}
 
 
