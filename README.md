@@ -213,11 +213,21 @@ your Claude login).
 
 ### ⬇ Apply to project: getting the changes back onto your machine
 
-The working copy lives in the terminal container's memory and disappears when its last tab closes, and that container can only
-*read* your projects folder. To keep what claude or you changed there, **apply it before closing the tab**: **⬇ Apply to
-project** lists every file that differs from the moment the copy was made, with its diff (click a name), and writes the ones
-you tick into the folder the repository was cloned into (`./projects/<name>`). Nothing is sent back by itself, and the
-terminal container stays read-only: the web app, which already owns the projects folder, does the writing.
+The working copy lives in the terminal container's memory and disappears when its last tab closes. To keep what claude or you
+changed there, **apply it before closing the tab**: **⬇ Apply to project** lists every file that differs from the moment the
+copy was made, with its diff (click a name), and writes the ones you tick into the folder the repository was cloned into
+(`./projects/<name>`). Nothing is sent back by itself: the web app, which owns the projects folder, does the writing and
+re-checks every path (see below).
+
+**The projects folder is read-write everywhere.** The web app, the sandbox and the terminal container all mount `./projects`
+read-write (the terminal's mount used to be read-only), so from the ⌨ Shell tab you can also work directly in
+`/projects/<name>` (`git pull`, edit, `git status`), and whatever lands there is writable. The price: anything that runs in the
+terminal container, including a peer's code that claude builds or runs there, can now change **every** repository in that
+folder, `.git/hooks` and `.claude/` included, and those run on your machine the next time you `git commit` or open the project.
+The working-copy design above still keeps claude itself away from the originals, and Apply still refuses `.git`, `.claude/` and
+the other files listed below, but a read-write mount cannot be limited to one project. If you review code you do not trust, start
+with `TERMINAL_PROJECTS_MODE=ro make run` (or that line in `.env`): the terminal then reads the projects folder but cannot write
+to it, and Apply remains the only way for changes to reach a project.
 
 - **Only the working tree comes back.** Files appear in the project as ordinary uncommitted changes (new, modified, deleted):
   review them with `git diff`, then commit them yourself. Commits made inside the copy are not transferred (their file changes

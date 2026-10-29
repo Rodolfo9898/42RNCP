@@ -6,8 +6,8 @@ Two endpoints, both reachable only from the web app (shared token, internal netw
                to the browser's terminal emulator
 * POST /review `claude -p`, read-only tools, for the one-click AI review
 
-The container deliberately has no access to the web app's secrets (.env, sessions) and sees the projects folder
-read-only. It has no ssh-agent either, unless the operator turned that on (docker-compose.ssh.yml) so that `git push` works. Repositories are untrusted, so `claude` never runs inside the original: it runs
+The container deliberately has no access to the web app's secrets (.env, sessions). It mounts the projects folder
+read-write unless the operator set TERMINAL_PROJECTS_MODE=ro. It has no ssh-agent either, unless the operator turned that on (docker-compose.ssh.yml) so that `git push` works. Repositories are untrusted, so `claude` never runs inside the original: it runs
 in a scratch copy from which the files that configure or instruct claude (.claude/, CLAUDE.md, .mcp.json) and all
 symlinks are left out. The copy keeps the clone's .git, so git works in it, but never its hooks or its config: a fresh
 minimal config replaces it, so nothing in .git can make git run a program (core.fsmonitor, filters, aliases, ...).

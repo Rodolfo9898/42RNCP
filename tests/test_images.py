@@ -102,9 +102,17 @@ def test_the_sandbox_that_runs_student_code_stays_locked_down():
     assert "ports:" not in block and "privileged" not in block
 
 
-def test_the_terminal_keeps_the_projects_read_only_and_none_of_the_apps_secrets():
+def test_the_terminal_gets_the_projects_folder_read_write_by_default_and_only_that_folder():
     block = without_comments(services()["terminal"])
-    assert ":/projects:ro" in block and "read_only: true" in block and "cap_drop: [ALL]" in block
+    mounts = re.findall(r"^\s+- (\S+:/projects\S*)", block, re.M)
+    assert mounts == ["${PROJECTS_DIR:-./projects}:/projects:${TERMINAL_PROJECTS_MODE:-rw}"]      # read-write unless TERMINAL_PROJECTS_MODE=ro
+    others = re.findall(r"^\s+- (\S+:\S+)", block.split("volumes:", 1)[1].split("tmpfs:", 1)[0], re.M)
+    assert others == [mounts[0], "claude-home:/home/term"], others                                # nothing else of yours is mounted
+
+
+def test_the_terminal_keeps_its_isolation_and_none_of_the_apps_secrets():
+    block = without_comments(services()["terminal"])
+    assert "read_only: true" in block and "cap_drop: [ALL]" in block                               # (the container's own filesystem stays read-only)
     for secret in ("ANTHROPIC_API_KEY", "LLM_API_KEY", "SSH_AUTH_SOCK", "ssh-auth.sock"):
         assert secret not in block, secret
     assert "ports:" not in block and "privileged" not in block
