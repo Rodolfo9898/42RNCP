@@ -56,4 +56,14 @@ models:
 	[ -n "$$base" ] || { echo "Set LLM_BASE_URL in .env first."; exit 1; }; \
 	curl -fsS -m 30 "$$base/models" $${key:+-H "Authorization: Bearer $$key"} | python3 scripts/models.py
 
-.PHONY: all build run clean fclean re models token ssh
+# 42Cursus: the repo with every project as a submodule, grouped by track (see scripts/cursus.sh).
+#   make cursus                      create it (local folder next to this repo + GitHub, private)
+#   make cursus-sort                 move what is in the projects folder into it as submodules
+#   make cursus-sort MAP="ft_transcendence=common-core"   for a project that has no subject PDF with its name
+cursus:
+	@sh scripts/cursus.sh init
+
+cursus-sort:
+	@sh scripts/cursus.sh sort $(MAP)
+
+.PHONY: all build run clean fclean re models token ssh cursus cursus-sort
