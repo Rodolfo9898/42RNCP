@@ -213,3 +213,19 @@ def test_only_the_first_forty_issues_are_listed():
     prompt, stats = fix([r("fail", f"Check {i}", "Broken.") for i in range(45)])
     assert "40. Check 39" in prompt and "41. Check 40" not in prompt and "… and 5 more, listed in verdict.md" in prompt
     assert stats["must_fix"] == 45
+
+
+# ---------------------------------------------------------------- the subject PDFs are where claude can read them
+
+
+def test_the_review_prompt_says_where_the_subject_pdfs_are():
+    prompt, _ = build_review_prompt(project="push_swap", subjects=["push_swap.pdf", "en.norm.pdf"], lang="c", results=RESULTS,
+                                    subjects_dir="/scratch/subjects/abc123")
+    context = prompt.split("CONTEXT")[1].split("YOUR JOB")[0]
+    assert "in /scratch/subjects/abc123 (push_swap.pdf, en.norm.pdf), also in $SUBJECTS_DIR" in context
+    assert "name p.N" in context and context.index("/scratch/subjects/abc123") < context.index("Automated scripts already checked")
+
+
+def test_without_a_folder_or_without_subjects_the_prompt_does_not_mention_one():
+    assert "SUBJECTS_DIR" not in build()[0]
+    assert "SUBJECTS_DIR" not in build_review_prompt(project="p", subjects=[], lang="c", results=[], subjects_dir="/scratch/subjects/abc123")[0]

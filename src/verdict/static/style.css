@@ -172,8 +172,8 @@ pre.diff .add { color: var(--pass); } pre.diff .del { color: var(--fail); } pre.
 .view.pdf figure { margin: 0 auto 18px; max-width: 900px; padding: 0 16px; }
 .view.pdf img { display: block; width: 100%; min-height: 200px; background: #fff; box-shadow: 0 2px 12px #0008; }
 .view.pdf figcaption { text-align: center; color: var(--dim); font-size: 11px; margin-top: 4px; }
-.list li .name.link { cursor: pointer; }
-.list li .name.link:hover { text-decoration: underline; }
+.list li.open { cursor: pointer; }
+.list li.open:hover .name.link { text-decoration: underline; }
 a.page-link { color: inherit; text-decoration: underline dotted; }
 a.page-link:hover { color: var(--manual); }
 .doc-bar { position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); color: var(--dim); }

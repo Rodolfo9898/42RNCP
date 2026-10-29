@@ -92,3 +92,63 @@ def test_a_daemon_address_set_for_the_runner_reaches_the_commands_it_runs(tmp_pa
     runner = load_runner(tmp_path, monkeypatch, DOCKER_HOST="tcp://dind:2375")
     res = runner.run([sys.executable, "-c", "import os; print(os.environ.get('DOCKER_HOST'))"], tmp_path, 10, "")
     assert res["stdout"].strip() == "tcp://dind:2375"
+
+
+# ---------------------------------------------------------------- SUBJECTS_DIR: the one variable a request may add
+
+
+def test_a_request_may_add_subjects_dir_only_for_a_folder_inside_the_allowed_roots(runner, tmp_path):
+    folder = tmp_path / "abc123" / "subjects"
+    folder.mkdir(parents=True)
+    assert runner.parse_env({}) == {} and runner.parse_env({"env": None}) == {} and runner.parse_env({"env": {}}) == {}
+    assert runner.parse_env({"env": {"SUBJECTS_DIR": str(folder)}}) == {"SUBJECTS_DIR": str(folder.resolve())}
+    for bad in (
+        {"env": {"SUBJECTS_DIR": "/etc"}},                                     # outside the allowed roots
+        {"env": {"SUBJECTS_DIR": str(tmp_path / ".." / "etc")}},
+        {"env": {"SUBJECTS_DIR": str(tmp_path / "missing")}},                  # not an existing folder
+        {"env": {"SUBJECTS_DIR": str(folder / "x.pdf")}},
+        {"env": {"SUBJECTS_DIR": 5}},
+        {"env": {"LD_PRELOAD": str(folder)}},                                  # no other variable can be set, ever
+        {"env": {"PATH": str(folder)}},
+        {"env": {"DOCKER_HOST": "tcp://evil:2375"}},
+        {"env": ["SUBJECTS_DIR"]},
+    ):
+        with pytest.raises(ValueError):
+            runner.parse_env(bad)
+
+
+def test_the_commands_see_subjects_dir_on_top_of_the_clean_environment(runner, tmp_path):
+    folder = tmp_path / "subjects"
+    folder.mkdir()
+    show = [sys.executable, "-c", "import os; print(os.environ.get('SUBJECTS_DIR')); print(sorted(k for k in os.environ if k not in ('LC_CTYPE', '__CF_USER_TEXT_ENCODING')))"]
+    plain = runner.run(show, tmp_path, 10, "")["stdout"].splitlines()
+    with_it = runner.run(show, tmp_path, 10, "", {"SUBJECTS_DIR": str(folder)})["stdout"].splitlines()
+    assert plain[0] == "None" and with_it[0] == str(folder)
+    assert "SUBJECTS_DIR" in with_it[1] and with_it[1].replace("'SUBJECTS_DIR', ", "") == plain[1]       # nothing else changed
+
+
+def post_exec(runner, request):
+    """Drive the real HTTP handler's POST /exec without a socket: returns (status, body)."""
+    import io
+    import json
+
+    answers = []
+    handler = object.__new__(runner.Handler)
+    body = json.dumps(request).encode()
+    handler.path, handler.headers, handler.rfile = "/exec", {"Content-Length": str(len(body))}, io.BytesIO(body)
+    handler._send = lambda status, payload: answers.append((status, payload))
+    handler.do_POST()
+    return answers[0]
+
+
+def test_the_http_handler_runs_a_command_with_subjects_dir_and_refuses_anything_else(runner, tmp_path):
+    folder = tmp_path / "abc123" / "subjects"
+    folder.mkdir(parents=True)
+    show = [sys.executable, "-c", "import os; print(os.environ.get('SUBJECTS_DIR'), os.environ.get('LD_PRELOAD'))"]
+    status, body = post_exec(runner, {"argv": show, "cwd": str(tmp_path), "env": {"SUBJECTS_DIR": str(folder)}})
+    assert status == 200 and body["stdout"].split() == [str(folder.resolve()), "None"]
+    status, body = post_exec(runner, {"argv": show, "cwd": str(tmp_path)})                                 # no env: as before
+    assert status == 200 and body["stdout"].split() == ["None", "None"]
+    for env in ({"LD_PRELOAD": "/tmp/evil.so"}, {"SUBJECTS_DIR": "/etc"}, {"SUBJECTS_DIR": str(tmp_path / "missing")}, ["SUBJECTS_DIR"]):
+        status, body = post_exec(runner, {"argv": show, "cwd": str(tmp_path), "env": env})
+        assert status == 400 and "error" in body, env                                                      # refused before anything runs

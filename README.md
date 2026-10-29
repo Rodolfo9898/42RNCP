@@ -186,6 +186,31 @@ experiment:
   `COPY`. `pip install --user` and `npm install` into your home work (it is the `claude-home` volume).
 - Only the copy in `/scratch` is writable apart from your home and `/tmp`; it is memory, so a very large build can fill it.
 
+### The subject PDFs, inside the sandbox and the terminal
+
+Both places can read the PDFs of the review you are doing: the subjects you chose from the library or uploaded, and
+`en.norm.pdf` whenever the Norm applies (C detected). They are the same files that the app shows in its PDF tabs, and they
+follow the review: add or remove a subject and the folder changes the next time the checks run or a terminal tab opens.
+The folder is named by the **`$SUBJECTS_DIR`** environment variable:
+
+- **The checks (▶ Run checks).** Every command the checks run in the sandbox sees `SUBJECTS_DIR=/workspace/<session>/subjects`
+  (the runner accepts that one variable and only for an existing folder inside its allowed roots, so a request cannot
+  set `PATH`, `LD_PRELOAD` or anything else). A script or tester that needs the subject can open `"$SUBJECTS_DIR/libft.pdf"`.
+- **claude and the ⌨ Shell tab.** `SUBJECTS_DIR=/scratch/subjects/<session>`; the shell's first line prints it, and the review
+  prompt tells claude where the PDFs are so it can read the pages the requirements cite ("libft.pdf p.4") instead of guessing.
+  The terminal container still mounts neither the workspace nor `samples/`: the web app hands it exactly this review's PDFs
+  over the same token-protected channel as everything else (only what is missing or different is sent), the files are
+  read-only (0444) and are checked on arrival (a plain `*.pdf` name, starts with `%PDF`, size limits), and they are deleted
+  when the review's last claude or shell tab closes. They live outside the working copy, so they never appear under
+  **⬇ Apply to project**.
+- Copies, not the library: changing a PDF in `samples/` does not change a review that already has its copy. The read-only
+  permission protects against accidents; the sandbox's workspace volume is shared by all reviews, so code that is deliberately
+  hostile could still overwrite a PDF there (as it could before). The checks do not depend on the file contents: the rules
+  were read from the PDF when it was added.
+
+Rebuild the images once to get this (`make build`, then `make run`; `make re` is not needed and would also wipe your sessions and
+your Claude login).
+
 ### ⬇ Apply to project: getting the changes back onto your machine
 
 The working copy lives in the terminal container's memory and disappears when its last tab closes, and that container can only

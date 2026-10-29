@@ -26,6 +26,7 @@ while read -r line; do echo "GOT:$line SIZE:$(stty size)"; done
 SHELL_STUB = """#!/bin/sh
 echo "SHELL-CWD: $(pwd)"
 echo "SHELL-ENV: $(env | grep -E 'SSH_AUTH_SOCK|TOKEN|API_KEY|SECRET' | tr '\\n' ' ')"
+echo "SHELL-PDFS: dir=$SUBJECTS_DIR files=$(ls "$SUBJECTS_DIR" 2>/dev/null | tr '\\n' ' ')"
 while read -r line; do echo "SH-GOT:$line"; done
 """
 
@@ -46,6 +47,7 @@ def env(tmp_path, monkeypatch):
     shell.write_text(SHELL_STUB)
     shell.chmod(shell.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setattr(terminal, "SHELL", str(shell))
+    monkeypatch.setattr(terminal, "SUBJECTS_ROOT", tmp_path / "subjects")
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)           # whatever agent the developer has, tests start without one
     monkeypatch.setenv("TERMINAL_TOKEN", TOKEN)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-must-not-leak")
@@ -861,3 +863,102 @@ def test_the_manifest_goes_with_the_copy(env):
         assert copy in terminal._manifests and ".git/HEAD" not in terminal._manifests[copy] and "main.c" in terminal._manifests[copy]
     assert client.post("/pty/end", params={"sid": "sess-chg001"}, headers=HEADERS).json() == {"ended": True}
     assert wait_for(lambda: copy not in terminal._manifests and not copy.exists())
+
+
+# ---------------------------------------------------------------- the PDFs of a review (subjects, and the Norm when it applies)
+
+PDF_A = b"%PDF-1.4\n% subject a\n"
+PDF_B = b"%PDF-1.4\n% the norm\n"
+
+
+def post_pdfs(client, files, sid="sess-pdf001", token=TOKEN):
+    return client.post("/subjects", params={"sid": sid}, headers={"x-terminal-token": token} if token else {},
+                       files=[("files", (name, data, "application/pdf")) for name, data in files])
+
+
+def test_pdfs_are_stored_listed_by_hash_and_replaced_as_a_set(env):
+    client = TestClient(terminal.app)
+    assert client.get("/subjects", params={"sid": "sess-pdf001"}, headers=HEADERS).json() == {"files": {}}
+    r = post_pdfs(client, [("libft.pdf", PDF_A), ("en.norm.pdf", PDF_B)])
+    assert r.status_code == 200 and r.json() == {"stored": ["en.norm.pdf", "libft.pdf"]}
+    import hashlib
+    assert client.get("/subjects", params={"sid": "sess-pdf001"}, headers=HEADERS).json() == {
+        "files": {"en.norm.pdf": hashlib.sha256(PDF_B).hexdigest(), "libft.pdf": hashlib.sha256(PDF_A).hexdigest()}}
+    folder = terminal.SUBJECTS_ROOT / "sess-pdf001"
+    assert (folder / "libft.pdf").read_bytes() == PDF_A and (folder / "libft.pdf").stat().st_mode & 0o777 == 0o444     # read-only
+    post_pdfs(client, [("nm.pdf", PDF_A)])                                                                              # a new set replaces the old
+    assert sorted(p.name for p in folder.iterdir()) == ["nm.pdf"]
+    assert not [p for p in terminal.SUBJECTS_ROOT.iterdir() if p.name.startswith((".incoming", ".old"))]               # no scraps left
+
+
+def test_pdfs_need_the_token_and_a_sensible_session(env):
+    client = TestClient(terminal.app)
+    assert post_pdfs(client, [("a.pdf", PDF_A)], token=None).status_code == 401
+    assert post_pdfs(client, [("a.pdf", PDF_A)], token="wrong").status_code == 401
+    assert client.get("/subjects", params={"sid": "x"}).status_code == 401
+    for sid in ("", "a", "../etc", "a/b", "x" * 40):
+        assert post_pdfs(client, [("a.pdf", PDF_A)], sid=sid).status_code == 400, sid
+    assert client.get("/subjects", params={"sid": "../.."}, headers=HEADERS).json() == {"files": {}}
+    assert not terminal.SUBJECTS_ROOT.exists() or not any(terminal.SUBJECTS_ROOT.iterdir())
+
+
+def test_only_real_pdfs_with_plain_names_are_accepted_and_a_refusal_changes_nothing(env, monkeypatch):
+    client = TestClient(terminal.app)
+    post_pdfs(client, [("keep.pdf", PDF_A)])
+    folder = terminal.SUBJECTS_ROOT / "sess-pdf001"
+    for files in ([("../x.pdf", PDF_A)], [("a/b.pdf", PDF_A)], [(".hidden.pdf", PDF_A)], [("notes.txt", PDF_A)],
+                  [("fake.pdf", b"<html>not a pdf</html>")], [("a.pdf", PDF_A), ("a.pdf", PDF_A)], [("ok.pdf", PDF_A), ("bad.exe", PDF_A)]):
+        assert post_pdfs(client, files).status_code == 400, files
+    assert sorted(p.name for p in folder.iterdir()) == ["keep.pdf"]                                                    # the earlier set survived
+    monkeypatch.setattr(terminal, "MAX_SUBJECT_FILES", 1)
+    assert post_pdfs(client, [("a.pdf", PDF_A), ("b.pdf", PDF_A)]).status_code == 400
+    monkeypatch.setattr(terminal, "MAX_SUBJECT_FILES", 25)
+    monkeypatch.setattr(terminal, "MAX_SUBJECT_FILE_BYTES", 10)
+    assert post_pdfs(client, [("big.pdf", PDF_A)]).status_code == 400
+    monkeypatch.setattr(terminal, "MAX_SUBJECT_FILE_BYTES", 10_000)
+    monkeypatch.setattr(terminal, "MAX_SUBJECT_TOTAL_BYTES", 30)
+    assert post_pdfs(client, [("a.pdf", PDF_A), ("b.pdf", PDF_A)]).status_code == 400
+    assert sorted(p.name for p in folder.iterdir()) == ["keep.pdf"]
+
+
+def test_claude_and_the_shell_find_the_pdfs_in_subjects_dir(env):
+    client = TestClient(terminal.app)
+    post_pdfs(client, [("libft.pdf", PDF_A), ("en.norm.pdf", PDF_B)], sid="sess-pdf002")
+    folder = terminal.SUBJECTS_ROOT / "sess-pdf002"
+    with client.websocket_connect(shell_url("sess-pdf002"), headers=HEADERS) as ws:
+        seen = read_until(ws, "files=en.norm.pdf libft.pdf")                                     # (one read: what it returns is consumed)
+        assert f"$SUBJECTS_DIR = {folder}" in seen                                               # the banner says where they are
+        assert f"SHELL-PDFS: dir={folder} files=en.norm.pdf libft.pdf" in seen                 # and the shell sees both files there
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-pdf002", headers=HEADERS) as ws:
+        assert f"SUBJECTS_DIR" not in read_until(ws, "ENV:").split("ENV:")[1]                    # (the claude stub only prints secrets)
+    assert terminal.child_env("sess-pdf002")["SUBJECTS_DIR"] == str(folder)
+    assert "SUBJECTS_DIR" not in terminal.child_env() and "SUBJECTS_DIR" not in terminal.child_env("../../etc")
+
+
+def test_the_pdfs_go_with_the_last_tab_of_the_review(env):
+    client = TestClient(terminal.app)
+    post_pdfs(client, [("libft.pdf", PDF_A)], sid="sess-pdf003")
+    folder = terminal.SUBJECTS_ROOT / "sess-pdf003"
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-pdf003", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+    with client.websocket_connect(shell_url("sess-pdf003"), headers=HEADERS) as ws:
+        read_until(ws, "SHELL-ENV:")
+    assert client.post("/pty/end", params={"sid": "sess-pdf003"}, headers=HEADERS).json() == {"ended": True}          # claude first
+    assert wait_for(lambda: "sess-pdf003" not in terminal._live) and folder.is_dir()                                  # the shell still uses them
+    assert client.post("/pty/end", params={"sid": "sess-pdf003", "kind": "shell"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: not folder.exists())
+
+
+def test_folders_nobody_uses_are_pruned_but_a_live_reviews_is_kept(env):
+    client = TestClient(terminal.app)
+    post_pdfs(client, [("a.pdf", PDF_A)], sid="sess-old001")
+    post_pdfs(client, [("a.pdf", PDF_A)], sid="sess-old002")
+    old = time.time() - terminal.STALE_SUBJECTS_SECONDS - 60
+    import os
+    for sid in ("sess-old001", "sess-old002"):
+        os.utime(terminal.SUBJECTS_ROOT / sid, (old, old))
+    with client.websocket_connect(shell_url("sess-old002"), headers=HEADERS) as ws:           # this one has a terminal
+        read_until(ws, "SHELL-ENV:")
+        post_pdfs(client, [("a.pdf", PDF_A)], sid="sess-new001")                              # any new handover prunes
+        assert not (terminal.SUBJECTS_ROOT / "sess-old001").exists()
+        assert (terminal.SUBJECTS_ROOT / "sess-old002").is_dir() and (terminal.SUBJECTS_ROOT / "sess-new001").is_dir()

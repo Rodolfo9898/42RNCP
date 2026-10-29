@@ -1627,3 +1627,172 @@ def test_project_path_follows_no_links_and_creates_only_plain_folders(client, tm
         with pytest.raises(ValueError):
             main.project_path(root, rel, create=True)
     assert sorted(p.name for p in outside.iterdir()) == ["f.txt"]
+
+
+# ---------------------------------------------------------------- the PDFs of a review: for the sandbox and the terminal
+
+
+def test_the_review_folder_holds_the_chosen_subjects_and_the_norm_only_while_c_is_detected(client):
+    c, main = client
+    sid, repo = prepared_session(c, main, "pdfs1")                                  # push_swap.pdf from the library, main.c in the project
+    session = main.store.get(sid)
+    main.sync_norm(session)                                                        # C is detected: the Norm applies
+    folder = main.refresh_subject_files(session)
+    assert folder == main.WORKSPACE / sid / "subjects"
+    assert sorted(p.name for p in folder.iterdir()) == ["en.norm.pdf", "push_swap.pdf"]
+    assert (folder / "en.norm.pdf").read_bytes() == (main.SAMPLES / "en.norm.pdf").read_bytes()
+    assert (folder / "en.norm.pdf").stat().st_mode & 0o777 == 0o444 and (folder / "push_swap.pdf").read_bytes()[:4] == b"%PDF"
+    del session.subjects["en.norm.pdf"]                                            # the Norm no longer applies (sync_norm does this when C goes away)
+    assert sorted(p.name for p in main.refresh_subject_files(session).iterdir()) == ["push_swap.pdf"]
+    assert c.delete(f"/api/sessions/{sid}/subjects/push_swap.pdf").status_code == 200
+    # the subject is gone from the folder; the Norm is back because, with no subject naming a language, main.c is what says "C"
+    assert [p.name for p in main.refresh_subject_files(main.store.get(sid)).iterdir()] == ["en.norm.pdf"]
+
+
+def test_the_folder_is_rebuilt_for_an_older_session_and_repairs_itself(client):
+    c, main = client
+    sid, _ = prepared_session(c, main, "pdfs2")
+    session = main.store.get(sid)
+    folder = main.refresh_subject_files(session)
+    (folder / "push_swap.pdf").chmod(0o644)
+    (folder / "push_swap.pdf").unlink()                                            # lost (an old session, or something deleted it)
+    (folder / "stale.pdf").write_bytes(b"%PDF-1.4 left over")
+    (folder / "notes.txt").write_text("not a pdf: left alone")
+    main.refresh_subject_files(session)
+    assert sorted(p.name for p in folder.iterdir()) == ["en.norm.pdf", "notes.txt", "push_swap.pdf"]        # (a C subject brings the Norm)
+    assert (folder / "push_swap.pdf").read_bytes()[:4] == b"%PDF"
+
+
+def test_the_checks_run_in_the_sandbox_with_subjects_dir(client, monkeypatch):
+    c, main = client
+    seen = []
+    monkeypatch.setattr(main, "sandbox", main.Sandbox("http://sandbox:8001"))
+    monkeypatch.setattr(main, "run_checks", lambda ctx, emit: seen.append(ctx))
+    sid, _ = prepared_session(c, main, "pdfs3")
+    run_to_completion(c, sid)
+    folder = main.WORKSPACE / sid / "subjects"
+    assert seen[0].sandbox.env == {"SUBJECTS_DIR": str(folder)} and (folder / "push_swap.pdf").is_file()
+    assert main.sandbox.env == {}                                                  # the shared client is not changed: each run has its own
+    monkeypatch.setattr(main, "sandbox", None)
+    run_to_completion(c, sid)
+    assert seen[1].sandbox is None
+
+
+def test_the_review_prompt_points_claude_at_the_pdfs(client):
+    c, main = client
+    sid, _ = prepared_session(c, main, "pdfs4")
+    run_to_completion(c, sid)
+    text = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
+    assert f"in /scratch/subjects/{sid} (" in text and "push_swap.pdf" in text and "$SUBJECTS_DIR" in text
+
+
+import httpx as _httpx
+
+_REAL_HTTPX_CLIENT = _httpx.Client                 # captured once: patching it again must not wrap an earlier patch
+
+
+def pdf_terminal(monkeypatch, main, have=None, down=False):
+    """A terminal service that keeps PDFs: answers GET /subjects, records POST /subjects."""
+    import httpx
+    real_client = _REAL_HTTPX_CLIENT
+    calls = []
+
+    def handler(request):
+        if down:
+            raise httpx.ConnectError("refused")
+        calls.append((request.method, request.url.path, dict(request.url.params), request.headers.get("x-terminal-token"), request.content))
+        if request.method == "GET":
+            return httpx.Response(200, json={"files": have or {}})
+        return httpx.Response(200, json={"stored": []})
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    return calls
+
+
+def test_the_pdfs_are_handed_to_the_terminal_once_and_again_only_when_they_differ(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "pdfs5")
+    session = main.store.get(sid)
+    main.sync_norm(session)
+    calls = pdf_terminal(monkeypatch, main)
+    main.push_subjects(session)
+    assert [(m, p) for m, p, *_ in calls] == [("GET", "/subjects"), ("POST", "/subjects")]
+    method, path, params, token, body = calls[1]
+    assert params == {"sid": sid} and token == "tok"
+    assert b'filename="push_swap.pdf"' in body and b'filename="en.norm.pdf"' in body and b"%PDF" in body
+    digests = {p.name: _hashlib.sha256(p.read_bytes()).hexdigest() for p in (main.WORKSPACE / sid / "subjects").glob("*.pdf")}
+    calls = pdf_terminal(monkeypatch, main, have=digests)
+    main.push_subjects(session)
+    assert [m for m, *_ in calls] == ["GET"]                                       # it already has exactly these: nothing is sent
+    calls = pdf_terminal(monkeypatch, main, have={**digests, "extra.pdf": "0" * 64})
+    main.push_subjects(session)
+    assert [m for m, *_ in calls] == ["GET", "POST"]                               # a file it should not have: the set is replaced
+
+
+def test_handing_over_the_pdfs_never_stops_a_terminal_from_opening(client, monkeypatch):
+    c, main = client
+    sid, _ = prepared_session(c, main, "pdfs6")
+    session = main.store.get(sid)
+    pdf_terminal(monkeypatch, main, down=True)
+    main.push_subjects(session)                                                    # unreachable: no exception
+    calls = pdf_terminal(monkeypatch, main)
+    monkeypatch.setattr(main, "TERMINAL_URL", "")
+    main.push_subjects(session)
+    assert calls == []                                                             # not configured: nothing is attempted
+
+
+def test_the_terminal_tab_gets_the_pdfs_before_the_terminal_starts(client, monkeypatch):
+    c, main = client
+    sid = terminal_session(c, main, monkeypatch, "pdfs7")
+    order = []
+
+    async def fake_open(url, token):
+        order.append("open")
+        return FakeUpstream()
+
+    monkeypatch.setattr(main, "open_upstream", fake_open)
+    monkeypatch.setattr(main, "push_subjects", lambda session: order.append(f"push:{session.id}"))
+    with c.websocket_connect(f"/api/sessions/{sid}/terminal", headers={"origin": "http://testserver"}) as ws:
+        ws.receive_bytes()
+    assert order == [f"push:{sid}", "open"]
+
+
+def test_the_web_app_and_the_terminal_service_agree_on_how_the_pdfs_travel(client, monkeypatch, tmp_path):
+    """No mocks between them: the web app's handover talks to the real terminal service, in this process."""
+    from starlette.testclient import TestClient as AppClient
+
+    from verdict import terminal
+    c, main = client
+    sid, _ = prepared_session(c, main, "pdfs8")
+    session = main.store.get(sid)
+    monkeypatch.setenv("TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(terminal, "SUBJECTS_ROOT", tmp_path / "terminal-subjects")
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    import httpx
+    sent = []
+    terminal_app = AppClient(terminal.app, base_url="http://terminal:8002")
+
+    class Spy(AppClient):
+        def request(self, method, url, **kw):
+            sent.append(method)
+            return super().request(method, url, **kw)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: Spy(terminal.app, base_url="http://terminal:8002"))
+    main.push_subjects(session)
+    folder = terminal.SUBJECTS_ROOT / sid
+    assert sent == ["GET", "POST"]
+    assert sorted(p.name for p in folder.iterdir()) == ["en.norm.pdf", "push_swap.pdf"]
+    ours = main.WORKSPACE / sid / "subjects"
+    assert all((folder / p.name).read_bytes() == p.read_bytes() for p in ours.glob("*.pdf"))
+    assert all((folder / p.name).stat().st_mode & 0o222 == 0 for p in folder.iterdir())                    # read-only over there too
+    sent.clear()
+    main.push_subjects(session)
+    assert sent == ["GET"]                                                                                # same files, same hashes: nothing is sent again
+    c.delete(f"/api/sessions/{sid}/subjects/push_swap.pdf")
+    sent.clear()
+    main.push_subjects(main.store.get(sid))
+    assert sent == ["GET", "POST"] and [p.name for p in folder.iterdir()] == ["en.norm.pdf"]              # a removed subject disappears over there
+    assert terminal_app.get("/subjects", params={"sid": sid}, headers={"x-terminal-token": "tok"}).json()["files"].keys() == {"en.norm.pdf"}

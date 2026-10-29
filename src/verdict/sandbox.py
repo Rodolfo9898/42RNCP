@@ -36,8 +36,13 @@ class SandboxError(RuntimeError):
 class Sandbox:
     """Client for sandbox/runner.py. Everything run on behalf of a repo goes through here."""
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, env: dict[str, str] | None = None):
         self.url = url.rstrip("/")
+        self.env = dict(env or {})          # added to every command this client runs (see sandbox/runner.py for what is accepted)
+
+    def with_env(self, env: dict[str, str]) -> Sandbox:
+        """The same sandbox, with extra variables for the commands run through the returned client."""
+        return Sandbox(self.url, {**self.env, **env})
 
     @classmethod
     def from_env(cls) -> Sandbox | None:
@@ -54,7 +59,8 @@ class Sandbox:
     def exec(self, argv: list[str], cwd: Path, timeout: float = 60, stdin: str = "") -> ExecResult:
         try:
             with httpx.Client(trust_env=False, timeout=timeout + 15) as client:   # an internal service: no proxies
-                r = client.post(f"{self.url}/exec", json={"argv": argv, "cwd": str(cwd), "timeout": timeout, "stdin": stdin})
+                r = client.post(f"{self.url}/exec", json={"argv": argv, "cwd": str(cwd), "timeout": timeout, "stdin": stdin,
+                                                           **({"env": self.env} if self.env else {})})
         except httpx.HTTPError as exc:
             raise SandboxError(f"sandbox unreachable: {exc}") from exc
         if r.status_code != 200:

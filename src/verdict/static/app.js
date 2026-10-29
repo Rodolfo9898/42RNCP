@@ -119,19 +119,24 @@ const TRACK_LABEL = { "common-core": "Common Core", "post-common-core": "Post Co
 
 function renderSidebar() {
   const list = $("#subjects");
+  // The whole row opens the PDF (icon, name and the grey details), not just the name text.
+  const open = (s) => () => guarded(() => openSubject(s.name));
   list.replaceChildren(...session.subjects.map((s) => s.kind === "norm"
-    ? h("li", { title: "C code was detected: norminette runs, and the Norm rules it cannot check go to the manual review" },
+    ? h("li", { class: "open", title: "Click to open the Norm. C code was detected: norminette runs, and the Norm rules it cannot check go to the manual review", onclick: open(s) },
       fileIcon(iconFor(s.name)),
-      h("span", { class: "name link", onclick: () => guarded(() => openSubject(s.name)) }, s.name),
+      h("span", { class: "name link" }, s.name),
       h("span", { class: "meta" }, `Norm · auto (C) · ${s.rules.length} rules`))
-    : h("li", { title: `${s.rules.length} rules extracted. Click to open the PDF.` },
+    : h("li", { class: "open", title: `${s.rules.length} rules extracted. Click to open the PDF.`, onclick: open(s) },
       fileIcon(iconFor(s.name)),
-      h("span", { class: "name link", onclick: () => guarded(() => openSubject(s.name)) }, s.name),
+      h("span", { class: "name link" }, s.name),
       h("span", { class: "meta" }, [TRACK_LABEL[s.track], `${s.rules.length} rules`].filter(Boolean).join(" · ")),
-      h("button", { class: "x", title: "Remove", onclick: () => guarded(async () => {
-        setSession(await api(`sessions/${sid}/subjects/${encodeURIComponent(s.name)}`, { method: "DELETE" }));
-        if (tabs.has(`pdf:${s.name}`)) closeTab(`pdf:${s.name}`);
-      }) }, "✕"))));
+      h("button", { class: "x", title: "Remove", onclick: (ev) => {
+        ev.stopPropagation();                                   // removing a subject must not also open it
+        guarded(async () => {
+          setSession(await api(`sessions/${sid}/subjects/${encodeURIComponent(s.name)}`, { method: "DELETE" }));
+          if (tabs.has(`pdf:${s.name}`)) closeTab(`pdf:${s.name}`);
+        });
+      } }, "✕"))));
   $("#subjects-count").textContent = session.subjects.length || "";
   $("#subjects-hint").hidden = session.subjects.length > 0;
 }
@@ -648,7 +653,7 @@ async function openTerminal(promptId, kind = "claude") {
   term.onResize(({ cols, rows }) => send({ t: "r", c: cols, r: rows }));
   new ResizeObserver(() => { if (!view.hidden) { try { fit.fit(); } catch { /* not laid out yet */ } } }).observe(holder);
   if (shell) {
-    term.writeln("\x1b[2mThe tools claude has: cc, make, valgrind, norminette, and docker on the separate daemon. Try: make, docker build ., docker compose up.\x1b[0m");
+    term.writeln("\x1b[2mThe tools claude has: cc, make, valgrind, norminette, vim, nano, and docker on the separate daemon. Try: make, docker build ., docker compose up.\r\nThe subject PDFs of this review (and the Norm) are in $SUBJECTS_DIR.\x1b[0m");
   } else {
     let known = session.claude_review_at || "";
     tab.watcher = setInterval(async () => {

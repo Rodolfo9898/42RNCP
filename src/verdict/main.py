@@ -28,7 +28,7 @@ from . import repo as repo_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
 from .prompts import build_fix_prompt, build_review_prompt, find_docker_files, manual_items
-from .changes import change_policy
+from .changes import TERMINAL_SUBJECTS_ROOT, change_policy
 from .checks import EXCLUDED_DIRS, VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
 from .pdfread import read_pages, render_page
@@ -224,6 +224,30 @@ def _add_subject(session: Session, name: str, data: bytes, track: str = "") -> N
 
 def subjects_dir(session: Session) -> Path:
     return store.path(session.id) / "subjects"
+
+
+def refresh_subject_files(session: Session) -> Path:
+    """The folder with the PDFs of this review: the subjects you chose or uploaded, and the Norm while it applies, and nothing else.
+    The sandbox reads it as $SUBJECTS_DIR for the checks and the terminal container gets a copy of it (push_subjects)."""
+    folder = subjects_dir(session)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in session.subjects:
+        target = folder / name
+        try:
+            source = subject_pdf(session, name)
+        except HTTPException:
+            continue                                       # the file is gone (an old session): nothing to hand over
+        if source.resolve() != target.resolve() and (not target.exists() or target.stat().st_size != source.stat().st_size):
+            data = source.read_bytes()
+            fd, temporary = tempfile.mkstemp(dir=folder, prefix=".copy-")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.chmod(temporary, 0o444)                     # read-only for anything that runs in the sandbox by accident
+            os.replace(temporary, target)
+    for stale in folder.iterdir():
+        if stale.is_file() and not stale.is_symlink() and stale.suffix.lower() == ".pdf" and stale.name not in session.subjects:
+            stale.unlink(missing_ok=True)                  # a subject that was removed, or the Norm when C is no longer detected
+    return folder
 
 
 def subject_pdf(session: Session, name: str) -> Path:
@@ -664,6 +688,27 @@ def same_origin(ws: WebSocket) -> bool:
     return bool(origin) and urlparse(origin).netloc == ws.headers.get("host")
 
 
+def push_subjects(session: Session) -> None:
+    """Hand this review's PDFs to the terminal container, which cannot see the workspace. Only when it does not already have exactly
+    these files. Best effort: a terminal without the PDFs is still a working terminal."""
+    if not (TERMINAL_URL and TERMINAL_TOKEN):
+        return
+    try:
+        import httpx
+
+        folder = refresh_subject_files(session)
+        files = {p.name: p for p in sorted(folder.glob("*.pdf")) if p.is_file() and not p.is_symlink() and p.name in session.subjects}
+        digests = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in files.items()}
+        headers = {"x-terminal-token": TERMINAL_TOKEN}
+        with httpx.Client(trust_env=False, timeout=60) as client:
+            have = client.get(f"{TERMINAL_URL}/subjects", params={"sid": session.id}, headers=headers).json().get("files")
+            if have != digests:
+                client.post(f"{TERMINAL_URL}/subjects", params={"sid": session.id}, headers=headers,
+                            files=[("files", (name, path.read_bytes(), "application/pdf")) for name, path in files.items()]).raise_for_status()
+    except Exception:
+        logging.getLogger("verdict").warning("could not hand the subject PDFs to the terminal", exc_info=True)
+
+
 @app.websocket("/api/sessions/{session_id}/terminal")
 async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
     if not same_origin(ws):
@@ -690,6 +735,7 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
     prompt_id = ws.query_params.get("prompt", "")
     if not shell and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", prompt_id):
         url += f"&prompt={prompt_id}"
+    await asyncio.get_running_loop().run_in_executor(None, push_subjects, session)     # (before the terminal starts, so it sees the PDFs at once)
     try:
         upstream = await open_upstream(url, TERMINAL_TOKEN)
     except Exception:
@@ -1007,7 +1053,8 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
     root = repo_dir(session)
     docker_files = find_docker_files(p.as_posix() for p in repo_mod.tracked_files(root)) if root else []
     return build_review_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
-                               lang=session.lang(), results=session.results, docker_files=docker_files)
+                               lang=session.lang(), results=session.results, docker_files=docker_files,
+                               subjects_dir=f"{TERMINAL_SUBJECTS_ROOT}/{session.id}")
 
 
 @app.get("/api/sessions/{session_id}/review-prompt")
@@ -1138,7 +1185,9 @@ def _run(session: Session) -> None:
 
     try:
         work = make_work_copy(session, clone)
-        run_checks(Ctx(repo=work.resolve(), rules=session.rules(), sandbox=sandbox, lang=session.lang()), emit)
+        subjects = refresh_subject_files(session)
+        run_checks(Ctx(repo=work.resolve(), rules=session.rules(), lang=session.lang(),
+                       sandbox=sandbox.with_env({"SUBJECTS_DIR": str(subjects)}) if sandbox else None), emit)
         # Suggestions and the README look at what was committed, not at what building left behind.
         pristine = Ctx(repo=clone, rules=session.rules(), sandbox=None, lang=session.lang())
         session.improvements = improve_mod.suggest(pristine)

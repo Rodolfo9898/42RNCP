@@ -1,10 +1,22 @@
-"""What may travel from a working copy back to the project, and which paths are acceptable.
+"""What the web app and the terminal container have to agree on: what may travel from a working copy back to the project, which
+paths are acceptable, and where a review's subject PDFs are kept.
 
 The terminal container reports what changed in its throw-away copy; the web app, which owns the projects folder, writes what
 the user approves. Both sides apply these rules, so a wrong answer from one of them is not enough to write something bad.
 """
 
 from __future__ import annotations
+
+import re
+
+# Where the terminal container keeps the PDFs of a review (one folder per web session), and what a PDF of a subject may be called.
+TERMINAL_SUBJECTS_ROOT = "/scratch/subjects"
+SUBJECT_NAME = re.compile(r"\w[\w.\- ]{0,118}\.pdf", re.IGNORECASE)
+
+
+def is_subject_name(name: str) -> bool:
+    return bool(SUBJECT_NAME.fullmatch(name)) and ".." not in name
+
 
 # Files that configure or instruct claude. The copy is made without them, and they never go back: an agent that could write
 # them into your project would be instructing the next claude (or its hooks) that opens it on your machine.

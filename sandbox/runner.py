@@ -3,7 +3,7 @@
 Stdlib only. Runs inside the `sandbox` container, which has no outbound network
 (see docker-compose.yml). Only the web app can reach it, over an internal network.
 
-POST /exec  {"argv": [...], "cwd": "/workspace/...", "timeout": 60, "stdin": ""}
+POST /exec  {"argv": [...], "cwd": "/workspace/...", "timeout": 60, "stdin": "", "env": {"SUBJECTS_DIR": "/workspace/<id>/subjects"}}
          -> {"rc": int, "stdout": str, "stderr": str, "timed_out": bool, "truncated": bool}
 GET  /health
 """
@@ -20,6 +20,9 @@ ROOTS = [Path(r).resolve() for r in os.environ.get("ALLOWED_ROOTS", os.environ.g
 MAX_TIMEOUT = 300
 MAX_OUTPUT = 1_000_000  # bytes kept per stream
 MAX_BODY = 1_000_000
+# The only variables a request may add to the clean environment below, each pointing at an existing folder inside the allowed
+# roots: SUBJECTS_DIR is where the PDFs of the review (the subjects, and the Norm when it applies) are.
+EXTRA_ENV_KEYS = {"SUBJECTS_DIR"}
 
 ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -50,11 +53,11 @@ def _kill_group(pgid: int) -> None:
         pass  # already gone (macOS reports EPERM for a group that only holds zombies)
 
 
-def run(argv: list[str], cwd: Path, timeout: float, stdin: str) -> dict:
+def run(argv: list[str], cwd: Path, timeout: float, stdin: str, extra_env: dict[str, str] | None = None) -> dict:
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
-        env=ENV,
+        env={**ENV, **(extra_env or {})},
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -89,6 +92,21 @@ def parse_request(req: dict) -> tuple[list[str], Path, float, str]:
     return argv, cwd, min(float(req.get("timeout", 60)), MAX_TIMEOUT), str(req.get("stdin", ""))
 
 
+def parse_env(req: dict) -> dict[str, str]:
+    """The extra environment of a request: only the variables allowed above, only folders that exist inside the allowed roots."""
+    extra = req.get("env") or {}
+    if not isinstance(extra, dict):
+        raise ValueError("env must be an object")
+    out: dict[str, str] = {}
+    for key, value in extra.items():
+        if key not in EXTRA_ENV_KEYS or not isinstance(value, str):
+            raise ValueError(f"{key!r} cannot be set")
+        folder = Path(value).resolve()
+        if not any(folder.is_relative_to(root) for root in ROOTS) or not folder.is_dir():
+            raise ValueError(f"{key} must be an existing directory inside an allowed root")
+        out[key] = str(folder)
+    return out
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, body: dict) -> None:
         data = json.dumps(body).encode()
@@ -111,11 +129,13 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             if length > MAX_BODY:
                 return self._send(413, {"error": "body too large"})
-            argv, cwd, timeout, stdin = parse_request(json.loads(self.rfile.read(length)))
+            request = json.loads(self.rfile.read(length))
+            argv, cwd, timeout, stdin = parse_request(request)
+            extra_env = parse_env(request)
         except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return self._send(400, {"error": str(exc)})
         try:
-            self._send(200, run(argv, cwd, timeout, stdin))
+            self._send(200, run(argv, cwd, timeout, stdin, extra_env))
         except OSError as exc:  # e.g. executable not found
             self._send(200, {"rc": 127, "stdout": "", "stderr": str(exc),
                              "timed_out": False, "truncated": False})

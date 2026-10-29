@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,9 +11,15 @@ from verdict.sandbox import ExecResult
 class LocalSandbox:
     """Runs commands directly. Only ever used on fixture projects written by the tests."""
 
+    def __init__(self, env=None):
+        self.env = dict(env or {})
+
+    def with_env(self, env):
+        return LocalSandbox({**self.env, **env})
+
     def exec(self, argv, cwd, timeout=60, stdin=""):
         try:
-            p = subprocess.run(argv, cwd=cwd, input=stdin, capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run(argv, cwd=cwd, input=stdin, capture_output=True, text=True, timeout=timeout, env={**os.environ, **self.env})
         except subprocess.TimeoutExpired:
             return ExecResult(rc=-9, timed_out=True)
         except FileNotFoundError as exc:

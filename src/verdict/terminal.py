@@ -35,9 +35,9 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 
-from .changes import SKIPPED_NAMES, change_policy, is_plain_path
+from .changes import SKIPPED_NAMES, TERMINAL_SUBJECTS_ROOT, change_policy, is_plain_path, is_subject_name
 from .checks import GENERATED_VERDICT_NAMES, VERDICT_MARKER
 
 PROJECTS = Path(os.environ.get("PROJECTS_DIR", "/projects"))
@@ -54,6 +54,14 @@ IDLE_SECONDS = int(os.environ.get("TERMINAL_IDLE_SECONDS", 0))          # no inp
 DETACHED_SECONDS = int(os.environ.get("TERMINAL_DETACHED_SECONDS", 12 * 3600))   # nobody connected for this long
 BACKLOG_BYTES = 512 * 1024                                               # what a returning browser is shown again
 REVIEW_TIMEOUT = 900
+# The PDFs of a review (its subjects, and the Norm when it applies) are handed over by the web app, one folder per web session;
+# claude and the shell find it in $SUBJECTS_DIR. The terminal has no mount for them, so it still cannot see anything else.
+SUBJECTS_ROOT = Path(os.environ.get("SUBJECTS_ROOT", TERMINAL_SUBJECTS_ROOT))
+MAX_SUBJECT_FILES = 25
+MAX_SUBJECT_FILE_BYTES = 60 * 1024 * 1024
+MAX_SUBJECT_TOTAL_BYTES = 250 * 1024 * 1024
+STALE_SUBJECTS_SECONDS = 600                                             # a folder nobody is using is dropped after this long
+SESSION_ID = re.compile(r"[A-Za-z0-9_-]{6,32}")
 MAX_COPY_BYTES = 200 * 1024 * 1024
 MAX_COPY_FILES = 20_000
 REVIEW_FILE = "claude-review.md"
@@ -80,7 +88,7 @@ SAFE_FLAGS = [
 ]
 
 
-def child_env() -> dict[str, str]:
+def child_env(session_id: str = "") -> dict[str, str]:
     """The only environment claude gets: no secrets from this process."""
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
@@ -98,6 +106,8 @@ def child_env() -> dict[str, str]:
         env["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
     if os.environ.get("SSH_AUTH_SOCK"):    # your ssh-agent, only when docker-compose.ssh.yml mounted it (see the README)
         env["SSH_AUTH_SOCK"] = os.environ["SSH_AUTH_SOCK"]
+    if SESSION_ID.fullmatch(session_id):   # where the PDFs of this review are (or will be: they may arrive after the tab opens)
+        env["SUBJECTS_DIR"] = str(SUBJECTS_ROOT / session_id)
     return env
 
 
@@ -315,7 +325,7 @@ def set_size(fd: int, cols: int, rows: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-def spawn(argv: list[str], cwd: Path, cols: int, rows: int) -> tuple[subprocess.Popen, int]:
+def spawn(argv: list[str], cwd: Path, cols: int, rows: int, env: dict[str, str] | None = None) -> tuple[subprocess.Popen, int]:
     master, slave = os.openpty()
     set_size(slave, cols, rows)
 
@@ -324,7 +334,7 @@ def spawn(argv: list[str], cwd: Path, cols: int, rows: int) -> tuple[subprocess.
 
     try:
         process = subprocess.Popen(
-            argv, cwd=cwd, env=child_env(), stdin=slave, stdout=slave, stderr=slave,
+            argv, cwd=cwd, env=env or child_env(), stdin=slave, stdout=slave, stderr=slave,
             start_new_session=True, preexec_fn=take_controlling_terminal, close_fds=True,
         )
     finally:
@@ -434,6 +444,83 @@ def result(request: Request, sid: str = "") -> dict:
     if not authorised(request.headers.get("x-terminal-token")):
         raise HTTPException(401, "bad token")
     return read_review(sid)
+
+
+def _live_session_ids() -> set[str]:
+    return {live.sid.split(":")[0] for live in list(_live.values())}
+
+
+def drop_subjects(session_id: str) -> None:
+    if SESSION_ID.fullmatch(session_id):
+        shutil.rmtree(SUBJECTS_ROOT / session_id, ignore_errors=True)
+
+
+def prune_subjects() -> None:
+    """Folders of reviews that have no terminal any more (e.g. the tab never opened after the PDFs were handed over)."""
+    try:
+        folders = [p for p in SUBJECTS_ROOT.iterdir() if p.is_dir()]
+    except OSError:
+        return
+    live = _live_session_ids()
+    for folder in folders:
+        if folder.name not in live and time.time() - folder.stat().st_mtime > STALE_SUBJECTS_SECONDS:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+def subject_digests(session_id: str) -> dict[str, str]:
+    folder = SUBJECTS_ROOT / session_id
+    if not SESSION_ID.fullmatch(session_id) or not folder.is_dir():
+        return {}
+    return {p.name: _sha256(p) for p in sorted(folder.iterdir()) if p.is_file() and not p.is_symlink() and is_subject_name(p.name)}
+
+
+@app.get("/subjects")
+def list_subjects(request: Request, sid: str = "") -> dict:
+    """The PDFs this terminal holds for a review, with their hashes, so the web app only sends what is missing or different."""
+    if not authorised(request.headers.get("x-terminal-token")):
+        raise HTTPException(401, "bad token")
+    return {"files": subject_digests(sid)}
+
+
+@app.post("/subjects")
+async def store_subjects(request: Request, sid: str = "", files: list[UploadFile] = File(...)) -> dict:
+    """Replace the PDFs of a review with exactly these. Read-only for whatever runs here, and gone when the review's last tab closes."""
+    if not authorised(request.headers.get("x-terminal-token")):
+        raise HTTPException(401, "bad token")
+    if not SESSION_ID.fullmatch(sid):
+        raise HTTPException(400, "bad session id")
+    if len(files) > MAX_SUBJECT_FILES:
+        raise HTTPException(400, f"at most {MAX_SUBJECT_FILES} PDFs")
+    received: dict[str, bytes] = {}
+    total = 0
+    for upload in files:
+        name = upload.filename or ""
+        data = await upload.read(MAX_SUBJECT_FILE_BYTES + 1)
+        total += len(data)
+        if not is_subject_name(name) or name in received:
+            raise HTTPException(400, f"not an acceptable PDF name: {name!r}")
+        if not data.startswith(b"%PDF") or len(data) > MAX_SUBJECT_FILE_BYTES or total > MAX_SUBJECT_TOTAL_BYTES:
+            raise HTTPException(400, f"{name} is not a PDF, or is too large")
+        received[name] = data
+    SUBJECTS_ROOT.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".incoming-", dir=SUBJECTS_ROOT))
+    try:
+        for name, data in received.items():
+            target = staging / name
+            target.write_bytes(data)
+            target.chmod(0o444)
+        final = SUBJECTS_ROOT / sid
+        old = SUBJECTS_ROOT / f".old-{sid}"
+        shutil.rmtree(old, ignore_errors=True)
+        if final.exists():
+            final.rename(old)
+        staging.rename(final)
+        shutil.rmtree(old, ignore_errors=True)
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise HTTPException(500, f"could not store the PDFs: {exc}") from exc
+    prune_subjects()
+    return {"stored": sorted(received)}
 
 
 def workdir_of(sid: str) -> Path | None:
@@ -575,6 +662,8 @@ def finish(live: Live) -> bool:
         pass
     if not shared:
         cleanup(live.workdir)
+    if live.sid.split(":")[0] not in _live_session_ids():
+        drop_subjects(live.sid.split(":")[0])              # the review's last tab: its PDFs go too
     return True
 
 
@@ -655,7 +744,7 @@ async def pty_socket(ws: WebSocket) -> None:
     if live is None:
         process = master = None
         try:
-            process, master = spawn(interactive_argv(prompt) if kind == "claude" else shell_argv(), workdir, cols, rows)
+            process, master = spawn(interactive_argv(prompt) if kind == "claude" else shell_argv(), workdir, cols, rows, child_env(session_id))
         except OSError as exc:
             if not borrowed:
                 cleanup(workdir)
@@ -673,7 +762,7 @@ async def pty_socket(ws: WebSocket) -> None:
         if kind == "shell":
             where = "claude's working copy" if borrowed else "its own throw-away copy (claude is not running)"
             with live.lock:
-                live.backlog += f"\x1b[2m[shell in {where}: {workdir}]\x1b[0m\r\n".encode()
+                live.backlog += f"\x1b[2m[shell in {where}: {workdir}]\r\n[subject PDFs of this review: $SUBJECTS_DIR = {SUBJECTS_ROOT / session_id}]\x1b[0m\r\n".encode()
         _start_reaper()
     else:
         set_size(live.master, cols, rows)
