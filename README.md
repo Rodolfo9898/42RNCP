@@ -341,6 +341,33 @@ mode) you can paste it into the ⌨ Claude tab too: that claude works in your pr
 once. With `TERMINAL_WORKDIR=copy` a fix made there would be lost when the tab closes unless you use ⬇ Apply to project. The
 same text is at `GET /api/sessions/{id}/fix-prompt`.
 
+## 42Cursus: all your projects as submodules
+
+A separate repository, `Rodolfo9898/42Cursus`, holds every project as a git submodule, grouped like `samples/`
+(`common-core/`, `post-common-core/`, `rncp/`). It lives in a folder next to this one (`../42Cursus`) and contains no subject PDFs.
+`scripts/cursus.sh` builds and maintains it; run it through `make`, on your machine (it uses your own ssh keys):
+
+```sh
+make cursus          # once: create ../42Cursus and the private GitHub repo (needs `brew install gh && gh auth login`)
+make cursus-sort     # put every git repo of ./projects into it, in the folder of the subject PDF with its name
+make cursus-update   # move every submodule to the newest commit of its own repository, and commit that
+```
+
+- **`cursus-sort`** takes a project's `origin` URL, so the submodule holds what is on GitHub, not your local folder: push first
+  (it warns about unpushed commits and uncommitted changes). A name that matches no subject PDF needs
+  `make cursus-sort MAP="ft_transcendence=common-core"`.
+- **`cursus-update`** is what to run after your projects changed. It first fast-forwards 42Cursus from its origin when that cannot
+  touch anything of yours (so positions recorded on another machine are picked up), checks out any project that is not there
+  yet, then moves each one to the newest commit of its own remote and commits the new positions in one commit
+  (`Update N project(s)`, listing them). The report says per project what it did:
+  `up common-core/libft: 69ba8fd -> 3c1e0a2 (2 new commit(s))`, `ok … already the newest`, `skip …`, `fail …`.
+- **Your work is never overwritten.** A project folder inside 42Cursus with uncommitted changes, or with commits that are not
+  on its origin, is skipped with a message (push or commit them first), and the others are still updated. Only the
+  updated projects are committed, never anything else you had staged. A project that cannot be fetched (network, ssh key,
+  deleted repository) is reported, makes the command end with an error, and does not stop the rest.
+- **Nothing is pushed unless you ask.** Each command ends by printing `git -C ../42Cursus push`; `make cursus-update CURSUS_PUSH=1`
+  pushes at the end. `CURSUS_DIR` and `CURSUS_REPO` change where the repository is and what it is called.
+
 ## SSH troubleshooting
 
 The status bar shows `ssh: N key(s)` when the container can use your agent, or `ssh: ⚠ not ready` with the reason

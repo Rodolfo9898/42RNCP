@@ -74,10 +74,14 @@ models:
 #   make cursus                      create it (local folder next to this repo + GitHub, private)
 #   make cursus-sort                 move what is in the projects folder into it as submodules
 #   make cursus-sort MAP="ft_transcendence=common-core"   for a project that has no subject PDF with its name
+#   make cursus-update               move every submodule to the newest commit of its own repo and commit that (CURSUS_PUSH=1 also pushes)
 cursus:
 	@sh scripts/cursus.sh init
 
 cursus-sort:
 	@sh scripts/cursus.sh sort $(MAP)
 
-.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort
+cursus-update:
+	@sh scripts/cursus.sh update
+
+.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort cursus-update
