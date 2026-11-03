@@ -243,7 +243,7 @@ push_projects() {
         [ -e "$p/.git" ] || { echo "skip $name: not a git repository"; continue; }
         git -C "$p" remote get-url origin >/dev/null 2>&1 || { echo "skip $name: no origin remote to push to"; continue; }
         branch=$(git -C "$p" symbolic-ref -q --short HEAD) || { echo "skip $name: not on a branch (detached HEAD)"; continue; }
-        if false && git -C "$p" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+        if git -C "$p" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
             count=$(git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null)
             how="push"
         else
