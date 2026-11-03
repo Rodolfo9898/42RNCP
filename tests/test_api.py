@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -2016,3 +2018,73 @@ def test_files_and_the_review_are_applied_together_and_one_does_not_depend_on_th
     (repo / "main.c").write_bytes(OLD)
     again = apply(c, sid, paths=["main.c"], review=True).json()
     assert again["applied"] == ["main.c"] and again["review"]["applied"] is False        # the files went in even though there was no report
+
+
+# ---------------------------------------------------------------- a better parser reaches reviews that already had the subject
+
+
+REAL_FT_PRINTF = Path(__file__).resolve().parent.parent / "samples" / "common-core" / "ft_printf.pdf"
+OLD_FT_PRINTF_FILES = [["Makefile"], ["*.h"], ["*/*.h"], ["*.c"], ["*/*.c"]]          # how it was parsed before `*.c` and `*/*.c` became one requirement
+
+
+def ft_printf_session(c, main, name):
+    import shutil
+    if not REAL_FT_PRINTF.is_file():
+        pytest.skip("the library PDF is not here")
+    (main.SAMPLES / "common-core").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REAL_FT_PRINTF, main.SAMPLES / "common-core" / "ft_printf.pdf")
+    sid = c.post("/api/sessions").json()["id"]
+    assert c.post(f"/api/sessions/{sid}/subjects/library", json={"paths": ["common-core/ft_printf.pdf"]}).status_code == 200
+    repo = attach_repo(main, sid, name)
+    for file in ("Makefile", "ft_printf.h", "ft_printf.c"):                                # everything at the root, as the subject allows
+        (repo / file).write_text("x\n")
+    return sid, repo
+
+
+def required_files_result(state):
+    return next(r for r in state["results"] if r["title"].startswith("Required files"))
+
+
+def go_back_to_the_old_rules(main, sid):
+    """What a session made before the parser improved has stored for the subject."""
+    for rule in main.store.get(sid).subjects["ft_printf.pdf"].rules:
+        if rule.kind == "required_files":
+            rule.params["files"] = [list(entry) for entry in OLD_FT_PRINTF_FILES]
+
+
+def test_a_session_that_stored_the_old_rules_gets_the_fixed_ones_at_the_next_run(client):
+    c, main = client
+    sid, repo = ft_printf_session(c, main, "ftp1")
+    assert next(r for r in main.store.get(sid).subjects["ft_printf.pdf"].rules if r.kind == "required_files").params["files"] == [["Makefile"], ["*.h", "*/*.h"], ["*.c", "*/*.c"]]
+    go_back_to_the_old_rules(main, sid)
+    state = run_to_completion(c, sid)
+    found = required_files_result(state)
+    assert found["status"] == "pass" and "Missing" not in found["detail"]                   # the screenshot: "Missing: */*.h, */*.c"
+    stored = next(r for r in main.store.get(sid).subjects["ft_printf.pdf"].rules if r.kind == "required_files")
+    assert stored.params["files"] == [["Makefile"], ["*.h", "*/*.h"], ["*.c", "*/*.c"]]    # and the session now keeps the current rules
+
+
+def test_refreshing_the_rules_changes_nothing_when_nothing_changed_and_keeps_rules_it_cannot_reread(client):
+    c, main = client
+    sid, repo = ft_printf_session(c, main, "ftp2")
+    session = main.store.get(sid)
+    main.sync_norm(session)
+    assert main.refresh_subject_rules(session) is False                                    # nothing to update: the same rules come out
+    go_back_to_the_old_rules(main, sid)
+    assert main.refresh_subject_rules(session) is True and main.refresh_subject_rules(session) is False
+    old = session.subjects["ft_printf.pdf"].model_copy(deep=True)
+    for path in (main.subjects_dir(session) / "ft_printf.pdf", main.SAMPLES / "common-core" / "ft_printf.pdf"):
+        path.chmod(0o644)
+        path.unlink()                                                                       # the PDF is gone from everywhere
+    assert main.refresh_subject_rules(session) is False and session.subjects["ft_printf.pdf"] == old       # so the rules it has stay
+
+
+def test_the_norm_is_refreshed_too(client):
+    c, main = client
+    sid, repo = prepared_session(c, main, "ftp3")
+    session = main.store.get(sid)
+    main.sync_norm(session)
+    norm = session.subjects["en.norm.pdf"]
+    assert norm.rules
+    norm.rules = []                                                                         # a Norm stored by an older parser
+    assert main.refresh_subject_rules(session) is True and session.subjects["en.norm.pdf"].rules

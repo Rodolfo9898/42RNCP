@@ -308,6 +308,29 @@ def norm_subject() -> Subject | None:
     return _norm_cache["subject"].model_copy(deep=True)
 
 
+def refresh_subject_rules(session: Session) -> bool:
+    """Read every subject's PDF again with the parser as it is now. The rules are stored in the session when a subject is added, so
+    without this an improvement of the parser would never reach a review that already had the subject (it would keep showing the old
+    findings until the subject was removed and added again). A subject whose PDF is gone keeps the rules it has. True when something changed."""
+    changed = False
+    for name, subject in list(session.subjects.items()):
+        try:
+            if subject.kind == "norm":
+                fresh = norm_subject()
+                if fresh is None:
+                    continue
+            else:
+                pages = read_pages(subject_pdf(session, name))
+                spec = parse_subject(name, pages)
+                fresh = Subject(name=name, track=subject.track, lang=spec.lang, pages=len(pages), rules=spec.rules)
+        except Exception:                                  # (an unreadable or missing PDF: keep what the session has)
+            continue
+        if (fresh.rules, fresh.lang, fresh.pages) != (subject.rules, subject.lang, subject.pages):
+            session.subjects[name] = fresh
+            changed = True
+    return changed
+
+
 def has_c_code(session: Session) -> bool:
     """C is detected when a subject requires it or, with no language in the subjects, when the repo has C and no C++."""
     lang = session.lang()
@@ -1271,6 +1294,7 @@ def run(session_id: str) -> dict:
         raise HTTPException(400, "clone a repository first")
     if not any(s.kind == "subject" for s in session.subjects.values()):
         raise HTTPException(400, "add at least one subject PDF first")
+    refresh_subject_rules(session)                      # (so a better parser applies at once, not only to subjects added from now on)
     refresh_context(session)
     session.results, session.improvements, session.state, session.message = [], [], "running", ""
     session.ai = AIState(reviews={k: v for k, v in session.ai.reviews.items() if v.by == "Claude"})
