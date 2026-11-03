@@ -120,3 +120,25 @@ def test_every_sample_parses(pdf):
     spec = parse_subject(pdf, read_pages(SAMPLES / pdf))
     assert spec.rules, f"no rules extracted from {pdf}"
     assert len({r.id for r in spec.rules}) == len(spec.rules)
+
+
+def test_a_name_and_its_subfolder_twin_are_one_requirement_the_root_or_a_subfolder():
+    # ft_printf: "Makefile, *.h, */*.h, *.c, */*.c" means headers and sources at the root OR one folder down, not both
+    assert expand_files("Makefile, *.h, */*.h, *.c, */*.c")[0] == [["Makefile"], ["*.h", "*/*.h"], ["*.c", "*/*.c"]]
+    assert expand_files("*/*.c, *.c")[0] == [["*.c", "*/*.c"]]                                  # whichever is listed first
+    assert expand_files("*.{h, hpp}, */*.{h, hpp}")[0] == [["*.h", "*.hpp", "*/*.h", "*/*.hpp"]]
+    assert expand_files("*/*.c")[0] == [["*/*.c"]]                                              # alone, nothing to fold into
+    assert expand_files("src/*.c, *.c")[0] == [["src/*.c"], ["*.c"]]                            # an explicit folder is not a twin
+    assert expand_files("Makefile, libft.h, ft_*.c")[0] == [["Makefile"], ["libft.h"], ["ft_*.c"]]
+
+
+def test_the_real_ft_printf_subject_asks_for_the_root_or_a_subfolder():
+    from pathlib import Path
+
+    from verdict.pdfread import read_pages
+    pdf = Path(__file__).resolve().parent.parent / "samples" / "common-core" / "ft_printf.pdf"
+    if not pdf.is_file():
+        pytest.skip("the library PDF is not here")
+    spec = parse_subject("ft_printf.pdf", read_pages(pdf))
+    files = [r.params["files"] for r in spec.rules if r.kind == "required_files"]
+    assert files == [[["Makefile"], ["*.h", "*/*.h"], ["*.c", "*/*.c"]]]

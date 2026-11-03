@@ -348,62 +348,115 @@ function diffNodes(text) {
     : line.startsWith("-") && !line.startsWith("---") ? "del" : "" }, line + (i < all.length - 1 ? "\n" : "")));
 }
 
+// ⬇ Apply to project. Two things can be applied: claude's review (forced into verdict.md in the project, whatever the app thought of
+// it before, e.g. after a new run or when its automatic pickup missed it), and, when claude and the shell work in a throw-away copy,
+// the files they changed there. Nothing is written until the button is pressed.
+function reviewRow(review, project) {
+  const box = h("input", { type: "checkbox" });
+  const available = Boolean(review.results && review.found);
+  box.disabled = !available;
+  box.checked = available && !review.applied;
+  const file = review.verdict_file || "verdict.md";
+  const when = review.merged_at ? new Date(review.merged_at).toLocaleTimeString() : "";
+  const answers = review.structured ? `${review.assessed} of ${review.total} requirements answered` : "";
+  const note = !review.results ? "Run the checks first: the review answers the questions they left open."
+    : review.found && !review.applied ? `claude's report is ready (${review.chars} characters). Ticked, it is merged into ${file} whatever the app thought of it before.`
+    : review.found ? `Already in ${file} (merged ${when}${answers ? `, ${answers}` : ""}). Tick it to apply it again.`
+    : review.merged ? `claude has no new report waiting. ${file} keeps the review merged ${when}${answers ? ` (${answers})` : ""}.`
+    : "claude has not saved a report yet. Run ✨ AI review, or ask claude to save its report as claude-review.md, then come back.";
+  const row = h("div", { class: "change review" },
+    h("label", {}, box, h("span", { class: "chg-chip modified" }, "✎"), h("strong", {}, `claude's review → ${file} in ${project}`)),
+    h("span", { class: `note ${available ? "" : "bad"}` }, note));
+  return { box, row };
+}
+
+function fileRow(f) {
+  const box = h("input", { type: "checkbox" });
+  box.checked = f.selected;
+  box.disabled = f.action !== "apply";
+  const [sign, kind] = CHANGE_CHIP[f.status];
+  const diff = h("pre", { class: "diff", hidden: true });
+  let loaded = false;
+  const toggle = () => guarded(async () => {
+    diff.hidden = !diff.hidden;
+    if (diff.hidden || loaded) return;
+    loaded = true;
+    const d = await api(`sessions/${sid}/changes/diff?path=${encodeURIComponent(f.path)}`);
+    diff.replaceChildren(...(d.diff ? diffNodes(d.diff) : [d.note || "(no differences to show)"]), ...(d.truncated ? ["\n… cut"] : []));
+  });
+  const notes = [f.action !== "apply" && f.note, f.warn, f.binary && "binary file"].filter(Boolean).join(" · ");
+  const row = h("div", { class: "change" },
+    h("label", {}, box, h("span", { class: `chg-chip ${kind}` }, sign),
+      h("button", { class: "name", title: "Show what would change", onclick: (ev) => { ev.preventDefault(); toggle(); } }, f.path)),
+    notes && h("span", { class: `note ${f.action !== "apply" || f.warn ? "bad" : ""}` }, notes), diff);
+  return { box, path: f.path, row };
+}
+
 async function openChanges() {
   if (!session.repo) return toast("Clone a repository first.");
   const data = await api(`sessions/${sid}/changes`);
-  const close = h("button", { class: "primary", onclick: closeDialog }, "Close");
-  if (!data.found) {
-    return dialog("Nothing to apply yet", h("p", {}, "There is no working copy right now. The changes live in the copy that ⌨ Claude or ⌨ Shell works in, and it exists only while one of those tabs is open."), [close]);
-  }
-  if (!data.files.length) {
-    return dialog("Nothing to apply yet", h("p", {}, "Nothing has changed in the working copy since it was made."), [close]);
-  }
-  const rows = data.files.map((f) => {
-    const box = h("input", { type: "checkbox" });
-    box.checked = f.selected;
-    box.disabled = f.action !== "apply";
-    const [sign, kind] = CHANGE_CHIP[f.status];
-    const diff = h("pre", { class: "diff", hidden: true });
-    let loaded = false;
-    const toggle = () => guarded(async () => {
-      diff.hidden = !diff.hidden;
-      if (diff.hidden || loaded) return;
-      loaded = true;
-      const d = await api(`sessions/${sid}/changes/diff?path=${encodeURIComponent(f.path)}`);
-      diff.replaceChildren(...(d.diff ? diffNodes(d.diff) : [d.note || "(no differences to show)"]), ...(d.truncated ? ["\n… cut"] : []));
-    });
-    const notes = [f.action !== "apply" && f.note, f.warn, f.binary && "binary file"].filter(Boolean).join(" · ");
-    const row = h("div", { class: "change" },
-      h("label", {}, box, h("span", { class: `chg-chip ${kind}` }, sign),
-        h("button", { class: "name", title: "Show what would change", onclick: (ev) => { ev.preventDefault(); toggle(); } }, f.path)),
-      notes && h("span", { class: `note ${f.action !== "apply" || f.warn ? "bad" : ""}` }, notes), diff);
-    return { box, path: f.path, row };
-  });
+  const project = `projects/${data.project}`;
+  const review = reviewRow(data.review || {}, project);
+  const files = data.found ? data.files.map(fileRow) : [];
+
+  const filesPart = data.live
+    ? h("p", { class: "hint" }, `⌨ Claude and ⌨ Shell work directly in ${project}: every file change they make is already there (see git status and git diff). Only the review is left to apply. To work on a throw-away copy instead, start with TERMINAL_WORKDIR=copy.`)
+    : !data.found
+      ? h("p", { class: "hint" }, "There is no working copy right now (it exists only while a ⌨ Claude or ⌨ Shell tab is open), so there are no files to send back.")
+      : !files.length
+        ? h("p", { class: "hint" }, "Nothing has changed in the working copy since it was made.")
+        : h("div", {},
+          h("p", {}, `${files.length} file(s) differ between the working copy and ${project}. Ticked files are written there, and nothing else: `,
+            "your own newer edits are never overwritten, and git history, .git and claude's own files never go back. Click a name to see what would change."),
+          data.truncated && h("p", { class: "warning" }, "There are more changes than can be listed; only the first ones are shown."),
+          h("div", { class: "change-list" }, files.map((r) => r.row)),
+          h("p", { class: "hint" }, "The files appear as uncommitted changes in the project: review them with git diff, then commit them yourself."));
+
   const apply = h("button", { class: "primary" });
   const refresh = () => {
-    const n = rows.filter((r) => r.box.checked).length;
-    apply.textContent = `Apply ${n} file${n === 1 ? "" : "s"}`;
-    apply.disabled = n === 0;
+    const n = files.filter((r) => r.box.checked).length;
+    const parts = [review.box.checked && "review", n > 0 && `${n} file${n === 1 ? "" : "s"}`].filter(Boolean);
+    apply.textContent = parts.length ? `Apply ${parts.join(" + ")}` : "Apply";
+    apply.disabled = parts.length === 0;
   };
-  rows.forEach((r) => r.box.addEventListener("change", refresh));
+  [review, ...files].forEach((r) => r.box.addEventListener("change", refresh));
   refresh();
+
   apply.onclick = () => guarded(async () => {
-    const paths = rows.filter((r) => r.box.checked).map((r) => r.path);
+    const paths = files.filter((r) => r.box.checked).map((r) => r.path);
+    const wantReview = review.box.checked;
     apply.disabled = true;
-    const result = await post(`sessions/${sid}/changes/apply`, { paths });
+    const result = await post(`sessions/${sid}/changes/apply`, { paths, review: wantReview });
     closeDialog();
     session = await api(`sessions/${sid}`);
     render();
     loadTree();
-    const left = result.skipped.length ? ` ${result.skipped.length} skipped: ${result.skipped.slice(0, 3).map((s) => `${s.path} (${s.reason})`).join("; ")}.` : "";
-    toast(`${result.applied.length} file(s) written into projects/${result.project}.${left} The checks above are from before: run them again.`, result.applied.length > 0 && !left);
+    refreshVerdict(false).catch(() => {});
+    const said = [];
+    let allGood = true;
+    if (paths.length) {
+      const left = result.skipped.length ? `, ${result.skipped.length} skipped: ${result.skipped.slice(0, 3).map((s) => `${s.path} (${s.reason})`).join("; ")}` : "";
+      said.push(`${result.applied.length} file(s) written into ${project}${left}`);
+      allGood = allGood && result.applied.length > 0 && !left;
+    }
+    if (wantReview) {
+      const r = result.review || {};
+      if (r.applied) {
+        const counted = r.structured ? ` (${r.assessed} of ${r.total} requirements answered)` : " (as text: it had no data block at the end)";
+        said.push(`claude's review merged into ${r.verdict_file || "verdict.md"}${counted}`);
+        allGood = allGood && Boolean(r.saved) && Boolean(r.structured);
+      } else {
+        said.push(`the review was not applied: ${r.reason || "unknown reason"}`);
+        allGood = false;
+      }
+    }
+    toast(`${said.join(". ")}.${paths.length ? " The checks above are from before: run them again." : ""}`, allGood);
   });
-  dialog("Apply the changes to your project?", h("div", { class: "changes" },
-    h("p", {}, `${data.files.length} file(s) differ between the working copy and projects/${data.project}. Ticked files are written there, and nothing else: `,
-      "your own newer edits are never overwritten, and git history, .git and claude's own files never go back. Click a name to see what would change."),
-    data.truncated && h("p", { class: "warning" }, "There are more changes than can be listed; only the first ones are shown."),
-    h("div", { class: "change-list" }, rows.map((r) => r.row)),
-    h("p", { class: "hint" }, "The files appear as uncommitted changes in the project: review them with git diff, then commit them yourself.")),
+
+  dialog("Apply to project", h("div", { class: "changes" },
+    h("p", {}, `Apply to ${project}. Nothing is written until you press the button.`),
+    h("div", { class: "change-list" }, review.row),
+    filesPart),
     [h("button", { onclick: closeDialog }, "Cancel"), apply]);
 }
 
@@ -608,14 +661,21 @@ async function openTerminal(promptId, kind = "claude") {
   if (existing) return showTab(key);
 
   const status = await api("terminal").catch(() => ({ configured: false }));
+  const live = status.workdir === "live";            // claude and the shell work in the project folder itself, not in a copy
   const view = h("div", { class: "view term" });
   const holder = h("div", { class: "term-holder" });
-  view.append(h("div", { class: "term-bar" }, h("span", {}, shell
-    ? "A plain shell in the same throw-away copy claude works in (its own copy if claude is not running). Nothing here touches your project until you use ⬇ Apply to project, and the copy is deleted when the last tab using it closes."
-    : "claude works in a throw-away copy. Its report is merged into verdict.md automatically; to keep any other change, use ⬇ Apply to project before you close this tab.")), holder);
+  const project = `projects/${session.repo.path}`;
+  view.append(h("div", { class: "term-bar" }, h("span", {}, live
+    ? (shell
+      ? `A plain shell directly in your project (${project}): every change is on your machine at once, build output included (make fclean cleans it). There is nothing to apply.`
+      : `claude works directly in your project (${project}): every change it makes is on your machine at once, so there are no files to apply. Its report is merged into verdict.md automatically; if that did not happen, ⬇ Apply to project forces it.`)
+    : (shell
+      ? "A plain shell in the same throw-away copy claude works in (its own copy if claude is not running). Nothing here touches your project until you use ⬇ Apply to project, and the copy is deleted when the last tab using it closes."
+      : "claude works in a throw-away copy. Its report is merged into verdict.md automatically (⬇ Apply to project forces it if it was missed); to keep any other change, use ⬇ Apply to project before you close this tab."))), holder);
   addTab(key, `⌨ ${name}`, view, true);
   tabs.get(key).onClose = () => {
     clearInterval(tabs.get(key)?.watcher);
+    clearInterval(tabs.get(key)?.treeWatcher);
     clearTimeout(tabs.get(key)?.retry);
     if (tabs.get(key)) tabs.get(key).closing = true;
     tabs.get(key)?.socket?.close();
@@ -676,8 +736,10 @@ async function openTerminal(promptId, kind = "claude") {
   });
   term.onResize(({ cols, rows }) => send({ t: "r", c: cols, r: rows }));
   new ResizeObserver(() => { if (!view.hidden) { try { fit.fit(); } catch { /* not laid out yet */ } } }).observe(holder);
+  // Working in the project itself: files appear, change and disappear under the tree, so keep the tree up to date while this tab is open.
+  if (live) tab.treeWatcher = setInterval(() => { if (!document.hidden) loadTree().catch(() => {}); }, 5000);
   if (shell) {
-    term.writeln("\x1b[2mThe tools claude has: cc, make, valgrind, norminette, vim, nano, and docker on the separate daemon. Try: make, docker build ., docker compose up.\r\nThe subject PDFs of this review (and the Norm) are in $SUBJECTS_DIR.\x1b[0m");
+    term.writeln(`\x1b[2m${live ? `You are in ${project}: what you change is on your machine at once. ` : ""}The tools claude has: cc, make, valgrind, norminette, vim, nano, and docker on the separate daemon. Try: make, docker build ., docker compose up.\r\nThe subject PDFs of this review (and the Norm) are in $SUBJECTS_DIR.\x1b[0m`);
   } else {
     let known = session.claude_review_at || "";
     tab.watcher = setInterval(async () => {

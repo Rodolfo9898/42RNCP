@@ -48,6 +48,8 @@ def env(tmp_path, monkeypatch):
     shell.chmod(shell.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setattr(terminal, "SHELL", str(shell))
     monkeypatch.setattr(terminal, "SUBJECTS_ROOT", tmp_path / "subjects")
+    monkeypatch.setattr(terminal, "REPORTS_ROOT", tmp_path / "reports")
+    monkeypatch.setattr(terminal, "WORKDIR_MODE", "copy")           # these tests are about the throw-away copy; live mode has its own below
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)           # whatever agent the developer has, tests start without one
     monkeypatch.setenv("TERMINAL_TOKEN", TOKEN)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-must-not-leak")
@@ -268,7 +270,9 @@ def test_review_times_out(env, tmp_path, monkeypatch):
 
 def test_health_reports_whether_claude_is_installed(env, monkeypatch):
     client = TestClient(terminal.app)
-    assert client.get("/health").json() == {"status": "ok", "claude": True}
+    assert client.get("/health").json() == {"status": "ok", "claude": True, "workdir": "copy"}
+    monkeypatch.setattr(terminal, "WORKDIR_MODE", "live")
+    assert client.get("/health").json()["workdir"] == "live"
     monkeypatch.setattr(terminal, "CLAUDE", "definitely-not-installed")
     assert client.get("/health").json()["claude"] is False
 
@@ -971,3 +975,145 @@ def test_the_shell_gets_its_shell_and_zsh_config_but_claude_does_not(env, monkey
     assert (shell["SHELL"], shell["ZDOTDIR"]) == ("/usr/bin/zsh", "/etc/verdict-zsh")
     assert {k: v for k, v in shell.items() if k not in ("SHELL", "ZDOTDIR")} == terminal.child_env()
     assert "SHELL" not in terminal.child_env() and "ZDOTDIR" not in terminal.child_env()
+
+
+# ---------------------------------------------------------------- live mode: claude and the shell work in the project folder itself
+
+
+@pytest.fixture
+def live_env(env, monkeypatch):
+    monkeypatch.setattr(terminal, "WORKDIR_MODE", "live")
+    return env
+
+
+def test_only_the_word_live_switches_it_on(monkeypatch):
+    for value, expected in (("live", True), (" LIVE ", True), ("copy", False), ("", False), ("yes", False), ("lvie", False)):
+        monkeypatch.setattr(terminal, "WORKDIR_MODE", value)
+        assert terminal.in_place() is expected, value                    # a typo falls back to the safe throw-away copy
+
+
+def test_live_claude_and_shell_both_work_in_the_project_folder_itself(live_env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-liv001", headers=HEADERS) as claude:
+        banner = read_until(claude, "ENV:")
+        assert f"CWD: {live_env.repo.resolve()}" in banner and not list(live_env.scratch.iterdir())          # no copy was made
+        assert "real project folder" in banner and "--setting-sources user" in banner and "--strict-mcp-config" in banner
+        assert "CLAUDE.md" in banner.split("FILES:")[1]                                              # the folder is as it is: nothing is hidden
+        with client.websocket_connect(shell_url("sess-liv001"), headers=HEADERS) as shell:
+            first = read_until(shell, "SHELL-ENV:")
+            assert f"SHELL-CWD: {live_env.repo.resolve()}" in first and "your project folder, live" in first
+            assert not list(live_env.scratch.iterdir())
+    assert terminal._workdirs["sess-liv001"] == live_env.repo.resolve()                         # (only to look for claude's report there)
+    assert not list(live_env.scratch.iterdir())                                                  # and still no copy anywhere
+
+
+def test_a_shell_with_no_claude_also_works_in_the_project_and_what_it_writes_lands_there(live_env, monkeypatch):
+    monkeypatch.setattr(terminal, "SHELL", "/bin/sh")
+    client = TestClient(terminal.app)
+    with client.websocket_connect(shell_url("sess-liv002"), headers=HEADERS) as shell:
+        shell.send_text('{"t":"i","d":"echo made-in-the-shell > from-shell.txt; echo DONE:$((6*7)):$GIT_CONFIG_VALUE_0\\n"}')
+        out = read_until(shell, "DONE:42:")
+        assert f"DONE:42:{live_env.repo.resolve()}" in out.replace("\r", "")                              # git is told this exact folder is safe
+    assert (live_env.repo / "from-shell.txt").read_text() == "made-in-the-shell\n"                        # on the machine, at once
+    assert not list(live_env.scratch.iterdir())
+
+
+def test_ending_a_live_session_never_deletes_the_project_even_if_scratch_were_misconfigured(live_env, monkeypatch):
+    monkeypatch.setattr(terminal, "SCRATCH", live_env.projects)                # the worst case: the project looks like it is inside scratch
+    client = TestClient(terminal.app)
+    for sid in ("sess-liv003", "sess-liv004"):
+        with client.websocket_connect(f"/pty?repo=42/ps&sid={sid}", headers=HEADERS) as ws:
+            read_until(ws, "ENV:")
+        assert client.post("/pty/end", params={"sid": sid}, headers=HEADERS).json() == {"ended": True}
+    with client.websocket_connect(shell_url("sess-liv005"), headers=HEADERS) as ws:
+        read_until(ws, "SHELL-ENV:")
+    assert client.post("/pty/end", params={"sid": "sess-liv005", "kind": "shell"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: not terminal._live)
+    assert live_env.repo.is_dir() and (live_env.repo / "README.md").read_text() == "# hi\n" and (live_env.repo / "src" / "a.c").exists()
+
+
+def test_there_is_nothing_to_apply_in_live_mode(live_env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-liv006", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+        (live_env.repo / "touched.txt").write_text("a change that is already in the project")
+        body = client.get("/changes", params={"sid": "sess-liv006"}, headers=HEADERS).json()
+        assert body == {"found": False, "live": True, "files": [], "truncated": False}
+        assert client.get("/changes/file", params={"sid": "sess-liv006", "path": "touched.txt"}, headers=HEADERS).status_code == 404
+
+
+def test_the_report_is_kept_outside_the_project_and_forgotten_with_the_session(live_env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-liv007", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+        folder = terminal.REPORTS_ROOT / "sess-liv007"
+        assert folder.is_dir()                                                                       # ready for claude to write into
+        (folder / "claude-review.md").write_text("# Review\nlooks fine\n")                           # what claude would do
+        found = client.get("/result", params={"sid": "sess-liv007"}, headers=HEADERS).json()
+        assert found["found"] is True and found["name"] == "claude-review.md" and "looks fine" in found["text"]
+        assert not (live_env.repo / "claude-review.md").exists()                                         # it never became a file of the project
+    assert client.post("/pty/end", params={"sid": "sess-liv007"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: not folder.exists())
+
+
+def test_a_report_that_is_a_link_or_huge_is_ignored(live_env, tmp_path, monkeypatch):
+    client = TestClient(terminal.app)
+    outside = tmp_path / "secret.md"
+    outside.write_text("top secret")
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-liv008", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+        report = terminal.REPORTS_ROOT / "sess-liv008" / "claude-review.md"
+        report.symlink_to(outside)
+        assert client.get("/result", params={"sid": "sess-liv008"}, headers=HEADERS).json()["found"] is False
+        report.unlink()
+        monkeypatch.setattr(terminal, "MAX_REVIEW_BYTES", 5)
+        report.write_text("far too long for the limit")
+        assert client.get("/result", params={"sid": "sess-liv008"}, headers=HEADERS).json()["found"] is False
+
+
+def test_the_environment_of_a_live_session_names_the_report_folder_and_trusts_only_that_project(live_env, tmp_path):
+    project = tmp_path / "projects" / "libft"
+    env = terminal.child_env("sess-liv009", project)
+    assert env["REPORT_DIR"] == str(terminal.REPORTS_ROOT / "sess-liv009")
+    assert (env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]) == ("1", "safe.directory", str(project))
+    assert "GIT_CONFIG_COUNT" not in terminal.child_env("sess-liv009") and "REPORT_DIR" not in terminal.child_env("sess-liv009")
+    assert "REPORT_DIR" not in terminal.child_env("../../etc", project)                              # (an unusable session id gets no folder)
+    assert not any(k in env for k in ("TERMINAL_TOKEN", "ANTHROPIC_API_KEY", "LLM_API_KEY"))
+
+
+def test_claude_is_told_the_truth_about_where_it_is():
+    live_flags, copy_flags = terminal.interactive_argv(live=True), terminal.interactive_argv()
+    assert "real project folder" in live_flags[live_flags.index("--append-system-prompt") + 1] and "copy" not in live_flags[live_flags.index("--append-system-prompt") + 1].split("not a copy")[0]
+    assert "is a copy of the student's repository" in copy_flags[copy_flags.index("--append-system-prompt") + 1]
+    for argv in (live_flags, copy_flags):                                                           # the protections are the same in both
+        assert argv[argv.index("--setting-sources") + 1] == "user" and "--strict-mcp-config" in argv and "--dangerously-skip-permissions" not in argv
+    assert terminal.interactive_argv("Review it", live=True)[-1] == "Review it"
+    assert terminal.APPEND_PROMPT in terminal.review_argv("x", {}, None)                           # the headless review always works on a copy
+
+
+def test_a_report_claude_wrote_into_the_project_itself_is_still_found_but_never_a_note_you_wrote(live_env):
+    client = TestClient(terminal.app)
+    (live_env.repo / "claude-review.md").write_text("# the project's own old file\n")        # there before claude started
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-liv010", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+        get = lambda: client.get("/result", params={"sid": "sess-liv010"}, headers=HEADERS).json()
+        assert get()["found"] is False                                                           # an old file of the project is not a report
+        (live_env.repo / "NOTES.md").write_text("# my own notes, written while claude was open\n")
+        (live_env.repo / "a.out").write_bytes(b"\x7fELF binary left by a build")
+        assert get()["found"] is False and get()["new_files"] == ["NOTES.md"]                    # (a build's binary is not listed at all)
+        time.sleep(0.05)
+        (live_env.repo / "claude-review.md").write_text("# Review by claude\nthis time it is claude's\n")   # claude wrote the file there
+        found = get()
+        assert found["found"] is True and found["name"] == "claude-review.md" and "this time it is claude's" in found["text"]
+        (live_env.repo / "claude-review.md").unlink()
+        (live_env.repo / "review-of-libft.md").write_text("# a review under another name\n")
+        assert get()["name"] == "review-of-libft.md"                                             # a review-like name is accepted, NOTES.md never
+
+
+def test_the_report_outside_the_project_wins_over_one_inside_it(live_env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-liv011", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+        (live_env.repo / "claude-review.md").write_text("inside the project")
+        (terminal.REPORTS_ROOT / "sess-liv011" / "claude-review.md").write_text("in the report folder")
+        assert client.get("/result", params={"sid": "sess-liv011"}, headers=HEADERS).json()["text"] == "in the report folder"

@@ -28,7 +28,7 @@ from . import repo as repo_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
 from .prompts import build_fix_prompt, build_review_prompt, find_docker_files, manual_items
-from .changes import TERMINAL_SUBJECTS_ROOT, change_policy
+from .changes import TERMINAL_REPORTS_ROOT, TERMINAL_SUBJECTS_ROOT, change_policy
 from .checks import EXCLUDED_DIRS, VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
 from .pdfread import read_pages, render_page
@@ -642,7 +642,14 @@ def collect_claude_review(session: Session, context: str | None = None) -> bool:
 @app.post("/api/sessions/{session_id}/claude-review/save")
 def save_claude_review(session_id: str) -> dict:
     """Merge what claude saved in the open terminal into verdict.md in the clone (no separate file is written)."""
-    session = session_or_404(session_id)
+    return merge_claude_review(session_or_404(session_id))
+
+
+def merge_claude_review(session: Session) -> dict:
+    """Force claude's saved report into the session and into verdict.md in the project, whatever happened before: a report the
+    automatic pickup missed, or one made for another commit (it is adopted for the project as it is now). Raises an HTTPException
+    that says why when there is nothing to merge."""
+    session_id = session.id
     if not session.results:
         raise HTTPException(400, "run the checks first")
     try:
@@ -687,9 +694,10 @@ async def open_upstream(url: str, token: str):
 
 @app.get("/api/terminal")
 def terminal_status() -> dict:
-    """Is the terminal container configured and reachable, and is `claude` installed in it?"""
+    """Is the terminal container configured and reachable, is `claude` installed in it, and does it work in your project folder
+    ("live") or in a throw-away copy ("copy")?"""
     if not (TERMINAL_URL and TERMINAL_TOKEN):
-        return {"configured": False, "reachable": False, "claude": False}
+        return {"configured": False, "reachable": False, "claude": False, "workdir": "copy"}
     try:
         import httpx
 
@@ -698,9 +706,10 @@ def terminal_status() -> dict:
         data = response.json()
         if response.status_code != 200 or data.get("status") != "ok":
             raise ValueError("unexpected answer")
-        return {"configured": True, "reachable": True, "claude": bool(data.get("claude"))}
+        return {"configured": True, "reachable": True, "claude": bool(data.get("claude")),
+                "workdir": "live" if data.get("workdir") == "live" else "copy"}
     except Exception:
-        return {"configured": True, "reachable": False, "claude": False}
+        return {"configured": True, "reachable": False, "claude": False, "workdir": "copy"}
 
 
 def same_origin(ws: WebSocket) -> bool:
@@ -999,8 +1008,10 @@ def list_changes(session_id: str) -> dict:
     root = project_root_for_changes(session)
     listing = terminal_changes(session_id)
     if not listing.get("found"):
-        return {"found": False, "project": session.repo.path, "files": [], "truncated": False}
-    return {"found": True, "project": session.repo.path, "files": reviewed_changes(root, listing), "truncated": bool(listing.get("truncated"))}
+        return {"found": False, "live": bool(listing.get("live")), "project": session.repo.path, "files": [], "truncated": False,
+                "review": review_status(session)}
+    return {"found": True, "live": False, "project": session.repo.path, "files": reviewed_changes(root, listing),
+            "truncated": bool(listing.get("truncated")), "review": review_status(session)}
 
 
 @app.get("/api/sessions/{session_id}/changes/diff")
@@ -1027,23 +1038,29 @@ def change_diff(session_id: str, path: str) -> dict:
 
 
 class ApplyRequest(BaseModel):
-    paths: list[str]
+    paths: list[str] = []          # files of the working copy to write into the project (copy mode only)
+    review: bool = False           # also force claude's review into verdict.md in the project
 
 
 @app.post("/api/sessions/{session_id}/changes/apply")
 def apply_changes(session_id: str, req: ApplyRequest) -> dict:
-    """Write the chosen changes into the project folder. Only what is in the terminal's current list, only what is still safe
-    to write, and only if your files have not changed since the copy was made."""
+    """Apply to the project: claude's review is forced into verdict.md when asked for, and the chosen files of the working copy are
+    written into the project folder (only what is in the terminal's current list, only what is still safe to write, and only if
+    your files have not changed since the copy was made)."""
     session = session_or_404(session_id)
     if session.state in ("cloning", "running"):
         raise HTTPException(409, f"session is busy ({session.state})")
     root = project_root_for_changes(session)
-    listing = terminal_changes(session_id)
-    if not listing.get("found"):
-        raise HTTPException(409, "there is no working copy any more: it exists only while a claude or shell tab is open")
-    entries = {e["path"]: e for e in reviewed_changes(root, listing)}
     applied: list[str] = []
     skipped: list[dict] = []
+    entries: dict[str, dict] = {}
+    if req.paths:
+        listing = terminal_changes(session_id)
+        if listing.get("live"):
+            raise HTTPException(409, "claude and the shell work directly in your project, so there is nothing to apply: every change is already in it")
+        if not listing.get("found"):
+            raise HTTPException(409, "there is no working copy any more: it exists only while a claude or shell tab is open")
+        entries = {e["path"]: e for e in reviewed_changes(root, listing)}
     for rel in dict.fromkeys(req.paths[:MAX_APPLY_FILES]):
         entry = entries.get(rel)
         if entry is None:
@@ -1062,7 +1079,27 @@ def apply_changes(session_id: str, req: ApplyRequest) -> dict:
                 applied.append(rel)
             except (ValueError, OSError) as exc:
                 skipped.append({"path": rel, "reason": str(exc)})
-    return {"applied": applied, "skipped": skipped, "project": session.repo.path}
+    review = None
+    if req.review:
+        try:
+            review = {"applied": True, **merge_claude_review(session)}
+        except HTTPException as exc:                      # nothing to merge is an answer, not a failure of the files above
+            review = {"applied": False, "reason": str(exc.detail)}
+    return {"applied": applied, "skipped": skipped, "project": session.repo.path, "review": review}
+
+
+def review_status(session: Session) -> dict:
+    """For the Apply dialog: is a report from claude waiting in the terminal, and is it already in verdict.md?"""
+    try:
+        data = fetch_claude_result(session.id)
+    except Exception:
+        data = {"found": False}
+    text = data.get("text", "") if data.get("found") else ""
+    ready = bool(text.strip())
+    return {"results": bool(session.results), "found": ready, "name": data.get("name", "") if ready else "", "chars": len(text) if ready else 0,
+            "applied": ready and text == session.claude_review, "merged": bool(session.claude_review), "merged_at": session.claude_review_at,
+            "structured": session.claude.structured, "assessed": session.claude.assessed, "total": session.claude.total,
+            "verdict_file": session.verdict_file}
 
 
 def review_prompt_for(session: Session) -> tuple[str, dict]:
@@ -1073,9 +1110,11 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
     store.save(session)
     root = repo_dir(session)
     docker_files = find_docker_files(p.as_posix() for p in repo_mod.tracked_files(root)) if root else []
+    live = terminal_status()["workdir"] == "live"               # claude works in the project folder itself: it is told so, and its report goes elsewhere
     return build_review_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
                                lang=session.lang(), results=session.results, docker_files=docker_files,
-                               subjects_dir=f"{TERMINAL_SUBJECTS_ROOT}/{session.id}")
+                               subjects_dir=f"{TERMINAL_SUBJECTS_ROOT}/{session.id}", live=live,
+                               report_dir=f"{TERMINAL_REPORTS_ROOT}/{session.id}" if live else None)
 
 
 @app.get("/api/sessions/{session_id}/review-prompt")

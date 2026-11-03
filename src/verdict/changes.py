@@ -11,6 +11,8 @@ import re
 
 # Where the terminal container keeps the PDFs of a review (one folder per web session), and what a PDF of a subject may be called.
 TERMINAL_SUBJECTS_ROOT = "/scratch/subjects"
+# Where claude saves its report when it works in the project folder itself: the report must not become a file of your project.
+TERMINAL_REPORTS_ROOT = "/scratch/reports"
 SUBJECT_NAME = re.compile(r"\w[\w.\- ]{0,118}\.pdf", re.IGNORECASE)
 
 

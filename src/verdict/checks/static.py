@@ -76,26 +76,53 @@ def _find(ctx: Ctx, unit: str, pattern: str) -> list[Path]:
     return out
 
 
+def _elsewhere(ctx: Ctx, unit: str, pattern: str) -> list[str]:
+    """Files that have the name (or match the wildcard) of `pattern` but sit elsewhere in the unit, e.g. includes/libft.h for libft.h.
+    The subject may well allow that, so the check does not decide: it points at them."""
+    name = pattern.rsplit("/", 1)[-1]
+    if not name or name in ("*", "**"):
+        return []
+    root = ctx.repo.resolve()
+    hits: list[str] = []
+    for p in ctx.unit_dir(unit).rglob(name):
+        if p.is_file() and not p.is_symlink() and p.is_relative_to(root):
+            rel = p.relative_to(root).as_posix()
+            if not EXCLUDED_DIRS.search("/" + rel):
+                hits.append(rel)
+        if len(hits) >= 3:
+            break
+    return hits
+
+
 @checker("required_files", PHASE_STATIC)
 def required_files(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     title = label(rule)
     if not ctx.unit_dir(rule.unit).is_dir():
         yield result(rule, "fail", f"Directory `{rule.unit}/` does not exist in the repository.", title=title)
         return
-    missing, found = [], 0
+    missing, relocated, found = [], [], 0
     for alternatives in rule.params["files"]:
         if any(_find(ctx, rule.unit, alt) for alt in alternatives):
             found += 1
+            continue
+        wanted = " or ".join(alternatives)
+        elsewhere = [hit for alt in alternatives for hit in _elsewhere(ctx, rule.unit, alt)][:3]
+        if elsewhere:                                   # there, but not where the list says: a question about structure, not a missing file
+            relocated.append(f"{wanted} → {', '.join(f'`{hit}`' for hit in elsewhere)}")
             continue
         hint = ""
         lowered = {p.name.lower() for p in ctx.unit_dir(rule.unit).iterdir()}
         if any(alt.lower() in lowered for alt in alternatives if "*" not in alt):
             hint = " (a file exists with different letter case)"
-        missing.append(" or ".join(alternatives) + hint)
+        missing.append(wanted + hint)
     notes = rule.params.get("notes") or []
     note_text = f" Not machine-checkable: {'; '.join(notes)}." if notes else ""
+    elsewhere_text = (f" Found elsewhere than listed: {'; '.join(relocated)}. If the subject lets you organise the project in subfolders "
+                      "this is fine; a human (or the AI review) should confirm it does.") if relocated else ""
     if missing:
-        yield result(rule, "fail", f"Missing: {', '.join(missing)}.{note_text}", title=title)
+        yield result(rule, "fail", f"Missing: {', '.join(missing)}.{elsewhere_text}{note_text}", title=title)
+    elif relocated:
+        yield result(rule, "warn", f"Not at the place the list gives.{elsewhere_text}{note_text}", title=title)
     else:
         yield result(rule, "pass", f"All {found} required file pattern(s) are present.{note_text}", title=title)
 

@@ -726,10 +726,21 @@ def test_terminal_explains_when_the_service_is_missing(client, monkeypatch):
 
 def test_terminal_status_endpoint(client, monkeypatch):
     c, main = client
-    assert c.get("/api/terminal").json() == {"configured": False, "reachable": False, "claude": False}
+    assert c.get("/api/terminal").json() == {"configured": False, "reachable": False, "claude": False, "workdir": "copy"}
     monkeypatch.setattr(main, "TERMINAL_URL", "http://127.0.0.1:9")      # nothing listens there
     monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
-    assert c.get("/api/terminal").json() == {"configured": True, "reachable": False, "claude": False}
+    assert c.get("/api/terminal").json() == {"configured": True, "reachable": False, "claude": False, "workdir": "copy"}
+
+
+def test_the_terminal_status_says_where_claude_and_the_shell_work(client, monkeypatch):
+    import httpx
+    c, main = client
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    for answer, expected in (({"status": "ok", "claude": True, "workdir": "live"}, "live"), ({"status": "ok", "claude": True, "workdir": "copy"}, "copy"),
+                             ({"status": "ok", "claude": True}, "copy"), ({"status": "ok", "claude": True, "workdir": "surprise"}, "copy")):
+        monkeypatch.setattr(httpx, "Client", lambda answer=answer, **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=answer))))
+        assert c.get("/api/terminal").json() == {"configured": True, "reachable": True, "claude": True, "workdir": expected}
 
 
 # ---------------------------------------------------------------- the review prompt for the terminal
@@ -1598,7 +1609,7 @@ def test_without_a_working_copy_or_a_terminal_nothing_is_applied(client, monkeyp
     c, main = client
     sid, repo = project_with_files(c, main, **{"main.c": OLD})
     fake_terminal(monkeypatch, main, [], {}, found=False)
-    assert c.get(f"/api/sessions/{sid}/changes").json() == {"found": False, "project": "ps", "files": [], "truncated": False}
+    assert minus_review(c.get(f"/api/sessions/{sid}/changes").json()) == {"found": False, "live": False, "project": "ps", "files": [], "truncated": False}
     r = c.post(f"/api/sessions/{sid}/changes/apply", json={"paths": ["main.c"]})
     assert r.status_code == 409 and "no working copy" in r.json()["detail"]
     monkeypatch.setattr(main, "TERMINAL_URL", "")
@@ -1812,3 +1823,196 @@ def test_the_web_app_and_the_terminal_service_agree_on_how_the_pdfs_travel(clien
     main.push_subjects(main.store.get(sid))
     assert sent == ["GET", "POST"] and [p.name for p in folder.iterdir()] == ["en.norm.pdf"]              # a removed subject disappears over there
     assert terminal_app.get("/subjects", params={"sid": sid}, headers={"x-terminal-token": "tok"}).json()["files"].keys() == {"en.norm.pdf"}
+
+
+# ---------------------------------------------------------------- live mode: claude and the shell work in the project itself
+
+
+def minus_review(body):
+    return {k: v for k, v in body.items() if k != "review"}
+
+
+def terminal_says(monkeypatch, main, workdir="live", changes=None):
+    """A terminal service that answers /health (with the mode it works in) and /changes."""
+    import httpx
+
+    def handler(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok", "claude": True, "workdir": workdir})
+        if request.url.path == "/changes":
+            return httpx.Response(200, json=changes or {"found": False, "files": [], "truncated": False})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+
+
+def test_in_live_mode_there_is_nothing_to_apply_and_the_app_says_why(client, monkeypatch):
+    c, main = client
+    sid, repo = project_with_files(c, main, **{"main.c": OLD})
+    terminal_says(monkeypatch, main, changes={"found": False, "live": True, "files": [], "truncated": False})
+    assert minus_review(c.get(f"/api/sessions/{sid}/changes").json()) == {"found": False, "live": True, "project": "ps", "files": [], "truncated": False}
+    r = c.post(f"/api/sessions/{sid}/changes/apply", json={"paths": ["main.c"]})
+    assert r.status_code == 409 and "nothing to apply" in r.json()["detail"] and "already in it" in r.json()["detail"]
+    assert (repo / "main.c").read_bytes() == OLD
+
+
+def test_the_review_prompt_tells_claude_when_it_works_in_the_real_folder_and_keeps_its_report_out_of_it(client, monkeypatch):
+    c, main = client
+    sid, _ = prepared_session(c, main, "live1")
+    run_to_completion(c, sid)
+    terminal_says(monkeypatch, main, workdir="live")
+    live = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
+    assert "real project folder on my machine, not a copy" in live and "build output" in live and "make fclean" in live
+    assert f"`/scratch/reports/{sid}/claude-review.md`" in live and "outside the project on purpose" in live
+    assert "is a copy of the student's repository" not in live and "in the current directory" not in live
+    terminal_says(monkeypatch, main, workdir="copy")
+    copy = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
+    assert "is a copy of the student's repository" in copy and "`claude-review.md` in the current directory" in copy
+    assert "real project folder" not in copy and "/scratch/reports" not in copy
+
+
+def test_with_no_terminal_the_review_prompt_assumes_the_safe_copy(client, monkeypatch):
+    c, main = client
+    sid, _ = prepared_session(c, main, "live2")
+    run_to_completion(c, sid)
+    text = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]                 # no terminal configured at all
+    assert "is a copy of the student's repository" in text and "/scratch/reports" not in text
+
+
+def test_the_web_app_and_the_real_terminal_service_agree_on_live_mode(client, monkeypatch):
+    """No mocks between them: the web app asks the real terminal service (in this process) where claude and the shell work."""
+    from starlette.testclient import TestClient as AppClient
+
+    from verdict import terminal
+    import httpx
+    c, main = client
+    sid, repo = prepared_session(c, main, "live3")
+    run_to_completion(c, sid)
+    monkeypatch.setenv("TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(terminal, "CLAUDE", "sh")                                    # (any program that exists: "claude" is installed)
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(httpx, "Client", lambda **kw: AppClient(terminal.app, base_url="http://terminal:8002"))
+
+    monkeypatch.setattr(terminal, "WORKDIR_MODE", "live")
+    assert c.get("/api/terminal").json() == {"configured": True, "reachable": True, "claude": True, "workdir": "live"}
+    assert minus_review(c.get(f"/api/sessions/{sid}/changes").json()) == {"found": False, "live": True, "project": "live3", "files": [], "truncated": False}
+    assert c.post(f"/api/sessions/{sid}/changes/apply", json={"paths": ["main.c"]}).status_code == 409
+    live_prompt = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
+    assert "real project folder on my machine" in live_prompt and f"/scratch/reports/{sid}/claude-review.md" in live_prompt
+
+    monkeypatch.setattr(terminal, "WORKDIR_MODE", "copy")
+    assert c.get("/api/terminal").json()["workdir"] == "copy"
+    assert c.get(f"/api/sessions/{sid}/changes").json()["live"] is False
+    copy_prompt = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
+    assert "is a copy of the student's repository" in copy_prompt and "/scratch/reports" not in copy_prompt
+
+
+# ---------------------------------------------------------------- ⬇ Apply to project also forces claude's review into verdict.md
+
+
+def session_with_claudes_report(c, main, monkeypatch, name):
+    """A session whose checks ran, with the numbering of the review prompt stored, and a terminal that has claude's report."""
+    sid, repo = prepared_session(c, main, name)
+    run_to_completion(c, sid)
+    c.get(f"/api/sessions/{sid}/review-prompt")                                      # (stores the numbers the report answers)
+    report = structured_review([i.n for i in main.store.get(sid).review_items])
+    terminal_says(monkeypatch, main, workdir="live")
+    terminal_returns(monkeypatch, main, lambda session_id: report)
+    return sid, repo, report
+
+
+def apply(c, sid, **body):
+    return c.post(f"/api/sessions/{sid}/changes/apply", json=body)
+
+
+def test_the_apply_dialog_knows_whether_a_report_is_waiting_and_whether_it_is_in_verdict_md(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "ap1")
+    status = lambda: c.get(f"/api/sessions/{sid}/changes").json()["review"]
+    first = status()
+    assert first["results"] is True and first["found"] is True and first["chars"] == len(report) and first["name"] == "claude-review.md"
+    assert first["applied"] is False and first["merged"] is False
+    assert apply(c, sid, review=True).json()["review"]["applied"] is True
+    after = status()
+    assert after["applied"] is True and after["merged"] is True and after["structured"] is True and after["assessed"] == after["total"] > 0
+    assert after["merged_at"] and after["verdict_file"] == "verdict.md"
+    terminal_returns(monkeypatch, main, lambda session_id: report + "\nclaude added a line afterwards\n")
+    assert status()["applied"] is False and status()["found"] is True                  # a newer report is waiting
+    terminal_returns(monkeypatch, main, lambda session_id: None)
+    gone = status()
+    assert gone["found"] is False and gone["merged"] is True                           # nothing waiting, but verdict.md keeps the earlier one
+
+
+def test_apply_forces_claudes_review_into_verdict_md_in_the_project(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "ap2")
+    assert "note for 1" not in (repo / "verdict.md").read_text()                          # the run wrote a verdict without the review
+    body = apply(c, sid, review=True).json()
+    assert body["applied"] == [] and body["skipped"] == [] and body["project"] == "ap2"
+    review = body["review"]
+    assert review["applied"] is True and review["saved"] is True and review["structured"] is True and review["assessed"] == review["total"] > 0
+    document = (repo / "verdict.md").read_text()
+    assert "`Claude`" in document and "Claude: **pass with reservations**" in document and "note for 1" in document
+    assert not (repo / "claude-review.md").exists()                                      # and still no separate report file in the project
+
+
+def test_a_review_lost_after_a_new_run_comes_back_with_apply(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "ap3")
+    assert apply(c, sid, review=True).json()["review"]["applied"] is True
+    run_to_completion(c, sid)
+    assert "note for 1" in (repo / "verdict.md").read_text()                               # a plain new run keeps the review
+    session = main.store.get(sid)
+    session.review_context = '["something else"]'                                        # what makes the app drop it: another commit or subject set
+    main.refresh_context(session)
+    assert session.claude_review == "" and session.claude.structured is False
+    run_to_completion(c, sid)
+    assert "note for 1" not in (repo / "verdict.md").read_text()                           # the review is gone from the project's verdict.md
+    c.get(f"/api/sessions/{sid}/review-prompt")                                          # (the numbering of the current run)
+    terminal_returns(monkeypatch, main, lambda session_id: structured_review([i.n for i in main.store.get(sid).review_items]))
+    main.store.get(sid).review_context = '["a different commit"]'                        # the app thinks this report belongs to something else
+    forced = apply(c, sid, review=True).json()["review"]
+    assert forced["applied"] is True and forced["assessed"] == forced["total"] > 0
+    assert "note for 1" in (repo / "verdict.md").read_text()                               # forced back in, for the project as it is now
+    assert main.store.get(sid).review_context == main.review_context(main.store.get(sid))
+
+
+def test_applying_the_review_needs_no_working_copy(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "ap4")
+    terminal_says(monkeypatch, main, workdir="copy", changes={"found": False, "files": [], "truncated": False})     # no copy at all
+    assert apply(c, sid, review=True).json()["review"]["applied"] is True
+    assert apply(c, sid, paths=["main.c"]).status_code == 409                          # files, though, do need one
+
+
+def test_nothing_to_merge_is_an_answer_not_a_failure(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "ap5")
+    terminal_returns(monkeypatch, main, lambda session_id: None)
+    body = apply(c, sid, review=True)
+    assert body.status_code == 200 and body.json()["review"]["applied"] is False
+    assert "has not saved its report yet" in body.json()["review"]["reason"]
+    bare, _ = prepared_session(c, main, "ap6")                                           # checks never ran in this one
+    assert "run the checks first" in apply(c, bare, review=True).json()["review"]["reason"]
+    assert apply(c, bare).json() == {"applied": [], "skipped": [], "project": "ap6", "review": None}   # asking for nothing does nothing
+
+
+def test_files_and_the_review_are_applied_together_and_one_does_not_depend_on_the_other(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "ap7")
+    (repo / "main.c").write_bytes(OLD)
+    run_to_completion(c, sid)
+    c.get(f"/api/sessions/{sid}/review-prompt")
+    report = structured_review([i.n for i in main.store.get(sid).review_items])
+    fake_terminal(monkeypatch, main, [change("main.c", "modified", NEW, OLD)], {"main.c": NEW})               # a copy with one change
+    terminal_returns(monkeypatch, main, lambda session_id: report)
+    body = apply(c, sid, paths=["main.c"], review=True).json()
+    assert body["applied"] == ["main.c"] and body["review"]["applied"] is True
+    assert (repo / "main.c").read_bytes() == NEW and "note for 1" in (repo / "verdict.md").read_text()
+    terminal_returns(monkeypatch, main, lambda session_id: None)
+    (repo / "main.c").write_bytes(OLD)
+    again = apply(c, sid, paths=["main.c"], review=True).json()
+    assert again["applied"] == ["main.c"] and again["review"]["applied"] is False        # the files went in even though there was no report

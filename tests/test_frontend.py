@@ -222,3 +222,115 @@ def test_the_page_loads_the_shared_helpers_before_the_app():
     app = (Path(__file__).resolve().parent.parent / "src/verdict/static/app.js").read_text()
     for moved in ("function h(", "function inlineMarkdown(", "function renderMarkdown("):
         assert moved not in app, f"{moved} now lives in lib.js; a second copy would silently win"
+
+
+# ---------------------------------------------------------------- the ⬇ Apply to project dialog (the real code from app.js, fake DOM)
+
+DIALOG = Path(__file__).resolve().parent / "js" / "apply_dialog.js"
+
+
+def dialog_for(data, result=None, ticks=None, press=False):
+    scenario = {"data": data, "result": result or {}, "ticks": ticks, "press": press}
+    done = subprocess.run(["node", str(DIALOG)], input=json.dumps(scenario), capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def changes(files=None, live=False, copy=None, report=False, **review_fields):
+    """What GET .../changes answers. `copy`: a working copy exists (by default: when there are files). `report`: claude's report is waiting."""
+    files = files or []
+    review = {"results": True, "found": report, "name": "claude-review.md" if report else "", "chars": 5 if report else 0, "applied": False,
+              "merged": False, "merged_at": "", "structured": False, "assessed": 0, "total": 0, "verdict_file": "verdict.md", **review_fields}
+    return {"found": (not live and bool(files)) if copy is None else copy, "live": live, "project": "libft", "files": files, "truncated": False, "review": review}
+
+
+def file_entry(path, status="modified", action="apply", selected=True, note="", warn="", binary=False):
+    return {"path": path, "status": status, "action": action, "selected": selected, "note": note, "warn": warn, "binary": binary}
+
+
+def test_a_report_that_is_waiting_is_ticked_and_applying_it_is_one_click():
+    out = dialog_for(changes(live=True, report=True, chars=2048))
+    assert out["title"] == "Apply to project" and out["review"]["label"] == "claude's review → verdict.md in projects/libft"
+    assert out["review"]["checked"] is True and out["review"]["disabled"] is False
+    assert "claude's report is ready (2048 characters)" in out["review"]["note"] and "whatever the app thought of it before" in out["review"]["note"]
+    assert out["apply"] == {"text": "Apply review", "disabled": False}
+
+
+def test_every_state_of_the_review_says_what_it_is_and_whether_it_can_be_applied():
+    merged = dict(merged=True, merged_at="2026-10-30T10:00:00+00:00", structured=True, assessed=3, total=4)
+    cases = {                                   # label: (what the API says, text in the note, can it be ticked, is it ticked)
+        "no checks yet": (dict(results=False), "Run the checks first", False, False),
+        "nothing saved yet": (dict(), "claude has not saved a report yet", False, False),
+        "an earlier review is in verdict.md, nothing new": (dict(**merged), "keeps the review merged", False, False),
+        "a report is waiting": (dict(report=True), "claude's report is ready", True, True),
+        "a newer report than the one in verdict.md": (dict(report=True, **merged), "claude's report is ready", True, True),
+        "already applied": (dict(report=True, applied=True, **{**merged, "assessed": 4}), "Already in verdict.md (merged ", True, False),
+    }
+    for label, (fields, text, can_tick, ticked) in cases.items():
+        out = dialog_for(changes(live=True, **fields))
+        assert text in out["review"]["note"], label
+        assert out["review"]["disabled"] is (not can_tick) and out["review"]["checked"] is ticked, label
+        assert out["apply"]["disabled"] is (not ticked), label                       # the button is on only when something is ticked
+    again = dialog_for(changes(live=True, report=True, applied=True, merged=True, structured=True, assessed=4, total=4), ticks={"review": True})
+    assert again["applyAfterTicks"] == {"text": "Apply review", "disabled": False}   # an applied report can be applied again, on request
+    assert "4 of 4 requirements answered" in again["review"]["note"]
+
+
+def test_in_live_mode_there_are_no_files_and_the_dialog_says_why():
+    out = dialog_for(changes(live=True, report=True))
+    assert out["files"] == [] and any("work directly in projects/libft" in p and "Only the review is left to apply" in p for p in out["intro"])
+
+
+def test_without_a_working_copy_there_are_no_files_but_the_review_can_still_be_applied():
+    out = dialog_for(changes(copy=False, report=True))
+    assert out["files"] == [] and any("There is no working copy right now" in p for p in out["intro"])
+    assert out["review"]["checked"] is True and out["apply"] == {"text": "Apply review", "disabled": False}
+    out = dialog_for(changes(copy=True))                                              # a copy exists, but nothing changed in it
+    assert out["files"] == [] and any("Nothing has changed in the working copy" in p for p in out["intro"])
+
+
+def test_in_copy_mode_the_files_are_listed_with_their_state_and_the_button_counts_what_is_ticked():
+    files = [file_entry("main.c"), file_entry("new.c", status="added"), file_entry("CLAUDE.md", status="added", action="skip", selected=False, note="never sent back"),
+             file_entry(".vscode/tasks.json", status="added", selected=False, warn="read it first"), file_entry("data.bin", status="added", selected=False, binary=True)]
+    out = dialog_for(changes(files=files, report=True))
+    assert [(f["path"], f["checked"], f["disabled"]) for f in out["files"]] == [
+        ("main.c", True, False), ("new.c", True, False), ("CLAUDE.md", False, True), (".vscode/tasks.json", False, False), ("data.bin", False, False)]
+    assert "never sent back" in out["files"][2]["note"] and "read it first" in out["files"][3]["note"] and "binary file" in out["files"][4]["note"]
+    assert out["apply"] == {"text": "Apply review + 2 files", "disabled": False}
+    unticked = dialog_for(changes(files=files, report=True), ticks={"review": False, "files": [False, False]})
+    assert unticked["applyAfterTicks"] == {"text": "Apply", "disabled": True}
+    one = dialog_for(changes(files=files, report=True), ticks={"review": False, "files": [True, False]})
+    assert one["applyAfterTicks"] == {"text": "Apply 1 file", "disabled": False}
+    no_report = dialog_for(changes(files=files))
+    assert no_report["apply"] == {"text": "Apply 2 files", "disabled": False}         # files alone work without any report
+
+
+def test_pressing_apply_sends_exactly_what_is_ticked_and_refreshes_the_page():
+    files = [file_entry("main.c"), file_entry("new.c", status="added")]
+    result = {"applied": ["main.c"], "skipped": [], "project": "libft",
+              "review": {"applied": True, "saved": True, "structured": True, "assessed": 4, "total": 4, "verdict_file": "verdict.md"}}
+    out = dialog_for(changes(files=files, report=True), result=result, ticks={"files": [True, False]}, press=True)
+    assert out["sent"] == {"path": "sessions/sess123/changes/apply", "body": {"paths": ["main.c"], "review": True}}
+    assert out["toast"]["ok"] is True
+    assert "1 file(s) written into projects/libft" in out["toast"]["message"] and "claude's review merged into verdict.md (4 of 4 requirements answered)" in out["toast"]["message"]
+    assert out["calls"]["render"] == 1 and out["calls"]["loadTree"] == 1 and out["calls"]["refreshVerdict"] == 1 and out["calls"]["closeDialog"] >= 1
+
+
+def test_a_review_that_could_not_be_applied_says_why_and_is_not_reported_as_success():
+    result = {"applied": [], "skipped": [], "project": "libft",
+              "review": {"applied": False, "reason": "claude has not saved its report yet. Ask it to save it as claude-review.md"}}
+    out = dialog_for(changes(live=True, report=True), result=result, press=True)
+    assert out["sent"]["body"] == {"paths": [], "review": True}
+    assert out["toast"]["ok"] is False and "the review was not applied: claude has not saved its report yet" in out["toast"]["message"]
+    assert "run them again" not in out["toast"]["message"]                            # (only files change what the checks saw)
+
+
+def test_files_that_were_skipped_and_a_review_without_a_data_block_are_not_called_a_success():
+    files = [file_entry("main.c")]
+    skipped = {"applied": [], "skipped": [{"path": "main.c", "reason": "changed on your machine since the copy was made"}], "project": "libft", "review": None}
+    out = dialog_for(changes(files=files), result=skipped, press=True)
+    assert out["sent"]["body"] == {"paths": ["main.c"], "review": False} and out["toast"]["ok"] is False
+    assert "main.c (changed on your machine since the copy was made)" in out["toast"]["message"]
+    text_only = {"applied": [], "skipped": [], "project": "libft", "review": {"applied": True, "saved": True, "structured": False, "verdict_file": "verdict.md"}}
+    out = dialog_for(changes(live=True, report=True), result=text_only, press=True)
+    assert "as text: it had no data block at the end" in out["toast"]["message"] and out["toast"]["ok"] is False

@@ -64,7 +64,8 @@ services:
 
   # `claude` for the in-app terminal and the one-click review. It gets internet (to reach Anthropic) but none of the
   # web app's secrets: no .env, no ssh-agent, no other sessions. The projects folder is mounted read-write (set
-  # TERMINAL_PROJECTS_MODE=ro to make it read-only again), and claude and the shell work on throw-away copies in /scratch.
+  # TERMINAL_PROJECTS_MODE=ro to make it read-only again). By default claude and the shell work IN that folder (TERMINAL_WORKDIR=live),
+  # so what they change is on your machine at once; TERMINAL_WORKDIR=copy makes them work on throw-away copies in /scratch instead.
   # Your Claude login lives in the `claude-home` volume. Your public keys (~/.ssh/*.pub only) are in ~/.ssh, read-only.
   terminal:
     build:
@@ -72,6 +73,7 @@ services:
       dockerfile: terminal/Dockerfile
     environment:
       TERMINAL_TOKEN: ${TERMINAL_TOKEN:?run `make run` (it creates TERMINAL_TOKEN in .env)}
+      TERMINAL_WORKDIR: ${TERMINAL_WORKDIR:-live}
       DOCKER_HOST: tcp://dind:2375     # claude can build and run a student's Dockerfile on the separate daemon below
     networks: [default, docker-net]
     volumes:

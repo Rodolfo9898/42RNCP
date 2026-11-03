@@ -137,12 +137,25 @@ def _rule(kind: str, title: str, *, text: str = "", section: Section = "mandator
 # --------------------------------------------------------------------------- tables
 
 
+def _root_or_subfolder(required: list[list[str]]) -> list[list[str]]:
+    """`*.c` and `*/*.c` in one list mean "at the root or in a subfolder": either place satisfies it, so they are one requirement
+    (a project that keeps everything at the root must not be told that its `*/*.c` is missing)."""
+    known = {tuple(entry) for entry in required}
+    merged: list[list[str]] = []
+    for entry in required:
+        if all(a.startswith("*/") for a in entry) and tuple(a[2:] for a in entry) in known:
+            continue                                            # folded into the entry for the root
+        twin = tuple("*/" + a for a in entry)
+        merged.append(entry + list(twin) if twin in known else entry)
+    return merged
+
+
 def expand_files(value: str) -> tuple[list[list[str]], list[str]]:
     """Parse a 'Files to Submit' value.
 
     Returns (required, notes). Each entry of `required` is a list of alternatives, any
-    one of which satisfies it (`*.{h, hpp}` means `*.h` or `*.hpp`). `notes` holds
-    prose fragments that could not be turned into a file pattern.
+    one of which satisfies it (`*.{h, hpp}` means `*.h` or `*.hpp`; `*.c` with `*/*.c` means
+    the root or a subfolder). `notes` holds prose fragments that could not be turned into a file pattern.
     """
     value = re.sub(r"\{([^}]*)\}", lambda m: "{" + re.sub(r"[,\s]+", "|", m.group(1).strip()) + "}", value)
     required: list[list[str]] = []
@@ -159,7 +172,7 @@ def expand_files(value: str) -> tuple[list[list[str]], list[str]]:
             m = re.fullmatch(r"(.*)\{([^}]*)\}(.*)", token)
             alternatives = [m.group(1) + a + m.group(3) for a in m.group(2).split("|")] if m else [token]
             required.append(alternatives)
-    return required, notes
+    return _root_or_subfolder(required), notes
 
 
 # Words that show up in 'External Function' prose but are not function names.

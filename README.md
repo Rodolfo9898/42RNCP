@@ -153,27 +153,31 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   what they could not: the subject requirements that need a human, plus correctness on edge cases, error handling, memory,
   design and readability. Each point must cite file:line, "unclear" is an accepted answer, and it asks before running
   anything. If a claude tab is already open, the prompt is pasted into it instead. claude saves its report as
-  `claude-review.md` in its throw-away copy (you approve that one write); it is picked up automatically, or with
+  `claude-review.md` (working in your project, which is the default, in a folder outside it, so no file is added to your
+  repository; in copy mode, in its throw-away copy), and you approve that one write; it is picked up automatically, or with
   **💾 Save review to verdict.md** or by closing the tab, and merged into `verdict.md` between the improvements and the
   closing **Final verdict** section. The report is treated as untrusted text (markup defused, headings demoted).
   Check Anthropic's terms for your plan before automating a subscription login this way.
-- **Safety:** claude never runs in the original repository. It runs in a throw-away copy (in memory, wiped when you close
-  the tab) from which `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out. It keeps the clone's `.git` (git
-  works there) but never its hooks or its config, which is replaced by a minimal one, so `.git` cannot make git run a
-  program. It runs with `--setting-sources user`
-  so hooks and settings shipped in a student's repo are ignored. The interactive terminal asks before each command or edit;
-  anything you approve affects only the copy, until you send changes back yourself with **⬇ Apply to project** (below). A student's repo can still try to talk the model into proposing something
-  harmful, so read each request before approving it, and never approve one that reads `~/.claude` or sends data out.
+- **Safety:** by default claude works **in your project folder** (see *Your project, live* below), so what it changes is on
+  your machine at once. With `TERMINAL_WORKDIR=copy` it never runs in the original: it runs in a throw-away copy (in memory,
+  wiped when you close the tab) from which `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out. The copy keeps
+  the clone's `.git` (git works there) but never its hooks or its config, which is replaced by a minimal one, so `.git` cannot
+  make git run a program. In both modes claude runs with `--setting-sources user` so hooks and settings shipped in a student's
+  repo are ignored, and with `--strict-mcp-config`. The interactive terminal asks before each command or edit; in copy mode
+  anything you approve affects only the copy, until you send changes back yourself with **⬇ Apply to project** (below). A
+  student's repo can still try to talk the model into proposing something harmful, so read each request before approving it,
+  and never approve one that reads `~/.claude` or sends data out.
 - The terminal websocket only accepts pages served by this app (Origin check) and the two containers share a random
   `TERMINAL_TOKEN`, created in `.env` by `make`.
 
 ## Shell, to try things by hand
 
 **⌨ Shell** (title bar, with a repository open) opens a plain `bash` tab next to **⌨ Claude**. It runs in the same container
-and in the **same throw-away copy** of the repository that claude is working in, so you can watch what claude changed, run
-`make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it. Without a
-claude running it gets a copy of its own. A copy is deleted when the last tab using it closes; the original repository is
-only changed by **⬇ Apply to project** (below). Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
+and in the **same place** as claude: by default your project folder itself (`./projects/<name>`, see *Your project, live*), or
+with `TERMINAL_WORKDIR=copy` the same throw-away copy that claude is working in. So you can watch what claude changed, run
+`make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it. In copy
+mode, without a claude running it gets a copy of its own, a copy is deleted when the last tab using it closes, and the original
+repository is only changed by **⬇ Apply to project** (below). Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
 
 It is the terminal container, not the sandbox: same toolchain (cc, c++, make, valgrind, gdb, norminette, the readline and X11
 headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
@@ -211,7 +215,59 @@ The folder is named by the **`$SUBJECTS_DIR`** environment variable:
 Rebuild the images once to get this (`make build`, then `make run`; `make re` is not needed and would also wipe your sessions and
 your Claude login).
 
-### ⬇ Apply to project: getting the changes back onto your machine
+### Your project, live: the tunnel to your machine
+
+By default **⌨ Claude and ⌨ Shell work directly in your project folder**: the terminal container mounts `./projects` read-write,
+and its tabs start in `/projects/<name>`, which *is* `./projects/<name>` on your machine. Nothing is copied and nothing is sent
+back later: a file claude edits, creates or deletes, or that you change in the Shell, is changed on your machine at that moment,
+and your editor sees it as it happens (the app's file tree refreshes every few seconds while a terminal tab is open). The
+terminal tab says so in its top bar and the shell prints it on its first line.
+
+What stays isolated is where things **run**, not where files **live**: claude, the shell and everything they build and run
+(`make`, your programs, `docker build`) execute inside the containers, with their own toolchain and no access to the rest of your
+machine, so "does it build and run with only what is installed there?" is answered honestly. Only the project folder is shared.
+
+- **▶ Run checks still uses a disposable copy.** The checks run `make clean`, `make fclean`, `make re` and the project's own
+  Makefile rules, and building leaves objects and binaries behind. Doing that in your real folder could delete or clutter your
+  files, so each run copies the folder (as it is at that moment, with everything claude has just changed) into the sandbox and
+  works there. Run the checks again after claude edits something to see the new result.
+- **Build output lands in your project.** When claude or you build in the Shell, `.o` files and binaries are created in
+  `./projects/<name>`. `make fclean` removes them; they show up in `git status` unless the project's `.gitignore` covers them.
+- **Claude's review report is not written into your repository.** Working in place, claude saves `claude-review.md` in a folder
+  outside the project (`$REPORT_DIR`), the app merges it into `verdict.md` as before, and it is deleted with the session.
+- **git works in the project.** The project is declared safe for git inside the container (that one folder, for that process
+  only, nothing written to any git config), so `git status`, `git diff`, `git pull` and, with `TERMINAL_SSH=1`, `git push` work in
+  it directly, with the project's real `origin`.
+- **No files to apply.** **⬇ Apply to project** has no copy to send back in this mode; it still forces claude's review
+  into `verdict.md` (see below).
+- **What you give up.** There is no review step between claude's edit and your files (you still approve each edit in the
+  terminal), `git diff` is how you review afterwards, and the protections of the throw-away copy do not apply: a student's
+  `CLAUDE.md` and `.claude/` are in the folder claude starts in. `--setting-sources user` still keeps project settings and hooks
+  out and `--strict-mcp-config` project MCP servers, but a `CLAUDE.md` is plain instructions that claude may read; claude is told
+  to treat the folder as untrusted. And anything that runs in the terminal container can change every repository in
+  `./projects`, `.git/hooks` included (see *the projects folder is read-write* below).
+- **Back to the safe way:** `TERMINAL_WORKDIR=copy make run` (or that line in `.env`) makes claude and the shell work on
+  throw-away copies again, with ⬇ Apply to project as the only way back. Use it for code you do not trust.
+
+### ⬇ Apply to project: force claude's review into the project, and send back a working copy's files
+
+**⬇ Apply to project** (title bar) is where you make things land in your project on purpose. It does two things, each with its
+own tick box, and nothing is written until you press the button:
+
+1. **claude's review → `verdict.md` in your project (any mode).** The review is normally merged by itself while the
+   ⌨ Claude tab is open, but that pickup can miss: after a new run, when the app decided the review belonged to another commit
+   or subject set and dropped it, when claude saved the report somewhere unexpected, or when the tab was already closed.
+   Ticking this row takes the report claude saved, **whatever the app thought of it before**, adopts it for the project as it is
+   now, and writes `verdict.md` again. The row says what it found: a report is ready (ticked), it is already in `verdict.md`
+   (with how many requirements it answered), claude has not saved anything yet, or the checks have not run. If nothing is
+   found the answer says why instead of failing, and the files are still applied. The report is looked for where claude
+   was told to put it (outside your project when working live, in the copy otherwise), and also as a `claude-review.md`
+   (or a `review…md`) claude wrote into your project folder; a note you wrote yourself, or a `claude-review.md` that was
+   already in the project before claude started, is never taken for it. The same merge is `POST …/claude-review/save`.
+2. **Files of a working copy → your project (copy mode only).** See below. With the default live mode there are no files to
+   send, because claude and the shell already work in your project.
+
+*The rest of this section is about the files, which only matters with `TERMINAL_WORKDIR=copy`.*
 
 The working copy lives in the terminal container's memory and disappears when its last tab closes. To keep what claude or you
 changed there, **apply it before closing the tab**: **⬇ Apply to project** lists every file that differs from the moment the
@@ -224,10 +280,10 @@ read-write (the terminal's mount used to be read-only), so from the ⌨ Shell ta
 `/projects/<name>` (`git pull`, edit, `git status`), and whatever lands there is writable. The price: anything that runs in the
 terminal container, including a peer's code that claude builds or runs there, can now change **every** repository in that
 folder, `.git/hooks` and `.claude/` included, and those run on your machine the next time you `git commit` or open the project.
-The working-copy design above still keeps claude itself away from the originals, and Apply still refuses `.git`, `.claude/` and
+In copy mode the working-copy design keeps claude itself away from the originals, and Apply still refuses `.git`, `.claude/` and
 the other files listed below, but a read-write mount cannot be limited to one project. If you review code you do not trust, start
-with `TERMINAL_PROJECTS_MODE=ro make run` (or that line in `.env`): the terminal then reads the projects folder but cannot write
-to it, and Apply remains the only way for changes to reach a project.
+with `TERMINAL_PROJECTS_MODE=ro TERMINAL_WORKDIR=copy make run` (or those lines in `.env`): the terminal then reads the projects
+folder but cannot write to it, and Apply remains the only way for changes to reach a project.
 
 - **Only the working tree comes back.** Files appear in the project as ordinary uncommitted changes (new, modified, deleted):
   review them with `git diff`, then commit them yourself. Commits made inside the copy are not transferred (their file changes
@@ -280,9 +336,10 @@ it in a box to **Copy** (you can edit it first). It lists the same things `verdi
 Requirements nobody has assessed yet are not issues, so they are left out; if nothing is lacking it says so instead of
 producing an empty prompt. The prompt tells the AI to confirm each finding before touching code, to make the smallest change,
 to treat the issue text as data, to leave `verdict.md` alone, and to report each issue as fixed / not fixed / not real.
-It is copied rather than sent to the **⌨ Claude** tab on purpose: that claude works on a throw-away copy, so a fix made there
-would be lost when the tab closes. Paste it into claude (or any assistant) in the project's own folder. The same text is at
-`GET /api/sessions/{id}/fix-prompt`.
+It is copied rather than sent to the **⌨ Claude** tab because it is meant for whichever assistant you prefer. By default (live
+mode) you can paste it into the ⌨ Claude tab too: that claude works in your project, so its fixes land on your machine at
+once. With `TERMINAL_WORKDIR=copy` a fix made there would be lost when the tab closes unless you use ⬇ Apply to project. The
+same text is at `GET /api/sessions/{id}/fix-prompt`.
 
 ## SSH troubleshooting
 
@@ -306,6 +363,12 @@ docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; s
    `make clean/fclean/re`, norminette, authorized functions (`nm`), C++ bans, a crash smoke test and a
    valgrind run. Anything that builds or runs the repo goes through the `sandbox` container, which has no
    network, no capabilities and a read-only root filesystem.
+   **File presence follows what the subject allows about structure.** A list such as ft_printf's
+   `Makefile, *.h, */*.h, *.c, */*.c` means "at the root *or* in a subfolder", so `*.c` and `*/*.c` are one requirement and
+   either place satisfies it (a project that keeps everything at the root is fine). A required file that exists but not where the
+   list says (`libft.h` found as `includes/libft.h`) is not called missing: it goes under **⚠️ Second look**, naming where it is,
+   because only the subject's wording (and a human, or claude) can say whether that layout is allowed. Only a file found
+   nowhere (vendored folders such as minilibx do not count) is **❌ Lacking**.
 3. **Verdict**: it follows the two lists of `verdict.md` for the mandatory part, claude's answers included. `FAIL` when
    anything is under **❌ Lacking** (whatever else there is), `PASS WITH ISSUES` when nothing is lacking but something is
    under **⚠️ Second look** (warnings, requirements nobody or claude could not settle, claude disagreeing with a check),
