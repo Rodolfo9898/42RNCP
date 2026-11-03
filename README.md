@@ -158,6 +158,10 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
    closing the tab, and merged into `verdict.md` between the improvements and the
   closing **Final verdict** section. The report is treated as untrusted text (markup defused, headings demoted).
   Check Anthropic's terms for your plan before automating a subscription login this way.
+- **Tests happen where the project is.** Every prompt (claude's system prompts, the review prompt, the fix prompt) tells claude to
+  build, run and test in the current directory, never in a copy in `/tmp` or another folder, and to keep any scratch files
+  inside it and remove them afterwards. In live mode that means the build output lands in your project (claude says so
+  before the first build and runs `make fclean` after it when the Makefile has one).
 - **Safety:** by default claude works **in your project folder** (see *Your project, live* below), so what it changes is on
   your machine at once. With `TERMINAL_WORKDIR=copy` it never runs in the original: it runs in a throw-away copy (in memory,
   wiped when you close the tab) from which `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out. The copy keeps
@@ -302,29 +306,39 @@ same text is at `GET /api/sessions/{id}/fix-prompt`.
 ## 42Cursus: all your projects as submodules
 
 A separate repository, `Rodolfo9898/42Cursus`, holds every project as a git submodule, grouped like `samples/`
-(`common-core/`, `post-common-core/`, `rncp/`). It lives in a folder next to this one (`../42Cursus`) and contains no subject PDFs.
-`scripts/cursus.sh` builds and maintains it; run it through `make`, on your machine (it uses your own ssh keys):
+(`common-core/`, `post-common-core/`, `rncp/`). It contains no subject PDFs. **GitHub is the only copy**: there is no
+`../42Cursus` folder any more. `scripts/cursus.sh` clones the repository into a temporary folder for each command, works
+there, pushes the result and deletes the folder. It never clones your projects either: a submodule is a project's URL plus the
+commit it is at, and the newest commit is read from GitHub (`git ls-remote`). Run it through `make`, on your machine (it uses
+your own ssh keys):
 
 ```sh
-make cursus          # once: create ../42Cursus and the private GitHub repo (needs `brew install gh && gh auth login`)
-make cursus-sort     # put every git repo of ./projects into it, in the folder of the subject PDF with its name
-make cursus-update   # move every submodule to the newest commit of its own repository, and commit that
+make cursus-push     # push your projects (all of ./projects) to their own GitHub repos
+make cursus          # once: create the private GitHub repo (needs `brew install gh && gh auth login`)
+make cursus-sort     # add every git repo of ./projects to it as a submodule, in the folder of its subject PDF, and push
+make cursus-update   # move every submodule to the newest commit of its own GitHub repo, and push
 ```
 
-- **`cursus-sort`** takes a project's `origin` URL, so the submodule holds what is on GitHub, not your local folder: push first
-  (it warns about unpushed commits and uncommitted changes). A name that matches no subject PDF needs
-  `make cursus-sort MAP="ft_transcendence=common-core"`.
-- **`cursus-update`** is what to run after your projects changed. It first fast-forwards 42Cursus from its origin when that cannot
-  touch anything of yours (so positions recorded on another machine are picked up), checks out any project that is not there
-  yet, then moves each one to the newest commit of its own remote and commits the new positions in one commit
-  (`Update N project(s)`, listing them). The report says per project what it did:
-  `up common-core/libft: 69ba8fd -> 3c1e0a2 (2 new commit(s))`, `ok … already the newest`, `skip …`, `fail …`.
-- **Your work is never overwritten.** A project folder inside 42Cursus with uncommitted changes, or with commits that are not
-  on its origin, is skipped with a message (push or commit them first), and the others are still updated. Only the
-  updated projects are committed, never anything else you had staged. A project that cannot be fetched (network, ssh key,
-  deleted repository) is reported, makes the command end with an error, and does not stop the rest.
-- **Nothing is pushed unless you ask.** Each command ends by printing `git -C ../42Cursus push`; `make cursus-update CURSUS_PUSH=1`
-  pushes at the end. `CURSUS_DIR` and `CURSUS_REPO` change where the repository is and what it is called.
+The usual round after working on projects: `make cursus-push`, then `make cursus-update`.
+
+- **`cursus-push`** pushes the current branch of every git repo in `./projects` to its own `origin`
+  (`make cursus-push ONLY="libft nm"` for just those). A submodule only ever holds what GitHub has, so this is what makes
+  your latest commits visible to `sort` and `update`. It never forces: a project whose GitHub has commits you do not is
+  reported (`git pull` it first) and the others are still pushed. Uncommitted changes are not pushed; a detached HEAD or a
+  folder without an `origin` is skipped.
+- **`cursus-sort`** adds a project at the commit its GitHub has (it warns when you have unpushed commits or uncommitted
+  changes: run `cursus-push`). A name that matches no subject PDF needs `make cursus-sort MAP="ft_transcendence=common-core"`.
+- **`cursus-update`** moves each submodule to the newest commit of its own repository (its default branch, or the `branch`
+  set for it in `.gitmodules`) and commits the new positions in one commit (`Update N project(s)`, listing them). The report
+  says per project what it did: `up common-core/libft: 69ba8fd -> 3c1e0a2`, `ok … already the newest`, `skip …`, `fail …`.
+  A project that cannot be read (network, ssh key, deleted repository) is reported, makes the command end with an error,
+  and does not stop the rest.
+- **Add `CURSUS_DRY_RUN=1`** (e.g. `make cursus-update CURSUS_DRY_RUN=1`) to see what would happen without pushing or creating
+  anything. If a push is refused (someone else pushed meanwhile), run the command again.
+- Addresses are only followed over `file`, `git`, `http(s)` and `ssh`, never `ext::`, because project URLs come from repositories
+  other people wrote. `CURSUS_REPO`, `CURSUS_URL`, `CURSUS_VISIBILITY` and `PROJECTS_DIR` change what is used; `CURSUS_DIR` and
+  `CURSUS_PUSH` no longer exist. If you still have the old `../42Cursus` folder, check `git -C ../42Cursus status -sb` shows
+  nothing ahead of `origin`, then delete it.
 
 ## SSH troubleshooting
 
