@@ -4,6 +4,8 @@ import sys
 import pytest
 
 from verdict.checks import Ctx, run_checks, strip_code
+from verdict.checks.dynamic import build_unit, makefile_behavior, no_crash, no_leaks
+from verdict.models import Rule
 from verdict.spec import parse_subject
 
 from .conftest import SUBJECT_PAGES
@@ -318,3 +320,98 @@ def test_the_text_requirements_run_inside_the_whole_review_and_show_up_as_lackin
     named = by_title(results, "Required files named in the subject")
     assert named.status == "fail" and "Makefile" in named.detail and "signature.txt" in named.detail
     assert [e.title for e in bucket(results, None).lacking if e.title.startswith("Required files named")]
+
+
+# A library project whose subject names no program (get_next_line): the fallback must not mistake objects for products.
+ARCHIVE_MAKEFILE = """NAME = gnl.a
+
+all: $(NAME)
+
+$(NAME): gnl.o
+\tar rcs $(NAME) gnl.o
+
+gnl.o: gnl.c
+\tcc -Wall -Wextra -Werror -c gnl.c -o gnl.o
+
+clean:
+\t{clean}
+
+fclean:
+\trm -f gnl.o $(NAME)
+
+re: fclean all
+
+.PHONY: all clean fclean re
+"""
+
+
+def archive_repo(tmp_path, clean="rm -f gnl.o"):
+    (tmp_path / "Makefile").write_text(ARCHIVE_MAKEFILE.format(clean=clean))
+    (tmp_path / "gnl.c").write_text("int\tgnl(void)\n{\n\treturn (0);\n}\n")
+    return tmp_path
+
+
+def behavior(repo, sandbox):
+    return list(makefile_behavior(Ctx(repo=repo.resolve(), rules=[], sandbox=sandbox, lang="c")))
+
+
+needs_build_tools = pytest.mark.skipif(not (shutil.which("make") and shutil.which("cc") and shutil.which("ar")), reason="needs make, cc and ar")
+
+
+@needs_build_tools
+def test_make_clean_removing_objects_is_not_reported_as_removing_the_program(tmp_path, local_sandbox):
+    results = behavior(archive_repo(tmp_path), local_sandbox)
+    assert [r.status for r in results] == ["pass", "pass", "pass"], [r.detail for r in results]
+
+
+@needs_build_tools
+def test_make_clean_removing_the_library_is_still_reported(tmp_path, local_sandbox):
+    results = behavior(archive_repo(tmp_path, clean="rm -f gnl.o gnl.a"), local_sandbox)
+    assert "`make clean` keeps the program" in [r.title for r in results if r.status == "fail"]
+    assert any("gnl.a" in r.detail and "gnl.o" not in r.detail for r in results if r.status == "fail")
+
+
+@needs_build_tools
+def test_make_clean_removing_an_executable_is_still_reported(good_repo, local_sandbox):
+    makefile = good_repo / "Makefile"
+    makefile.write_text(makefile.read_text().replace("clean:\n\trm -f $(OBJS)\n", "clean:\n\trm -f $(OBJS) $(NAME)\n"))
+    fails = [r for r in behavior(good_repo, local_sandbox) if r.status == "fail"]
+    assert any(r.title == "`make clean` keeps the program" and "push_swap" in r.detail for r in fails)
+
+
+@needs_build_tools
+def test_objects_and_libraries_are_not_executables(tmp_path, local_sandbox):
+    repo = archive_repo(tmp_path)
+    ctx = Ctx(repo=repo.resolve(), rules=[], sandbox=local_sandbox, lang="c")
+    assert ctx.build(".").ok and (repo / "gnl.o").is_file()
+    assert ctx.executables(".") == []
+    assert [p.name for p in ctx.libraries(".")] == ["gnl.a"]
+
+
+@needs_build_tools
+def test_shared_libraries_are_not_executables(tmp_path, local_sandbox):
+    (tmp_path / "lib.c").write_text("int\tf(void)\n{\n\treturn (0);\n}\n")
+    assert local_sandbox.exec(["cc", "-shared", "-fPIC", "lib.c", "-o", "libf.so"], tmp_path).ok
+    ctx = Ctx(repo=tmp_path.resolve(), rules=[], sandbox=local_sandbox, lang="c")
+    assert ctx.executables(".") == []
+    assert [p.name for p in ctx.libraries(".")] == ["libf.so"]
+
+
+@needs_build_tools
+def test_runtime_checks_skip_a_library_instead_of_running_its_objects(tmp_path, local_sandbox):
+    rules = [Rule(id=kind, kind=kind, title=kind, text="", section="mandatory", sources=[]) for kind in ("no_crash", "no_leaks")]
+    ctx = Ctx(repo=archive_repo(tmp_path).resolve(), rules=rules, sandbox=local_sandbox, lang="c")
+    assert [r.status for r in no_crash(ctx, rules[0])] == ["skipped"]
+    assert [r.status for r in no_leaks(ctx, rules[1])] == ["skipped"]
+
+
+@needs_build_tools
+def test_build_unit_counts_a_library_but_not_bare_objects(tmp_path, local_sandbox):
+    rule = Rule(id="b", kind="build_unit", title="b", text="", section="mandatory", sources=[])
+    repo = archive_repo(tmp_path)
+    built = list(build_unit(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0]
+    assert built.status == "pass" and "gnl.a" in built.detail and "gnl.o" not in built.detail
+    (repo / "Makefile").write_text("all:\n\tcc -c gnl.c -o gnl.o\n")
+    (repo / "gnl.a").unlink()
+    (repo / "gnl.o").unlink()
+    assert list(build_unit(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0].status == "warn"

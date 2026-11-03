@@ -51,9 +51,9 @@ def build_unit(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     if not build.ok:
         yield result(rule, "fail", "The build failed." if build.ran else build.log, log=build.log)
         return
-    exes = ctx.executables(rule.unit)
-    if exes:
-        yield result(rule, "pass", f"Built {', '.join(p.name for p in exes)}.", log=build.log)
+    built = ctx.executables(rule.unit) + ctx.libraries(rule.unit)
+    if built:
+        yield result(rule, "pass", f"Built {', '.join(p.name for p in built)}.", log=build.log)
     else:
         yield result(rule, "warn", "The build succeeded but produced no executable.", log=build.log)
 
@@ -366,7 +366,7 @@ def makefile_behavior(ctx: Ctx) -> Iterable[CheckResult]:
         if not ctx.has_makefile(unit) or not ctx.build(unit).ok:
             continue
         prefix = "" if unit == "." else f"{unit}: "
-        names = [n for n in ctx.programs(unit, "mandatory")] or [p.name for p in ctx.executables(unit)]
+        names = ctx.programs(unit, "mandatory") or [p.name for p in ctx.executables(unit) + ctx.libraries(unit)]
         base = ctx.unit_dir(unit)
 
         def objects() -> list[str]:
