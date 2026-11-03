@@ -112,6 +112,8 @@ def read_lines(pages: list[str]) -> list[Line]:
             if expect_title:
                 chapter = text.lower()
                 expect_title = False
+                if re.search(r"deliverable|submission|turn-?in", chapter):
+                    section = "mandatory"           # what to hand in concerns the whole project, not the bonus part that came before
             m = re.fullmatch(r"(mandatory|bonus) part", text, re.I)
             if m:
                 section = "bonus" if m.group(1).lower() == "bonus" else "mandatory"
@@ -135,6 +137,15 @@ def _rule(kind: str, title: str, *, text: str = "", section: Section = "mandator
 
 
 # --------------------------------------------------------------------------- tables
+
+
+def _file_params(required: list[list[str]], notes: list[str]) -> dict[str, Any]:
+    """The parameters of a required_files rule. A note such as "all at the root of the repository" is a requirement too: the files
+    it covers must be at the root, not merely somewhere in the project."""
+    params: dict[str, Any] = {"files": required, "notes": notes}
+    if any(re.search(r"\bat the root\b", note, re.I) for note in notes):
+        params["root"] = [alt for entry in required for alt in entry]
+    return params
 
 
 def _root_or_subfolder(required: list[list[str]]) -> list[list[str]]:
@@ -204,7 +215,7 @@ def _program_rules(fields: dict[str, str], section: Section, source: Source) -> 
     required, notes = expand_files(files)
     if required:
         rules.append(_rule("required_files", "Required files", text=f"Files to submit: {fields.get('files', '')}",
-                           section=section, unit=unit, params={"files": required, "notes": notes}, source=source))
+                           section=section, unit=unit, params=_file_params(required, notes), source=source))
     elif notes:
         rules.append(_rule("manual", "Files to submit", text=f"Files to submit: {fields.get('files', '')}",
                            section=section, unit=unit, params={"text": files}, source=source))
@@ -261,7 +272,7 @@ def _cpp_exercise_rules(lines: list[Line], source_pdf: str) -> list[Rule]:
         required, notes = expand_files(files)
         if required:
             rules.append(_rule("required_files", "Required files", text=f"Files to submit: {files}",
-                               section=section, unit=unit, params={"files": required, "notes": notes}, source=source))
+                               section=section, unit=unit, params=_file_params(required, notes), source=source))
         rules.append(_rule("build_unit", f"{unit}: compiles", text=f"Exercise {unit}", section=section,
                            unit=unit, params={}, source=source))
         rules.append(_rule("makefile_rules", "Makefile rules", text="Makefile rules (same rules as C)", section=section,
@@ -310,7 +321,7 @@ def _parse_tables(lines: list[Line], pdf: str) -> list[Rule]:
             required, notes = expand_files(flat.get("files", ""))
             if required or notes:
                 rules.append(_rule("required_files", "Required files", text=f"Files to submit: {flat.get('files', '')}",
-                                   section=start.section, params={"files": required, "notes": notes}, source=source))
+                                   section=start.section, params=_file_params(required, notes), source=source))
             acc = allowed.setdefault(start.section, {"functions": [], "source": source})
             for name in _identifiers(flat.get("functions", "")):
                 if name not in acc["functions"]:
@@ -425,16 +436,191 @@ def _classify(sentence: str, line: Line, pdf: str, module: int | None) -> Rule |
     return None
 
 
-def _prose_rules(lines: list[Line], pdf: str, module: int | None) -> list[Rule]:
+def _line_of(lines: list[Line], head: Line, needle: str) -> Line:
+    """The line a sentence really sits on: wrapped paragraphs are credited to their first line, which can be pages earlier."""
+    start = next((i for i, l in enumerate(lines) if l is head), 0)
+    return next((l for l in lines[start:start + 80] if needle.lower() in l.text.lower()), head)
+
+
+def _prose_rules(lines: list[Line], pdf: str, module: int | None, file_hits: list | None = None) -> list[Rule]:
     prose = [l for l in lines if not any(c in l.chapter for c in SKIPPED_CHAPTERS)]
     rules: list[Rule] = []
+    if file_hits is not None:
+        # The chapter about turning in the work is skipped for vague requirements, but it is where some subjects say what to turn in.
+        turn_in = [l for l in lines if re.search(r"submission|turn-?in", l.chapter)]
+        for sentence, line in _prose_items(turn_in):
+            names, root = _sentence_files(sentence)
+            if names:
+                file_hits.append((names, root, _line_of(turn_in, line, names[0])))
     for sentence, line in _prose_items(prose):
         rule = _classify(sentence, line, pdf, module)
+        if rule is None and file_hits is not None:
+            names, root = _sentence_files(sentence)
+            if names:                                   # "You must submit a Makefile": a required file, not a vague manual item
+                file_hits.append((names, root, _line_of(prose, line, names[0])))
+                continue
         if rule is None and REQUIREMENT_WORDS.search(sentence):
             rule = _rule("manual", "Needs manual review", text=sentence, section=line.section,
                          params={"text": sentence}, source=Source(pdf=pdf, page=line.page))
         if rule:
             rules.append(rule)
+    return rules
+
+
+# --------------------------------------------------------------------------- files the subject names outside its tables
+#
+# Most subjects give their files in a table ("Files to Submit"), but many only say it in the text: "You must submit a Makefile",
+# "a signature.txt file at the root of your repository", a bullet list under "Required Files", or a listing of the expected
+# layout. Those become required files too, under strict conditions: an obligation (must, have to, required, ...) that names a
+# concrete file, never a condition ("if you use ..."), an example, something optional, something forbidden or a bonus.
+
+FILE_NAME = r"(?:[\w.\-]+/)*[A-Za-z0-9_][\w.\-]*\.[A-Za-z][A-Za-z0-9]{0,5}"
+BARE_NAMES = {"Makefile", "Dockerfile"}
+_HANDED_IN = r"(?:submit|turn[- ]?in|hand in|provide|deposit|ship|deliver)"
+_ARTICLE = r"(?:an?|the|your|its)"
+_OBLIGED = re.compile(r"\b(must|have to|has to|need to|needs to|required|mandatory|expected to|should)\b", re.I)
+_NOT_AN_OBLIGATION = re.compile(
+    r"\b(if|unless|optional|optionally|example|e\.g\.|for instance|such as|similar|do not|don't|must not|should not|shouldn't|"
+    r"cannot|can't|never|forbidden|not allowed|bonus|bonuses)\b", re.I)
+_SKIPPED_FILES = re.compile(r"readme(?:\.md)?", re.I)      # the README has a check of its own, with its own headings
+
+
+def _is_file_token(token: str) -> bool:
+    return token in BARE_NAMES or bool(re.fullmatch(FILE_NAME, token)) or bool(re.fullmatch(r"(?:[\w.\-]+/)+", token))
+
+
+def _sentence_files(sentence: str) -> tuple[list[str], bool]:
+    """(names, at_the_root) for a sentence that obliges the student to hand in files by name; ([], False) otherwise."""
+    s = sentence
+    if _NOT_AN_OBLIGATION.search(s) or not _OBLIGED.search(s):
+        return [], False
+    names: list[str] = []
+
+    def add(name: str) -> None:
+        if name and name not in names and not _SKIPPED_FILES.fullmatch(name):
+            names.append(name)
+
+    # A Makefile: "submit a Makefile", "turn in your code, a Makefile and ...", "use a Makefile", "A Makefile is also required"
+    if (re.search(rf"\b{_HANDED_IN}\s+(?:{_ARTICLE}\s+)?Makefile\b", s, re.I)
+            or re.search(rf"\b{_HANDED_IN}\b[^.;:]{{0,60}}\ba\s+Makefile\b", s, re.I)
+            or re.search(r"\b(?:use|make|write|create|include)\s+an?\s+Makefile\b", s, re.I)
+            or re.search(r"\bA Makefile\b[^.]{0,40}\b(?:is|are)\b[^.]{0,20}\b(?:required|mandatory)\b", s)):
+        add("Makefile")
+    # "submit a signature.txt file", "provide a data_structures.hpp file", "signature.txt must be present"
+    for m in re.finditer(rf"\b{_HANDED_IN}\s+{_ARTICLE}\s+(?:[a-z]+\s+){{0,2}}?(?P<n>{FILE_NAME})\s+file\b", s, re.I):
+        add(m.group("n"))
+    for m in re.finditer(rf"\b(?P<n>{FILE_NAME})\s+(?:file\s+)?must be (?:present|provided|submitted)\b", s, re.I):
+        add(m.group("n"))
+    # "a file called author", "a unified header file named libftpp.hpp"
+    for m in re.finditer(rf"\b{_HANDED_IN}\b[^.;:]{{0,40}}?\bfile\s+(?:called|named)\s+[`'\"“‘]?(?P<n>{FILE_NAME}|[A-Za-z_][\w\-]{{1,24}})\b", s, re.I):
+        add(m.group("n"))
+    return names, bool(names) and bool(re.search(r"\bat the root\b", s, re.I))
+
+
+_LIST_INTRO = re.compile(r"files (?:are|is) (?:mandatory|required)\b|^required files$", re.I)
+
+
+def _listed_files(lines: list[Line]) -> list[tuple[str, Line]]:
+    """Top-level bullets of a list that the subject introduces as its mandatory files ("Required Files"), up to the next
+    heading ("Optional but Recommended" is never read)."""
+    out: list[tuple[str, Line]] = []
+    i = 0
+    while i < len(lines):
+        if not _LIST_INTRO.search(lines[i].text):
+            i += 1
+            continue
+        seen, j = 0, i + 1
+        while j < len(lines):
+            text = lines[j].text
+            if seen and (re.fullmatch(r"[IVXLC]+(?:\.\d+)*", text) or re.match(r"(optional|recommended)\b", text, re.I)):
+                break
+            if text.startswith("•"):
+                m = re.match(r"•\s*([^\s:—–]+)", text)
+                token = m.group(1).rstrip(":,;") if m else ""
+                if _is_file_token(token):
+                    out.append((token, lines[j]))
+                seen += 1
+            j += 1
+        i = max(j, i + 1)
+    return out
+
+
+_LS_ENTRY = re.compile(r"^([-dl])[rwxsStT-]{9}(?:\s+\S+){7}\s+(\S.*)$")
+_LS_HEADER = re.compile(r"^(\.|\./[\w./\-]*):$")
+
+
+def _layout_files(lines: list[Line]) -> list[tuple[str, Line, bool]]:
+    """(path, line, is_example) from a listing of the expected layout: `$> ls -alR` (every file and folder two levels deep),
+    or a plain `$> ls` of names, where [bracketed] ones are optional. Only after a sentence about the layout of the repository."""
+    out: list[tuple[str, Line, bool]] = []
+    for i, line in enumerate(lines):
+        if not re.match(r"\$>?\s*ls\b", line.text):
+            continue
+        context = " ".join(l.text for l in lines[max(0, i - 3): i]).lower()
+        if not re.search(r"directory structure|repository layout|layout must|must (?:include|contain)", context):
+            continue
+        example = "example" in context
+        here, j = "", i + 1
+        while j < len(lines):
+            text = lines[j].text
+            m, header = _LS_ENTRY.match(text), _LS_HEADER.match(text)
+            if header:
+                here = "" if text == ".:" else text[2:-1].rstrip("/") + "/"
+            elif m:
+                name = m.group(2)
+                if name not in (".", ".."):
+                    path = here + name + ("/" if m.group(1) == "d" else "")
+                    if path.rstrip("/").count("/") <= 1:
+                        out.append((path, lines[j], example))
+            elif re.match(r"total\b", text):
+                pass
+            elif re.fullmatch(r"\[?[\w.\-]+/?\]?", text) and "-R" not in line.text:
+                if not text.startswith("["):                     # [bracketed] entries are optional; a bare name may be name.md or a folder
+                    out.append((text, lines[j], True))
+            else:
+                break
+            j += 1
+    return out
+
+
+def _text_file_rules(hits: list[tuple[list[str], bool, Line]], lines: list[Line], pdf: str, existing: list[Rule]) -> list[Rule]:
+    """One `required_files` rule per section from everything the text asks for, minus what a table already asks for."""
+    have = {alt for r in existing if r.kind == "required_files" for entry in r.params["files"] for alt in entry}
+    found: dict[Section, dict[str, Any]] = {}
+
+    def add(name: str, line: Line, *, root: bool = False, soft: bool = False) -> None:
+        if name in have or _SKIPPED_FILES.fullmatch(name.rstrip("/")):
+            return
+        acc = found.setdefault(line.section, {"files": [], "root": [], "soft": [], "pages": []})
+        new = [name] not in acc["files"]
+        if new:
+            acc["files"].append([name])
+        if root and name not in acc["root"]:
+            acc["root"].append(name)
+        if soft and new:                                  # (only a name first seen in an example is soft)
+            acc["soft"].append(name)
+        elif not soft and name in acc["soft"]:
+            acc["soft"].remove(name)                      # asked for outright elsewhere: not a mere example any more
+        if line.page not in acc["pages"]:
+            acc["pages"].append(line.page)
+
+    for names, root, line in hits:
+        for name in names:
+            add(name, line, root=root)
+    for name, line in _listed_files(lines):
+        add(name, line)
+    for name, line, example in _layout_files(lines):
+        add(name, line, soft=example)
+
+    rules = []
+    for section, acc in found.items():
+        params = {"files": acc["files"], "notes": [], **({"root": acc["root"]} if acc["root"] else {}), **({"soft": acc["soft"]} if acc["soft"] else {}),
+                  "from_text": True}
+        names = ", ".join(e[0] for e in acc["files"])
+        rule = _rule("required_files", "Required files named in the subject", text=f"The subject's text asks for: {names}", section=section,
+                     params=params, source=Source(pdf=pdf, page=acc["pages"][0]))
+        rule.sources = [Source(pdf=pdf, page=p) for p in sorted(acc["pages"])[:3]]
+        rules.append(rule)
     return rules
 
 
@@ -447,7 +633,9 @@ def parse_subject(pdf: str, pages: list[str]) -> Spec:
     module = _cpp_module(pdf, full)
 
     rules = _parse_tables(lines, pdf) + _cpp_exercise_rules(lines, pdf)
-    rules += _prose_rules(lines, pdf, module)
+    file_hits: list[tuple[list[str], bool, Line]] = []
+    rules += _prose_rules(lines, pdf, module, file_hits)
+    rules += _text_file_rules(file_hits, lines, pdf, rules)
 
     lang = None
     if any(r.kind == "std98" for r in rules):

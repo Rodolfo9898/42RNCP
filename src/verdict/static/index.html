@@ -19,7 +19,6 @@
       <button id="btn-run" class="primary" title="Run every check">▶ Run checks</button>
       <button id="btn-terminal" title="Open claude in a terminal on this repository">⌨ Claude</button>
       <button id="btn-shell" title="Open a plain shell in the same working copy as claude, with the same tools (make, cc, docker, git), to try things by hand">⌨ Shell</button>
-      <button id="btn-apply" title="Force claude's review into verdict.md in your project, and send back the files of a working copy">⬇ Apply to project</button>
       <button id="btn-ai" title="Ask an AI model to describe the repository and weigh the manual-review items">✨ AI review</button>
       <button id="btn-fix" title="Write a prompt that asks an AI to fix everything the review found">🛠 Fix prompt</button>
     </div>
@@ -33,8 +32,8 @@
       <p class="hint" id="subjects-hint">Drop PDFs here, or use Upload / Library.</p>
     </section>
     <section class="grow">
-      <h2>Repository</h2>
-      <div id="tree" class="tree"></div>
+      <h2>Repository <span class="tools"><button id="tree-refresh" title="Refresh Explorer">⟳</button><button id="tree-collapse" title="Collapse Folders in Explorer">⊟</button></span></h2>
+      <div id="tree" class="tree" role="tree" tabindex="0" aria-label="Repository"></div>
       <p class="hint" id="tree-hint">No repository cloned yet.</p>
     </section>
   </aside>
@@ -73,5 +72,6 @@
   <script src="vendor/addon-fit.js"></script>
   <script src="lib.js"></script>
   <script src="app.js"></script>
+  <script src="workbench.js"></script>
 </body>
 </html>

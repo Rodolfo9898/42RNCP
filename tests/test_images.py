@@ -199,3 +199,13 @@ def test_claude_and_the_shell_work_in_the_project_by_default_and_the_copy_is_one
     assert "TERMINAL_WORKDIR: ${TERMINAL_WORKDIR:-live}" in block                       # live unless TERMINAL_WORKDIR=copy
     for other in ("web", "sandbox", "dind"):
         assert "TERMINAL_WORKDIR" not in without_comments(services()[other]), other     # the web app asks the terminal, so the two cannot disagree
+
+
+def test_the_terminal_can_read_pdfs_without_a_script_of_claudes_own():
+    final = final_stage(TERMINAL)
+    assert "poppler-utils" in apt_packages(TERMINAL)                                          # pdftotext, pdftoppm, pdfinfo
+    assert "COPY --chmod=755 terminal/readpdf /usr/local/bin/readpdf" in final
+    assert final.index("RUN pip install --no-cache-dir .") < final.index("readpdf --help")     # (it needs PyMuPDF, which that installs)
+    assert "RUN readpdf --help >/dev/null && pdftotext -v" in final                          # the build fails if either tool is broken
+    script = (ROOT / "terminal" / "readpdf")
+    assert script.read_text().startswith("#!/usr/bin/env python3") and script.stat().st_mode & 0o111

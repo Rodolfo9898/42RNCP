@@ -39,7 +39,7 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat ripgrep build-essential make valgrind gdb vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat poppler-utils ripgrep build-essential make valgrind gdb vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # The ⌨ Shell tab runs zsh (TERMINAL_SHELL below) with Oh My Zsh. Both live in the image (no auto-update: the image is
@@ -78,6 +78,11 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir .
+
+# Reading the subject PDFs: `readpdf` (text of a PDF, by page or searched; only the PDFs of the review) and poppler's pdftotext, pdftoppm
+# and pdfinfo, which claude's own PDF reading and quick commands need. Without them claude says it has no PDF tool and writes a script.
+COPY --chmod=755 terminal/readpdf /usr/local/bin/readpdf
+RUN readpdf --help >/dev/null && pdftotext -v 2>&1 | head -1
 
 # The same entrypoint as the web app. As `term` (the default) it only starts the service. With docker-compose.ssh.yml the container
 # starts as root, relays the ssh-agent socket so that uid 1000 can open it (Docker Desktop's is root-owned), then drops to uid 1000.

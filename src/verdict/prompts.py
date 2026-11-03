@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from .models import AIState, CheckResult, ClaudeReport, ReviewItem
+from .shared import EVALUATOR, EVALUATOR_EMAIL, HEADER_AUTHOR, TEST_HERE
 from .report import Entry, _fenced, _where, bucket
 
 MAX_ITEMS = 60
@@ -104,7 +105,8 @@ def build_review_prompt(*, project: str, subjects: list[str], lang: str | None, 
                        "If you think the project needs something this toolchain lacks, say so rather than guessing.")
 
     subject_files = (f"- The subject PDF(s) of this review are in {subjects_dir} ({', '.join(subjects) or 'none'}), also in $SUBJECTS_DIR. "
-                     "Read the pages you need there rather than guessing what the subject says: the requirements below cite them as \"name p.N\".\n"
+                     "Read the pages you need there rather than guessing what the subject says: the requirements below cite them as \"name p.N\". "
+                     "Use the `readpdf` command (`readpdf NAME 4-6` prints pages, `readpdf NAME --grep WORD` searches, `readpdf` lists them); do not write your own script to extract a PDF.\n"
                      if subjects_dir and subjects else "")
     if live:
         where = ("Your working directory is the real project folder on my machine, not a copy: any file you change or create is changed there at once, "
@@ -121,6 +123,7 @@ def build_review_prompt(*, project: str, subjects: list[str], lang: str | None, 
         report_at = "`claude-review.md` in the current directory"
         report_rule = "the only file you may create; I will approve that write"
     prompt = f"""You are helping a peer evaluator review a 42 school project: {project}. Subject(s): {', '.join(subjects) or 'unknown'}. The project is written in {language}.
+I am the evaluator: {EVALUATOR} (my 42 login; my email, for a 42 header the Norm asks for, is {EVALUATOR_EMAIL}). Wherever this prompt says "I" or "me", it is {EVALUATOR} speaking to you, and {EVALUATOR} is who reads your answers and approves your commands.
 
 CONTEXT
 - {where}
@@ -144,7 +147,7 @@ B. Limits of the scripts, which apply to every project. Look for real problems o
 
 HOW TO WORK
 0. Start by confirming the environment: run `cc --version`, `c++ --version`, `make --version` and `docker info`, and tell me at once if any of them fails.
-1. Read the Makefile and the README first, then the sources. Then try the project yourself, from scratch: build it with its own Makefile (or with Docker when the student ships a Dockerfile or compose file), run it on realistic input and on bad input (no arguments, empty, huge, malformed), and for C or C++ run it under valgrind. Before each command tell me what you will run and why; I will approve it.{building}
+1. Read the Makefile and the README first, then the sources. Then try the project yourself, from scratch: build it with its own Makefile (or with Docker when the student ships a Dockerfile or compose file), run it on realistic input and on bad input (no arguments, empty, huge, malformed), and for C or C++ run it under valgrind. Before each command tell me what you will run and why; I will approve it. {TEST_HERE}{building}
 2. For each item in A: say "likely ok", "likely a problem" or "unclear", give one line on what I should check by hand, and cite file:line.
 3. Then go through B and report concrete findings, each with file:line. Say "unclear" instead of guessing.
 4. Finish with at most 10 improvements grouped as structure, code, logic and readability, most important first.
@@ -231,6 +234,9 @@ def build_fix_prompt(*, project: str, subjects: list[str], lang: str | None, res
     rules = FIX_RULES.get(lang or "", "The code must stay in the language the subject requires and use only the functions it allows.")
     body = "\n\n".join(sections)
     proof = FIX_PROOF.get(lang or "", "the project's own build and tests")
+    # (the Norm and its 42 header only exist for C)
+    norm_rule = (f"- If a fix needs a 42 header at the top of a C file you create (the Norm requires one), its author line is `By: {HEADER_AUTHOR}`; "
+                 "leave the header of an existing file as it is. Run norminette on every C file you change.\n") if lang == "c" else ""
     prompt = f"""You are helping fix a 42 school project: {project}. Subject(s): {', '.join(subjects) or 'unknown'}. The project is written in {language}.
 
 A review of this repository (scripts, plus an AI reviewer where noted) found the issues below. Your job is to fix them here.
@@ -241,7 +247,8 @@ HOW TO WORK
 - Fix the cause with the smallest change that removes the issue. Do not refactor, rename or restyle anything else, and do not add features the subject does not ask for.
 - {rules}
 - Do not edit verdict.md or verdict-report.md: the review tool generates them, and the next run replaces them.
-- Go in order. After each fix, prove it ({proof}, whichever fits) and tell me the command and its result before moving on.
+{norm_rule}- Go in order. After each fix, prove it ({proof}, whichever fits) and tell me the command and its result before moving on.
+- {TEST_HERE}
 - Ask me before running anything that deletes files, installs software or uses the network.
 - When you are done, list every issue by number as fixed, not fixed (why) or not a real problem (why).
 

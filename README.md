@@ -154,8 +154,8 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   design and readability. Each point must cite file:line, "unclear" is an accepted answer, and it asks before running
   anything. If a claude tab is already open, the prompt is pasted into it instead. claude saves its report as
   `claude-review.md` (working in your project, which is the default, in a folder outside it, so no file is added to your
-  repository; in copy mode, in its throw-away copy), and you approve that one write; it is picked up automatically, or with
-  **💾 Save review to verdict.md** or by closing the tab, and merged into `verdict.md` between the improvements and the
+  repository; in copy mode, in its throw-away copy), and you approve that one write; it is picked up automatically, or by
+   closing the tab, and merged into `verdict.md` between the improvements and the
   closing **Final verdict** section. The report is treated as untrusted text (markup defused, headings demoted).
   Check Anthropic's terms for your plan before automating a subscription login this way.
 - **Safety:** by default claude works **in your project folder** (see *Your project, live* below), so what it changes is on
@@ -164,7 +164,7 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   the clone's `.git` (git works there) but never its hooks or its config, which is replaced by a minimal one, so `.git` cannot
   make git run a program. In both modes claude runs with `--setting-sources user` so hooks and settings shipped in a student's
   repo are ignored, and with `--strict-mcp-config`. The interactive terminal asks before each command or edit; in copy mode
-  anything you approve affects only the copy, until you send changes back yourself with **⬇ Apply to project** (below). A
+  anything you approve affects only the copy, and nothing done there goes back to your project. A
   student's repo can still try to talk the model into proposing something harmful, so read each request before approving it,
   and never approve one that reads `~/.claude` or sends data out.
 - The terminal websocket only accepts pages served by this app (Origin check) and the two containers share a random
@@ -176,8 +176,8 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 and in the **same place** as claude: by default your project folder itself (`./projects/<name>`, see *Your project, live*), or
 with `TERMINAL_WORKDIR=copy` the same throw-away copy that claude is working in. So you can watch what claude changed, run
 `make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it. In copy
-mode, without a claude running it gets a copy of its own, a copy is deleted when the last tab using it closes, and the original
-repository is only changed by **⬇ Apply to project** (below). Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
+mode, without a claude running it gets a copy of its own, a copy is deleted when the last tab using it closes, and nothing done
+in it goes back to the original repository. Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
 
 It is the terminal container, not the sandbox: same toolchain (cc, c++, make, valgrind, gdb, norminette, the readline and X11
 headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
@@ -205,8 +205,7 @@ The folder is named by the **`$SUBJECTS_DIR`** environment variable:
   The terminal container still mounts neither the workspace nor `samples/`: the web app hands it exactly this review's PDFs
   over the same token-protected channel as everything else (only what is missing or different is sent), the files are
   read-only (0444) and are checked on arrival (a plain `*.pdf` name, starts with `%PDF`, size limits), and they are deleted
-  when the review's last claude or shell tab closes. They live outside the working copy, so they never appear under
-  **⬇ Apply to project**.
+  when the review's last claude or shell tab closes. They live outside the working copy and the project.
 - Copies, not the library: changing a PDF in `samples/` does not change a review that already has its copy. The read-only
   permission protects against accidents; the sandbox's workspace volume is shared by all reviews, so code that is deliberately
   hostile could still overwrite a PDF there (as it could before). The checks do not depend on the file contents: the rules
@@ -238,8 +237,6 @@ machine, so "does it build and run with only what is installed there?" is answer
 - **git works in the project.** The project is declared safe for git inside the container (that one folder, for that process
   only, nothing written to any git config), so `git status`, `git diff`, `git pull` and, with `TERMINAL_SSH=1`, `git push` work in
   it directly, with the project's real `origin`.
-- **No files to apply.** **⬇ Apply to project** has no copy to send back in this mode; it still forces claude's review
-  into `verdict.md` (see below).
 - **What you give up.** There is no review step between claude's edit and your files (you still approve each edit in the
   terminal), `git diff` is how you review afterwards, and the protections of the throw-away copy do not apply: a student's
   `CLAUDE.md` and `.claude/` are in the folder claude starts in. `--setting-sources user` still keeps project settings and hooks
@@ -247,59 +244,20 @@ machine, so "does it build and run with only what is installed there?" is answer
   to treat the folder as untrusted. And anything that runs in the terminal container can change every repository in
   `./projects`, `.git/hooks` included (see *the projects folder is read-write* below).
 - **Back to the safe way:** `TERMINAL_WORKDIR=copy make run` (or that line in `.env`) makes claude and the shell work on
-  throw-away copies again, with ⬇ Apply to project as the only way back. Use it for code you do not trust.
+  throw-away copies again: a scratch space, where nothing done goes back to your project. Use it for code you do not trust.
 
-### ⬇ Apply to project: force claude's review into the project, and send back a working copy's files
+### The projects folder is read-write everywhere
 
-**⬇ Apply to project** (title bar) is where you make things land in your project on purpose. It does two things, each with its
-own tick box, and nothing is written until you press the button:
+The web app, the sandbox and the terminal container all mount `./projects` read-write, so from the ⌨ Shell tab you can work
+directly in `/projects/<name>` (`git pull`, edit, `git status`), and whatever lands there is writable. The price: anything that
+runs in the terminal container, including a peer's code that claude builds or runs there, can change **every** repository in
+that folder, `.git/hooks` and `.claude/` included, and those run on your machine the next time you `git commit` or open the
+project. A read-write mount cannot be limited to one project. If you review code you do not trust, start with
+`TERMINAL_PROJECTS_MODE=ro TERMINAL_WORKDIR=copy make run` (or those lines in `.env`): the terminal then reads the projects folder
+but cannot write to it, and nothing done in it can reach a project.
 
-1. **claude's review → `verdict.md` in your project (any mode).** The review is normally merged by itself while the
-   ⌨ Claude tab is open, but that pickup can miss: after a new run, when the app decided the review belonged to another commit
-   or subject set and dropped it, when claude saved the report somewhere unexpected, or when the tab was already closed.
-   Ticking this row takes the report claude saved, **whatever the app thought of it before**, adopts it for the project as it is
-   now, and writes `verdict.md` again. The row says what it found: a report is ready (ticked), it is already in `verdict.md`
-   (with how many requirements it answered), claude has not saved anything yet, or the checks have not run. If nothing is
-   found the answer says why instead of failing, and the files are still applied. The report is looked for where claude
-   was told to put it (outside your project when working live, in the copy otherwise), and also as a `claude-review.md`
-   (or a `review…md`) claude wrote into your project folder; a note you wrote yourself, or a `claude-review.md` that was
-   already in the project before claude started, is never taken for it. The same merge is `POST …/claude-review/save`.
-2. **Files of a working copy → your project (copy mode only).** See below. With the default live mode there are no files to
-   send, because claude and the shell already work in your project.
-
-*The rest of this section is about the files, which only matters with `TERMINAL_WORKDIR=copy`.*
-
-The working copy lives in the terminal container's memory and disappears when its last tab closes. To keep what claude or you
-changed there, **apply it before closing the tab**: **⬇ Apply to project** lists every file that differs from the moment the
-copy was made, with its diff (click a name), and writes the ones you tick into the folder the repository was cloned into
-(`./projects/<name>`). Nothing is sent back by itself: the web app, which owns the projects folder, does the writing and
-re-checks every path (see below).
-
-**The projects folder is read-write everywhere.** The web app, the sandbox and the terminal container all mount `./projects`
-read-write (the terminal's mount used to be read-only), so from the ⌨ Shell tab you can also work directly in
-`/projects/<name>` (`git pull`, edit, `git status`), and whatever lands there is writable. The price: anything that runs in the
-terminal container, including a peer's code that claude builds or runs there, can now change **every** repository in that
-folder, `.git/hooks` and `.claude/` included, and those run on your machine the next time you `git commit` or open the project.
-In copy mode the working-copy design keeps claude itself away from the originals, and Apply still refuses `.git`, `.claude/` and
-the other files listed below, but a read-write mount cannot be limited to one project. If you review code you do not trust, start
-with `TERMINAL_PROJECTS_MODE=ro TERMINAL_WORKDIR=copy make run` (or those lines in `.env`): the terminal then reads the projects
-folder but cannot write to it, and Apply remains the only way for changes to reach a project.
-
-- **Only the working tree comes back.** Files appear in the project as ordinary uncommitted changes (new, modified, deleted):
-  review them with `git diff`, then commit them yourself. Commits made inside the copy are not transferred (their file changes
-  are); to publish those, push from the terminal (below) or commit on your machine.
-- **Your own edits are never overwritten.** Each file is compared with what it held when the copy was made. If you changed
-  it in the project since, it is listed as "changed on your machine" and skipped. Run it again after merging by hand.
-- **Never sent back:** `.git/` (history, hooks, config), `.claude/`, `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json`, symbolic
-  links, anything larger than 2 MB, and this app's own report files. An agent that could write those could configure git or the
-  next claude that opens your project. Folders an editor or shell may run things from (`.vscode`, `.devcontainer`, `.idea`,
-  `.cursor`, `.husky`, `.githooks`, `.envrc`) are shown with a warning and left unticked.
-- **Build output stays out.** What `.gitignore` covers (objects, binaries) is not listed. Binary files are listed but unticked.
-- **Checked twice.** The terminal container lists the changes, but the web app re-checks every path itself before writing: no
-  `..`, no absolute path, no link anywhere on the way into the project or at the end of it, files written to a temporary
-  name and moved into place (a half-written file is never left), existing files keep their permissions, and a file whose
-  content changed between the list and the write is skipped. Applying is refused while the checks are running.
-- The checklist and `verdict.md` are from before the change: run the checks again afterwards.
+If claude's report was not picked up (after a new run, or the tab was already closed), `POST /api/sessions/{id}/claude-review/save`
+merges the one it saved into `verdict.md` for the project as it is now, whatever the app thought of it before.
 
 ### `git push` from the terminal (opt-in)
 
@@ -338,7 +296,7 @@ producing an empty prompt. The prompt tells the AI to confirm each finding befor
 to treat the issue text as data, to leave `verdict.md` alone, and to report each issue as fixed / not fixed / not real.
 It is copied rather than sent to the **⌨ Claude** tab because it is meant for whichever assistant you prefer. By default (live
 mode) you can paste it into the ⌨ Claude tab too: that claude works in your project, so its fixes land on your machine at
-once. With `TERMINAL_WORKDIR=copy` a fix made there would be lost when the tab closes unless you use ⬇ Apply to project. The
+once. With `TERMINAL_WORKDIR=copy` a fix made there stays in the throw-away copy. The
 same text is at `GET /api/sessions/{id}/fix-prompt`.
 
 ## 42Cursus: all your projects as submodules
@@ -396,6 +354,21 @@ docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; s
    list says (`libft.h` found as `includes/libft.h`) is not called missing: it goes under **⚠️ Second look**, naming where it is,
    because only the subject's wording (and a human, or claude) can say whether that layout is allowed. Only a file found
    nowhere (vendored folders such as minilibx do not count) is **❌ Lacking**.
+   **The subject's text counts, not only its tables.** Many subjects give their files only in sentences or lists, so those become
+   **Required files named in the subject** too, but only under strict conditions: an obligation (*must, have to, required,
+   expected to, should*) that names a concrete file or folder, never a condition ("if you use OCaml…"), an example, something
+   optional or forbidden, or a bonus. What is read: "you must submit a Makefile" (also "turn in", "provide", "use", "A Makefile
+   is required"), "a `signature.txt` file at the root of your repository", "a file called `author`", "a header named
+   `libftpp.hpp`", the top-level items of a list introduced as the mandatory files ("The following files are mandatory": never
+   the *Optional but Recommended* one), the chapter about turning the work in, and a listing of the expected layout
+   (`$> ls -alR`, or `$> ls`). The README keeps its own check, and what a table already asks for is not asked twice.
+   Three details: "**at the root**" is taken literally (a file found elsewhere then fails, instead of being a second look); a
+   name that only appears in an **example layout** (inception's `ls -alR`, boot2root's `ls`) is a hint: if missing it is a
+   **⚠️ Second look**, never Lacking; and a "Files to Submit" cell that says "all at the root of the repository" now enforces it.
+   On the library this gives 20 subjects a check they never had (for example `ft_ping`, `ft_nmap`, `strace`, `nm`, `h42n42`,
+   `born2beroot`'s and `leaffliction`'s `signature.txt`, `ft_select`'s `author`, `libftpp`'s headers); a test pins the exact
+   result for every subject, so a parser change that adds or drops one shows up for review. Since the rules are read again from
+   the PDFs at every ▶ Run checks, an existing review gets them without adding the subject again.
 3. **Verdict**: it follows the two lists of `verdict.md` for the mandatory part, claude's answers included. `FAIL` when
    anything is under **❌ Lacking** (whatever else there is), `PASS WITH ISSUES` when nothing is lacking but something is
    under **⚠️ Second look** (warnings, requirements nobody or claude could not settle, claude disagreeing with a check),
@@ -412,9 +385,36 @@ docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; s
 
 ## Interface
 
-Laid out like VS Code: drag the sidebar's right edge or the bottom panel's top edge to resize them (sizes are remembered
-in your browser); the ⌄ button at the right of the panel hides it, and clicking a panel tab shows it again. The checklist
-follows `verdict.md`: a requirement claude has judged moves to where `verdict.md` lists it. File and folder icons are the
-[VS Code Great Icons](https://github.com/EmmanuelBeziat/vscode-great-icons) (MIT), bundled in
-`src/verdict/static/vendor/great-icons/` with their license and source commit; the terminal is
-[xterm.js](https://xtermjs.org) (MIT, `vendor/LICENSE-xterm`). Nothing is fetched from the internet at runtime.
+Laid out and driven like VS Code. Where the browser allows it, the keys are VS Code's (⌘ on a Mac, Ctrl elsewhere):
+
+| | Mac | Windows / Linux |
+|---|---|---|
+| Go to File (quick open: files of the project, and the subject PDFs) | ⌘P | Ctrl+P |
+| Command palette (every action of the page; or type `>` in quick open) | ⇧⌘P, F1 | Ctrl+Shift+P, F1 |
+| Show / hide the sidebar | ⌘B | Ctrl+B |
+| Show / hide the bottom panel | ⌘J | Ctrl+J |
+| Focus the Explorer | ⇧⌘E | Ctrl+Shift+E |
+| Open a shell | ⌃\` | Ctrl+\` |
+| Close the tab in front | ⌥W | Alt+W |
+
+Browsers keep ⌘W / Ctrl+W, ⌘T, ⌘N and Ctrl+Tab for themselves, and no page can take them: that is why closing a tab is
+Alt+W here. In the terminal on Windows and Linux, Ctrl+B / J / P / E stay the shell's own (only the palette, the shell
+shortcut and Alt+W are taken there); nothing is taken while you type in a text field or while a dialog is open.
+
+- **Explorer**: click a file to preview it (a tab in *italics*, replaced by the next click); a double click (on the file
+  or its tab) or Enter keeps it. Arrow keys move, → opens a folder or steps into it, ← closes it or goes to its parent, Home / End
+  jump; the open folders are remembered for each project; ⟳ refreshes and ⊟ collapses everything (shown when the
+  pointer is over the Explorer). Right click: Open, Expand / Collapse, Copy Relative Path.
+- **Tabs**: middle click closes, right click gives Close / Close Others / Close to the Right / Close All / Keep Open /
+  Copy Path, tabs can be dragged into another order, and closing one goes back to the tab you had before it.
+  Close Others / Right / All never end claude or the shell. The tabs that were open (files and subject PDFs) come back
+  when you reload the page.
+- **Layout**: drag the sidebar's right edge or the panel's top edge to resize them; double click an edge to get the
+  default size back (*View: Reset Layout* does both). Sizes are remembered in your browser; the ⌄ button hides the panel.
+- The checklist follows `verdict.md`: a requirement claude has judged moves to where `verdict.md` lists it. File and folder
+  icons are the [VS Code Great Icons](https://github.com/EmmanuelBeziat/vscode-great-icons) (MIT), bundled in
+  `src/verdict/static/vendor/great-icons/` with their license and source commit; the terminal is
+  [xterm.js](https://xtermjs.org) (MIT, `vendor/LICENSE-xterm`). Nothing is fetched from the internet at runtime.
+
+Not like VS Code: no breadcrumbs, no split editors, no editing (the files are shown read-only; edit them in claude or the
+shell, or in your own editor: in live mode the project folder is yours).

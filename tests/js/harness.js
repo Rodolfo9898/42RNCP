@@ -42,4 +42,9 @@ else if (command === "append") {
   lib.appendNodes(parent, ...build(JSON.parse(input)));
   process.stdout.write(serialize(parent));
 } else if (command === "enabled") process.stdout.write(JSON.stringify(JSON.parse(input).map(lib.rainbowEnabled)));
+else if (command === "fuzzy") process.stdout.write(JSON.stringify(JSON.parse(input).map(([query, text]) => lib.fuzzyMatch(query, text))));
+else if (command === "key") process.stdout.write(JSON.stringify(JSON.parse(input).map(([ev, binding, mac]) => lib.matchesKey(ev, binding, mac))));
+else if (command === "showkey") process.stdout.write(JSON.stringify(JSON.parse(input).map(([binding, mac]) => lib.showKey(binding, mac))));
+else if (command === "close") { const [entries, mode, key] = JSON.parse(input); process.stdout.write(JSON.stringify(lib.tabsToClose(entries, mode, key))); }
+else if (command === "move") { const [keys, from, to, after] = JSON.parse(input); process.stdout.write(JSON.stringify(lib.moveKey(keys, from, to, after))); }
 else { console.error("unknown command"); process.exit(2); }

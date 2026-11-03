@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""readpdf: print the text of a subject PDF, page by page, so nobody has to write an extraction script.
+
+  readpdf                          list the PDFs of this review ($SUBJECTS_DIR) with their number of pages
+  readpdf libft.pdf                the whole text, each page under a "=== libft.pdf, page 4 of 19 ===" line
+  readpdf libft.pdf 4-6            only these pages (also 4, or 1,3,5-7)
+  readpdf libft.pdf --grep norm    only the lines that contain "norm" (any case), with their page
+
+It reads only the PDFs in $SUBJECTS_DIR (a name like libft.pdf, or a path inside that folder) and never writes anything.
+"""
+
+import os
+import re
+import sys
+from pathlib import Path
+
+try:
+    import pymupdf
+except ImportError:                                           # (a machine without PyMuPDF: say so, do not trace back)
+    sys.exit("readpdf: PyMuPDF is not installed here")
+
+
+def fail(message: str) -> None:
+    print(f"readpdf: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def subjects_dir() -> Path:
+    folder = os.environ.get("SUBJECTS_DIR", "")
+    if not folder or not Path(folder).is_dir():
+        fail("there is no $SUBJECTS_DIR folder: the PDFs of the review have not been handed to this terminal (open it from the app)")
+    return Path(folder).resolve()
+
+
+def locate(name: str, folder: Path) -> Path:
+    """The PDF called `name`, only ever inside the subjects folder (no .., no links out of it)."""
+    for candidate in (name, name + ".pdf"):
+        path = (folder / candidate) if "/" not in candidate else Path(candidate)
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(folder):
+            fail(f"{name} is not inside {folder}: only the subjects of this review can be read")
+        if not resolved.is_file() or resolved.read_bytes()[:4] != b"%PDF":
+            fail(f"{name} is not a PDF")
+        return resolved
+    fail(f"no PDF called {name} in {folder} (run readpdf with no argument to see them)")
+
+
+def pages_wanted(spec: str, count: int) -> list[int]:
+    """'4', '4-6' or '1,3,5-7' (1-based) as a list of page numbers."""
+    wanted: list[int] = []
+    for part in spec.split(","):
+        m = re.fullmatch(r"\s*(\d+)(?:\s*-\s*(\d+))?\s*", part)
+        if not m:
+            fail(f"'{spec}' is not a page list (use 4, 4-6 or 1,3,5-7)")
+        first, last = int(m.group(1)), int(m.group(2) or m.group(1))
+        if first < 1 or last < first or last > count:
+            fail(f"pages {part.strip()} do not exist: the PDF has {count} page(s)")
+        wanted += [n for n in range(first, last + 1) if n not in wanted]
+    return wanted
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if not argv:
+        folder = subjects_dir()
+        found = sorted(p for p in folder.iterdir() if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".pdf")
+        if not found:
+            print(f"(no PDF in {folder} yet)")
+        for path in found:
+            with pymupdf.open(path) as doc:
+                print(f"{path.name}\t{doc.page_count} page(s)")
+        return 0
+
+    grep = None
+    if "--grep" in argv:
+        i = argv.index("--grep")
+        if i + 1 >= len(argv):
+            fail("--grep needs a word to look for")
+        grep = argv[i + 1].lower()
+        argv = argv[:i] + argv[i + 2:]
+    if not argv or len(argv) > 2:
+        fail("usage: readpdf [NAME [PAGES]] [--grep WORD]")
+    path = locate(argv[0], subjects_dir())
+    with pymupdf.open(path) as doc:
+        wanted = pages_wanted(argv[1], doc.page_count) if len(argv) == 2 else list(range(1, doc.page_count + 1))
+        matches = 0
+        for number in wanted:
+            text = doc[number - 1].get_text().strip("\n")
+            if grep is None:
+                print(f"=== {path.name}, page {number} of {doc.page_count} ===")
+                print(text)
+                continue
+            for line in text.splitlines():
+                if grep in line.lower():
+                    matches += 1
+                    print(f"{path.name} p.{number}: {line.strip()}")
+    return 0 if grep is None or matches else 1                # (like grep: nothing found is exit status 1)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

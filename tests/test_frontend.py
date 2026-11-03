@@ -218,119 +218,150 @@ def test_the_file_view_code_never_hands_a_possibly_missing_node_to_append():
 def test_the_page_loads_the_shared_helpers_before_the_app():
     html = (Path(__file__).resolve().parent.parent / "src/verdict/static/index.html").read_text()
     scripts = re.findall(r'<script src="([^"]+)"', html)
-    assert scripts.index("lib.js") < scripts.index("app.js") and scripts[-1] == "app.js"
+    assert scripts.index("lib.js") < scripts.index("app.js") < scripts.index("workbench.js")
     app = (Path(__file__).resolve().parent.parent / "src/verdict/static/app.js").read_text()
     for moved in ("function h(", "function inlineMarkdown(", "function renderMarkdown("):
         assert moved not in app, f"{moved} now lives in lib.js; a second copy would silently win"
 
 
-# ---------------------------------------------------------------- the ⬇ Apply to project dialog (the real code from app.js, fake DOM)
-
-DIALOG = Path(__file__).resolve().parent / "js" / "apply_dialog.js"
+# ---------------------------------------------------------------- workbench helpers: fuzzy search, keyboard shortcuts, tab order
 
 
-def dialog_for(data, result=None, ticks=None, press=False):
-    scenario = {"data": data, "result": result or {}, "ticks": ticks, "press": press}
-    done = subprocess.run(["node", str(DIALOG)], input=json.dumps(scenario), capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+def fuzzy(query, text):
+    return json.loads(run_js("fuzzy", json.dumps([[query, text]])))[0]
 
 
-def changes(files=None, live=False, copy=None, report=False, **review_fields):
-    """What GET .../changes answers. `copy`: a working copy exists (by default: when there are files). `report`: claude's report is waiting."""
-    files = files or []
-    review = {"results": True, "found": report, "name": "claude-review.md" if report else "", "chars": 5 if report else 0, "applied": False,
-              "merged": False, "merged_at": "", "structured": False, "assessed": 0, "total": 0, "verdict_file": "verdict.md", **review_fields}
-    return {"found": (not live and bool(files)) if copy is None else copy, "live": live, "project": "libft", "files": files, "truncated": False, "review": review}
+def shown(query, text):
+    """The text with the matched characters in [brackets], or None when it does not match."""
+    match = fuzzy(query, text)
+    return None if match is None else "".join(f"[{c}]" if i in match["positions"] else c for i, c in enumerate(text))
 
 
-def file_entry(path, status="modified", action="apply", selected=True, note="", warn="", binary=False):
-    return {"path": path, "status": status, "action": action, "selected": selected, "note": note, "warn": warn, "binary": binary}
+def test_fuzzy_matching_needs_every_character_in_order_and_ignores_case_and_spaces():
+    assert shown("main", "src/main.c") == "src/[m][a][i][n].c"
+    assert shown("MAIN", "src/main.c") == "src/[m][a][i][n].c" and shown("ma in", "src/main.c") == "src/[m][a][i][n].c"
+    assert shown("xyz", "src/main.c") is None and shown("nm", "src/main.c") is None       # (n then m: the order is wrong)
+    assert shown("longerthanthetext", "ab") is None
+    assert fuzzy("", "anything") == {"score": 0, "positions": []}
 
 
-def test_a_report_that_is_waiting_is_ticked_and_applying_it_is_one_click():
-    out = dialog_for(changes(live=True, report=True, chars=2048))
-    assert out["title"] == "Apply to project" and out["review"]["label"] == "claude's review → verdict.md in projects/libft"
-    assert out["review"]["checked"] is True and out["review"]["disabled"] is False
-    assert "claude's report is ready (2048 characters)" in out["review"]["note"] and "whatever the app thought of it before" in out["review"]["note"]
-    assert out["apply"] == {"text": "Apply review", "disabled": False}
+def test_the_best_alignment_wins_not_the_first_one_found():
+    assert shown("fr", "src/frontend.js") == "src/[f][r]ontend.js"                          # the start of a word, both letters together
+    assert shown("fr", "afar/readme.md") == "a[f]ar/[r]eadme.md"                            # the only way, and it is still a match
+    assert shown("mt", "src/main/test.c") == "src/[m]ain/[t]est.c"                          # starts of words rather than the m and t of "something"
+    assert shown("gnl", "get_next_line.c") == "[g]et_[n]ext_[l]ine.c"
+    assert shown("sc", "SubjectCard.tsx") == "[S]ubject[C]ard.tsx"                           # a capital starts a word too
 
 
-def test_every_state_of_the_review_says_what_it_is_and_whether_it_can_be_applied():
-    merged = dict(merged=True, merged_at="2026-10-30T10:00:00+00:00", structured=True, assessed=3, total=4)
-    cases = {                                   # label: (what the API says, text in the note, can it be ticked, is it ticked)
-        "no checks yet": (dict(results=False), "Run the checks first", False, False),
-        "nothing saved yet": (dict(), "claude has not saved a report yet", False, False),
-        "an earlier review is in verdict.md, nothing new": (dict(**merged), "keeps the review merged", False, False),
-        "a report is waiting": (dict(report=True), "claude's report is ready", True, True),
-        "a newer report than the one in verdict.md": (dict(report=True, **merged), "claude's report is ready", True, True),
-        "already applied": (dict(report=True, applied=True, **{**merged, "assessed": 4}), "Already in verdict.md (merged ", True, False),
-    }
-    for label, (fields, text, can_tick, ticked) in cases.items():
-        out = dialog_for(changes(live=True, **fields))
-        assert text in out["review"]["note"], label
-        assert out["review"]["disabled"] is (not can_tick) and out["review"]["checked"] is ticked, label
-        assert out["apply"]["disabled"] is (not ticked), label                       # the button is on only when something is ticked
-    again = dialog_for(changes(live=True, report=True, applied=True, merged=True, structured=True, assessed=4, total=4), ticks={"review": True})
-    assert again["applyAfterTicks"] == {"text": "Apply review", "disabled": False}   # an applied report can be applied again, on request
-    assert "4 of 4 requirements answered" in again["review"]["note"]
+def test_a_closer_match_scores_higher_than_a_scattered_one_and_so_does_a_shorter_path():
+    exact, scattered = fuzzy("main", "main.c"), fuzzy("main", "my_array_index_n.c")
+    assert exact["score"] > scattered["score"]
+    assert fuzzy("ft", "ft_printf.c")["score"] > fuzzy("ft", "src/utils/some_file_tool.c")["score"]
+    assert fuzzy("a", "a.c")["score"] > fuzzy("a", "x/y/z/a.c")["score"]
 
 
-def test_in_live_mode_there_are_no_files_and_the_dialog_says_why():
-    out = dialog_for(changes(live=True, report=True))
-    assert out["files"] == [] and any("work directly in projects/libft" in p and "Only the review is left to apply" in p for p in out["intro"])
+def keys(*rows):
+    return json.loads(run_js("key", json.dumps(rows)))
 
 
-def test_without_a_working_copy_there_are_no_files_but_the_review_can_still_be_applied():
-    out = dialog_for(changes(copy=False, report=True))
-    assert out["files"] == [] and any("There is no working copy right now" in p for p in out["intro"])
-    assert out["review"]["checked"] is True and out["apply"] == {"text": "Apply review", "disabled": False}
-    out = dialog_for(changes(copy=True))                                              # a copy exists, but nothing changed in it
-    assert out["files"] == [] and any("Nothing has changed in the working copy" in p for p in out["intro"])
+def ev(key, code="", **mods):
+    return {"key": key, "code": code, **mods}
 
 
-def test_in_copy_mode_the_files_are_listed_with_their_state_and_the_button_counts_what_is_ticked():
-    files = [file_entry("main.c"), file_entry("new.c", status="added"), file_entry("CLAUDE.md", status="added", action="skip", selected=False, note="never sent back"),
-             file_entry(".vscode/tasks.json", status="added", selected=False, warn="read it first"), file_entry("data.bin", status="added", selected=False, binary=True)]
-    out = dialog_for(changes(files=files, report=True))
-    assert [(f["path"], f["checked"], f["disabled"]) for f in out["files"]] == [
-        ("main.c", True, False), ("new.c", True, False), ("CLAUDE.md", False, True), (".vscode/tasks.json", False, False), ("data.bin", False, False)]
-    assert "never sent back" in out["files"][2]["note"] and "read it first" in out["files"][3]["note"] and "binary file" in out["files"][4]["note"]
-    assert out["apply"] == {"text": "Apply review + 2 files", "disabled": False}
-    unticked = dialog_for(changes(files=files, report=True), ticks={"review": False, "files": [False, False]})
-    assert unticked["applyAfterTicks"] == {"text": "Apply", "disabled": True}
-    one = dialog_for(changes(files=files, report=True), ticks={"review": False, "files": [True, False]})
-    assert one["applyAfterTicks"] == {"text": "Apply 1 file", "disabled": False}
-    no_report = dialog_for(changes(files=files))
-    assert no_report["apply"] == {"text": "Apply 2 files", "disabled": False}         # files alone work without any report
+def test_shortcuts_match_command_on_a_mac_and_control_elsewhere():
+    assert keys([ev("b", "KeyB", metaKey=True), "mod+b", True], [ev("b", "KeyB", ctrlKey=True), "mod+b", False]) == [True, True]
+    assert keys([ev("b", "KeyB", ctrlKey=True), "mod+b", True], [ev("b", "KeyB", metaKey=True), "mod+b", False]) == [False, False]     # the other one does not
+    assert keys([ev("P", "KeyP", metaKey=True, shiftKey=True), "mod+shift+p", True]) == [True]
+    assert keys([ev("p", "KeyP", metaKey=True), "mod+shift+p", True], [ev("P", "KeyP", metaKey=True, shiftKey=True), "mod+p", True]) == [False, False]
 
 
-def test_pressing_apply_sends_exactly_what_is_ticked_and_refreshes_the_page():
-    files = [file_entry("main.c"), file_entry("new.c", status="added")]
-    result = {"applied": ["main.c"], "skipped": [], "project": "libft",
-              "review": {"applied": True, "saved": True, "structured": True, "assessed": 4, "total": 4, "verdict_file": "verdict.md"}}
-    out = dialog_for(changes(files=files, report=True), result=result, ticks={"files": [True, False]}, press=True)
-    assert out["sent"] == {"path": "sessions/sess123/changes/apply", "body": {"paths": ["main.c"], "review": True}}
-    assert out["toast"]["ok"] is True
-    assert "1 file(s) written into projects/libft" in out["toast"]["message"] and "claude's review merged into verdict.md (4 of 4 requirements answered)" in out["toast"]["message"]
-    assert out["calls"]["render"] == 1 and out["calls"]["loadTree"] == 1 and out["calls"]["refreshVerdict"] == 1 and out["calls"]["closeDialog"] >= 1
+def test_extra_modifiers_never_match_so_a_browser_or_system_shortcut_is_left_alone():
+    assert keys([ev("b", "KeyB", metaKey=True, altKey=True), "mod+b", True], [ev("b", "KeyB", metaKey=True, shiftKey=True), "mod+b", True],
+                [ev("b", "KeyB", metaKey=True, ctrlKey=True), "mod+b", True], [ev("b", "KeyB"), "mod+b", True]) == [False] * 4
 
 
-def test_a_review_that_could_not_be_applied_says_why_and_is_not_reported_as_success():
-    result = {"applied": [], "skipped": [], "project": "libft",
-              "review": {"applied": False, "reason": "claude has not saved its report yet. Ask it to save it as claude-review.md"}}
-    out = dialog_for(changes(live=True, report=True), result=result, press=True)
-    assert out["sent"]["body"] == {"paths": [], "review": True}
-    assert out["toast"]["ok"] is False and "the review was not applied: claude has not saved its report yet" in out["toast"]["message"]
-    assert "run them again" not in out["toast"]["message"]                            # (only files change what the checks saw)
+def test_the_physical_key_counts_because_alt_changes_the_character_on_a_mac_and_keyboards_differ():
+    assert keys([ev("∑", "KeyW", altKey=True), "alt+w", True]) == [True]                    # Alt+W types ∑ on a Mac
+    assert keys([ev("²", "Backquote", ctrlKey=True), "ctrl+`", False]) == [True]             # the key under Esc on a Belgian keyboard
+    assert keys([ev("`", "Backquote", ctrlKey=True), "ctrl+`", False]) == [True]
+    assert keys([ev("F1", "F1"), "f1", False], [ev("Escape", "Escape"), "escape", False]) == [True, True]
+    assert keys([ev("F2", "F2"), "f1", False]) == [False]
 
 
-def test_files_that_were_skipped_and_a_review_without_a_data_block_are_not_called_a_success():
-    files = [file_entry("main.c")]
-    skipped = {"applied": [], "skipped": [{"path": "main.c", "reason": "changed on your machine since the copy was made"}], "project": "libft", "review": None}
-    out = dialog_for(changes(files=files), result=skipped, press=True)
-    assert out["sent"]["body"] == {"paths": ["main.c"], "review": False} and out["toast"]["ok"] is False
-    assert "main.c (changed on your machine since the copy was made)" in out["toast"]["message"]
-    text_only = {"applied": [], "skipped": [], "project": "libft", "review": {"applied": True, "saved": True, "structured": False, "verdict_file": "verdict.md"}}
-    out = dialog_for(changes(live=True, report=True), result=text_only, press=True)
-    assert "as text: it had no data block at the end" in out["toast"]["message"] and out["toast"]["ok"] is False
+def test_shortcuts_are_shown_the_way_each_platform_writes_them():
+    texts = json.loads(run_js("showkey", json.dumps([["mod+shift+p", True], ["mod+shift+p", False], ["mod+b", True], ["alt+w", True], ["alt+w", False], ["f1", False], ["ctrl+`", True]])))
+    assert texts == ["⇧⌘P", "Ctrl+Shift+P", "⌘B", "⌥W", "Alt+W", "F1", "⌃`"]
+
+
+TABS = [{"key": "overview", "closable": False, "session": False}, {"key": "a.c", "closable": True, "session": False},
+        {"key": "b.c", "closable": True, "session": False}, {"key": "terminal", "closable": True, "session": True},
+        {"key": "pdf:x.pdf", "closable": True, "session": False}, {"key": "shell", "closable": True, "session": True}]
+
+
+def closing(mode, key):
+    return json.loads(run_js("close", json.dumps([TABS, mode, key])))
+
+
+def test_closing_others_to_the_right_or_all_leaves_the_overview_and_the_running_sessions_alone():
+    assert closing("others", "b.c") == ["a.c", "pdf:x.pdf"]
+    assert closing("right", "a.c") == ["b.c", "pdf:x.pdf"]
+    assert closing("right", "pdf:x.pdf") == [] and closing("right", "shell") == []
+    assert closing("all", "a.c") == ["a.c", "b.c", "pdf:x.pdf"]                            # (claude and the shell are conversations: they stay)
+
+
+def moved(keys, source, target, after=False):
+    return json.loads(run_js("move", json.dumps([keys, source, target, after])))
+
+
+def test_dragging_a_tab_puts_it_before_or_after_the_one_it_is_dropped_on():
+    order = ["a", "b", "c", "d"]
+    assert moved(order, "d", "b") == ["a", "d", "b", "c"] and moved(order, "a", "c", True) == ["b", "c", "a", "d"]
+    assert moved(order, "a", "b") == ["a", "b", "c", "d"]                                  # dropped before the one it is already before
+    assert moved(order, "b", "a", True) == ["a", "b", "c", "d"] and moved(order, "c", "c") == order
+    assert moved(order, "x", "b") == order and moved(order, "a", "x") == order            # unknown tabs change nothing
+
+
+# ---------------------------------------------------------------- workbench.js: how it is wired to the page and to app.js
+# (what the buttons, tabs and keys do is tried with a DOM; these keep the three files from drifting apart unnoticed)
+
+STATIC = Path(__file__).resolve().parent.parent / "src/verdict/static"
+
+
+def static(name):
+    return (STATIC / name).read_text()
+
+
+def test_the_workbench_is_loaded_last_after_the_app_it_builds_on():
+    scripts = re.findall(r'<script src="([^"]+)"', static("index.html"))
+    assert scripts[-2:] == ["app.js", "workbench.js"] and (STATIC / "workbench.js").is_file()
+
+
+def test_every_button_a_command_presses_and_every_element_the_workbench_looks_up_is_in_the_page():
+    html, workbench = static("index.html"), static("workbench.js")
+    ids = set(re.findall(r'id="([^"]+)"', html))
+    wanted = set(re.findall(r'press\("([\w-]+)"\)', workbench)) | set(re.findall(r'\$\("#([\w-]+)"\)', workbench))
+    assert wanted and wanted <= ids, wanted - ids
+    for tab in re.findall(r'showPanelTab\("(\w+)"\)', workbench):
+        assert f'data-tab="{tab}"' in html, tab
+
+
+def test_what_the_workbench_takes_from_the_app_is_still_defined_there_and_the_hooks_the_app_calls_exist_here():
+    app, workbench = static("app.js"), static("workbench.js")
+    for name in ("showTab", "closeTab", "pinTab", "openFile", "openSubject", "selectRow", "toggleSidebar", "togglePanel", "resetLayout", "loadTree"):
+        assert re.search(rf"function {name}\(", app), name
+    for name in ("tabs", "tabHistory", "layout", "appReady"):
+        assert re.search(rf"^(const|let) {name}\b", app, re.MULTILINE), name
+    for hook in ("tabMenu", "saveTabs"):                              # app.js calls these when they exist; here they must be defined
+        assert re.search(rf"typeof {hook}\b", app) and re.search(rf"^function {hook}\(", workbench, re.MULTILINE), hook
+
+
+def test_no_shortcut_is_one_the_browser_keeps_and_none_is_given_twice():
+    bindings = re.findall(r'keys: "([^"]+)"', static("workbench.js")) + re.findall(r'also: \["([^"]+)"\]', static("workbench.js"))
+    assert len(bindings) == len(set(bindings)) and "mod+shift+p" in bindings and "mod+p" in bindings
+    for reserved in ("mod+w", "mod+t", "mod+n", "mod+shift+t", "mod+shift+n", "ctrl+tab", "ctrl+shift+tab", "mod+l", "mod+q"):
+        assert reserved not in bindings, f"{reserved} cannot be captured by a web page"
+
+
+def test_nothing_in_the_workbench_hands_text_from_a_repository_to_innerhtml():
+    for name in ("workbench.js", "app.js", "lib.js"):
+        assert not re.search(r"\.(innerHTML|outerHTML)\b|insertAdjacentHTML\(|document\.write\(", static(name)), name

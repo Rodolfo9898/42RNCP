@@ -1,7 +1,8 @@
-"""scripts/cursus.sh update: scratch repositories on disk stand in for GitHub; nothing here touches the real 42Cursus."""
+"""scripts/cursus.sh: bare repositories on disk stand in for GitHub; nothing here touches the real 42Cursus or the real projects."""
 
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -13,7 +14,8 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
 ENV = {**os.environ, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow", "GIT_CONFIG_VALUE_0": "always",     # (file:// remotes)
        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "GIT_TERMINAL_PROMPT": "0"}
-ENV.pop("CURSUS_PUSH", None)
+for name in ("CURSUS_PUSH", "CURSUS_DIR", "CURSUS_URL", "CURSUS_REPO", "CURSUS_DRY_RUN", "CURSUS_VISIBILITY", "PROJECTS_DIR", "GIT_ALLOW_PROTOCOL"):
+    ENV.pop(name, None)
 
 
 def git(*args, cwd):
@@ -23,50 +25,68 @@ def git(*args, cwd):
 
 
 class World:
-    """Projects with a 'GitHub' each, and a 42Cursus that has them as submodules (with a 'GitHub' of its own)."""
+    """Projects with a 'GitHub' each (a bare repository), a projects folder with a clone of some of them, and a 42Cursus 'GitHub'."""
 
     def __init__(self, base: Path):
         self.base = base
-        (base / "remotes").mkdir()
-        (base / "work").mkdir()
-        self.cursus = base / "42Cursus"
+        for d in ("remotes", "work", "projects", "tmp"):
+            (base / d).mkdir()
+        self.cursus = base / "remotes" / "42Cursus.git"          # the 'GitHub' of 42Cursus
+        self.projects = base / "projects"
+
+    def remote(self, name: str) -> Path:
+        return self.base / "remotes" / f"{name}.git"
 
     def project(self, name: str) -> str:
-        """A project repository: its bare 'GitHub', and a working clone to make new commits in."""
-        bare, work = self.base / "remotes" / f"{name}.git", self.base / "work" / name
-        git("init", "-q", "--bare", "-b", "main", str(bare), cwd=self.base)
+        """A project repository: its bare 'GitHub', and a working clone (in `work`) to make new commits in."""
+        work = self.base / "work" / name
+        git("init", "-q", "--bare", "-b", "main", str(self.remote(name)), cwd=self.base)
         git("init", "-q", "-b", "main", str(work), cwd=self.base)
-        git("remote", "add", "origin", str(bare), cwd=work)
+        git("remote", "add", "origin", str(self.remote(name)), cwd=work)
         return self.commit(name, "first")
 
-    def commit(self, name: str, message: str) -> str:
-        work = self.base / "work" / name
+    def commit(self, name: str, message: str, where: Path | None = None) -> str:
+        """A commit pushed to the project's 'GitHub' from its working clone (or from `where`)."""
+        work = where or self.base / "work" / name
         (work / f"{message}.txt").write_text(message)
         git("add", "-A", cwd=work)
         git("commit", "-q", "-m", message, cwd=work)
         git("push", "-q", "-u", "origin", "main", cwd=work)
         return git("rev-parse", "HEAD", cwd=work)
 
+    def local(self, name: str) -> Path:
+        """The project in the projects folder: a clone of its 'GitHub', like the ones this app makes."""
+        git("clone", "-q", str(self.remote(name)), str(self.projects / name), cwd=self.base)
+        return self.projects / name
+
     def build(self, *paths: str):
-        """42Cursus with one submodule per `track/name` path, committed and pushed to its own bare repository."""
-        git("init", "-q", "-b", "main", str(self.cursus), cwd=self.base)
+        """42Cursus with one submodule per `track/name` path, pushed to its 'GitHub'."""
+        work = self.base / "work" / "42Cursus"
+        git("init", "-q", "--bare", "-b", "main", str(self.cursus), cwd=self.base)
+        git("init", "-q", "-b", "main", str(work), cwd=self.base)
         for path in paths:
-            git("submodule", "add", "-q", str(self.base / "remotes" / f"{Path(path).name}.git"), path, cwd=self.cursus)
-        git("commit", "-q", "-m", "Add projects", cwd=self.cursus)
-        bare = self.base / "remotes" / "42Cursus.git"
-        git("init", "-q", "--bare", "-b", "main", str(bare), cwd=self.base)
-        git("remote", "add", "origin", str(bare), cwd=self.cursus)
-        git("push", "-q", "-u", "origin", "main", cwd=self.cursus)
+            git("submodule", "add", "-q", str(self.remote(Path(path).name)), path, cwd=work)
+        git("commit", "-q", "-m", "Add projects", "--allow-empty", cwd=work)
+        git("remote", "add", "origin", str(self.cursus), cwd=work)
+        git("push", "-q", "-u", "origin", "main", cwd=work)
 
-    def position(self, path: str, repo: Path | None = None) -> str:
-        return git("rev-parse", f"HEAD:{path}", cwd=repo or self.cursus)
+    def position(self, path: str) -> str:
+        return git("rev-parse", f"HEAD:{path}", cwd=self.cursus)
 
-    def commits(self, repo: Path | None = None) -> int:
-        return int(git("rev-list", "--count", "HEAD", cwd=repo or self.cursus))
+    def commits(self) -> int:
+        return int(git("rev-list", "--count", "HEAD", cwd=self.cursus))
 
-    def update(self, repo: Path | None = None, **env):
-        done = subprocess.run(["sh", str(SCRIPT), "update"], env={**ENV, "CURSUS_DIR": str(repo or self.cursus), **env}, capture_output=True, text=True, timeout=120)
+    def run(self, *args, **env):
+        done = subprocess.run(["sh", str(SCRIPT), *args], capture_output=True, text=True, timeout=120,
+                              env={**ENV, "CURSUS_URL": str(self.cursus), "PROJECTS_DIR": str(self.projects), "TMPDIR": str(self.base / "tmp"), **env})
         return done.returncode, done.stdout + done.stderr
+
+    def update(self, **env):
+        return self.run("update", **env)
+
+    def leftovers(self):
+        """Temporary folders the script forgot to delete."""
+        return sorted(p.name for p in (self.base / "tmp").iterdir())
 
 
 @pytest.fixture
@@ -74,27 +94,39 @@ def world(tmp_path):
     return World(tmp_path)
 
 
-def test_a_project_with_new_commits_is_moved_and_committed_and_the_others_are_left_alone(world):
+# ---------------------------------------------------------------- update
+
+
+def test_a_project_with_new_commits_is_moved_committed_and_pushed_and_the_others_are_left_alone(world):
     libft, nm = world.project("libft"), world.project("nm")
     world.build("common-core/libft", "rncp/nm")
     newest = world.commit("libft", "second")
     before = world.commits()
     code, out = world.update()
     assert code == 0, out
-    assert f"up   common-core/libft: {libft[:7]} -> {newest[:7]} (1 new commit(s))" in out and "ok   rncp/nm: already the newest" in out
-    assert world.position("common-core/libft") == newest and world.position("rncp/nm") == nm
+    assert f"up   common-core/libft: {libft[:7]} -> {newest[:7]}" in out and "ok   rncp/nm: already the newest" in out
+    assert world.position("common-core/libft") == newest and world.position("rncp/nm") == nm                  # (on 'GitHub' itself)
     assert world.commits() == before + 1 and git("log", "-1", "--format=%s", cwd=world.cursus) == "Update 1 project(s)"
-    assert git("rev-parse", "HEAD", cwd=world.cursus / "common-core" / "libft") == newest                    # and the folder is really there
-    assert git("status", "--porcelain", cwd=world.cursus) == ""
-    assert "push with: git -C" in out
+    assert "pushed to Rodolfo9898/42Cursus (1 project(s) updated)" in out
+    assert world.leftovers() == []                                                                              # the temporary clone is gone
 
 
-def test_everything_up_to_date_changes_nothing(world):
+def test_nothing_is_kept_on_this_machine_so_no_local_copy_of_42cursus_is_needed(world):
+    world.project("libft")
+    world.build("common-core/libft")
+    newest = world.commit("libft", "second")
+    assert not (world.base.parent / "42Cursus").exists()
+    code, out = world.update(CURSUS_DIR=str(world.base / "does-not-exist"))                                      # (the old setting is ignored)
+    assert code == 0 and world.position("common-core/libft") == newest
+    assert sorted(p.name for p in world.base.iterdir()) == ["projects", "remotes", "tmp", "work"]              # (no folder was made for it)
+
+
+def test_everything_up_to_date_changes_and_pushes_nothing(world):
     world.project("libft")
     world.build("common-core/libft")
     before = world.commits()
     code, out = world.update()
-    assert code == 0 and "nothing to update" in out and world.commits() == before
+    assert code == 0 and "nothing to update" in out and world.commits() == before and "pushed" not in out
 
 
 def test_several_projects_one_commit_and_a_folder_name_with_a_space_works(world):
@@ -105,110 +137,315 @@ def test_several_projects_one_commit_and_a_folder_name_with_a_space_works(world)
     code, out = world.update()
     assert code == 0, out
     assert world.position("common-core/libft") == a and world.position("common-core/my proj") == b
+    body = git("log", "-1", "--format=%b", cwd=world.cursus)
     assert world.commits() == before + 1 and "Update 2 project(s)" in git("log", "-1", "--format=%s", cwd=world.cursus)
-    assert "common-core/libft" in git("log", "-1", "--format=%b", cwd=world.cursus) and "common-core/my proj" in git("log", "-1", "--format=%b", cwd=world.cursus)
+    assert body.splitlines() == ["common-core/libft", "common-core/my proj"]
 
 
-def test_a_project_with_uncommitted_changes_is_skipped_and_the_rest_still_updates(world):
+def test_a_project_that_cannot_be_read_is_reported_and_does_not_stop_the_others(world):
     world.project("libft"), world.project("nm")
     world.build("common-core/libft", "rncp/nm")
-    pinned = world.position("common-core/libft")
     world.commit("libft", "second")
     nm_new = world.commit("nm", "second")
-    (world.cursus / "common-core" / "libft" / "my-work.c").write_text("work in progress\n")
-    git("add", "my-work.c", cwd=world.cursus / "common-core" / "libft")
+    shutil.rmtree(world.remote("libft"))                                                                        # its 'GitHub' is gone
     code, out = world.update()
-    assert code == 0 and "skip common-core/libft: it has uncommitted changes" in out and "1 project(s) skipped" in out
-    assert world.position("common-core/libft") == pinned and world.position("rncp/nm") == nm_new
-    assert (world.cursus / "common-core" / "libft" / "my-work.c").read_text() == "work in progress\n"       # untouched
+    assert code == 1 and "fail common-core/libft: could not read the newest commit of its origin" in out and "1 project(s) could not be updated" in out
+    assert world.position("rncp/nm") == nm_new                                                                  # the other one was still done and pushed
 
 
-def test_commits_that_are_only_on_your_machine_are_never_overwritten(world):
+def test_a_dry_run_does_everything_but_push(world):
     world.project("libft")
     world.build("common-core/libft")
-    checkout = world.cursus / "common-core" / "libft"
-    (checkout / "mine.txt").write_text("a commit I have not pushed\n")
-    git("add", "mine.txt", cwd=checkout)
-    git("commit", "-q", "-m", "local only", cwd=checkout)
-    mine = git("rev-parse", "HEAD", cwd=checkout)
+    before = world.position("common-core/libft")
     world.commit("libft", "second")
-    code, out = world.update()
-    assert code == 0 and "skip common-core/libft: it has commits that are not on its origin (push them first)" in out
-    assert git("rev-parse", "HEAD", cwd=checkout) == mine and (checkout / "mine.txt").exists()               # still checked out, still there
+    code, out = world.update(CURSUS_DRY_RUN="1")
+    assert code == 0 and "up   common-core/libft" in out and "dry run, nothing pushed" in out
+    assert world.position("common-core/libft") == before and world.leftovers() == []
 
 
-def test_a_fresh_clone_without_its_projects_checked_out_gets_them_and_the_newest_commits(world):
+def test_a_branch_named_in_gitmodules_is_followed_instead_of_the_default_one(world):
     world.project("libft")
     world.build("common-core/libft")
+    work = world.base / "work" / "libft"
+    git("checkout", "-q", "-b", "dev", cwd=work)
+    (work / "dev.txt").write_text("dev")
+    git("add", "-A", cwd=work)
+    git("commit", "-q", "-m", "dev work", cwd=work)
+    git("push", "-q", "origin", "dev", cwd=work)
+    on_dev = git("rev-parse", "HEAD", cwd=work)
+    editor = world.base / "work" / "42Cursus"
+    git("config", "-f", ".gitmodules", "submodule.common-core/libft.branch", "dev", cwd=editor)
+    git("commit", "-q", "-am", "follow dev", cwd=editor)
+    git("push", "-q", cwd=editor)
+    code, out = world.update()
+    assert code == 0 and world.position("common-core/libft") == on_dev, out
+
+
+def test_a_push_that_is_refused_is_an_error_and_says_so(world):
+    world.project("libft")
+    world.build("common-core/libft")
+    world.commit("libft", "second")
+    hook = world.cursus / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'no pushes today' >&2\nexit 1\n")
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    code, out = world.update()
+    assert code == 1 and "could not push to Rodolfo9898/42Cursus" in out and world.leftovers() == []
+
+
+def test_a_gitlink_without_its_gitmodules_entry_is_skipped_not_guessed(world):
+    world.project("libft")
+    world.build("common-core/libft")
+    editor = world.base / "work" / "42Cursus"
+    git("rm", "-q", "-f", ".gitmodules", cwd=editor)                                  # the commit stays a gitlink, but nothing says where it lives
+    git("commit", "-q", "-m", "oops", cwd=editor)
+    git("push", "-q", cwd=editor)
+    code, out = world.update()
+    assert code == 0 and "skip common-core/libft: .gitmodules has no URL for it" in out and "1 project(s) skipped" in out
+
+
+def test_an_address_that_would_run_a_command_or_is_an_option_is_never_followed(world, tmp_path):
+    world.project("libft")
+    marker = tmp_path / "ran"
+    world.build("common-core/libft")
+    editor = world.base / "work" / "42Cursus"
+    for url in (f"ext::sh -c 'touch {marker}'", f"--upload-pack=touch {marker}"):
+        git("config", "-f", ".gitmodules", "submodule.common-core/libft.url", url, cwd=editor)
+        git("commit", "-q", "-am", "evil", cwd=editor)
+        git("push", "-q", cwd=editor)
+        code, out = world.update()
+        assert code == 1 and "fail common-core/libft" in out and not marker.exists(), url
+
+
+def test_it_explains_when_there_is_no_repository_no_commit_or_no_project_yet(world):
+    code, out = world.update()
+    assert code == 1 and f"cannot reach {world.cursus}" in out and "make cursus" in out
+    git("init", "-q", "--bare", "-b", "main", str(world.cursus), cwd=world.base)
+    code, out = world.update()
+    assert code == 1 and "has no commits yet: run: make cursus" in out
+    work = world.base / "work" / "empty"
+    git("init", "-q", "-b", "main", str(work), cwd=world.base)
+    git("commit", "-q", "--allow-empty", "-m", "Initial commit", cwd=work)
+    git("push", "-q", str(world.cursus), "main", cwd=work)
+    code, out = world.update()
+    assert code == 0 and "no projects in" in out and "make cursus-sort" in out and world.leftovers() == []
+
+
+# ---------------------------------------------------------------- sort
+
+
+def test_sorting_adds_each_project_at_the_commit_github_has_and_pushes_it(world):
+    libft, nm = world.project("libft"), world.project("nm")
+    world.local("libft"), world.local("nm")
+    (world.projects / "notes").mkdir()                                                    # not a git repository
+    git("init", "-q", "-b", "main", str(world.projects / "bare-start"), cwd=world.base)  # a git repository with no origin
+    world.build()
+    code, out = world.run("sort", "libft=common-core", "nm=rncp")
+    assert code == 0, out
+    assert f"add  libft -> common-core/ ({libft[:7]})" in out and f"add  nm -> rncp/ ({nm[:7]})" in out
+    assert "skip notes: not a git repository" in out and "skip bare-start: no origin remote" in out
+    assert world.position("common-core/libft") == libft and world.position("rncp/nm") == nm
+    assert git("ls-tree", "HEAD", "common-core/libft", cwd=world.cursus).startswith("160000 commit")           # a real gitlink
+    assert git("log", "-1", "--format=%s", cwd=world.cursus) == "Add 2 project(s)" and "pushed to" in out and world.leftovers() == []
     fresh = world.base / "fresh"
-    git("clone", "-q", str(world.base / "remotes" / "42Cursus.git"), str(fresh), cwd=world.base)       # no --recurse-submodules
-    assert not (fresh / "common-core" / "libft" / ".git").exists()
-    newest = world.commit("libft", "second")
-    code, out = world.update(fresh)
-    assert code == 0, out
-    assert git("rev-parse", "HEAD", cwd=fresh / "common-core" / "libft") == newest and world.position("common-core/libft", fresh) == newest
+    git("clone", "-q", "--recurse-submodules", str(world.cursus), str(fresh), cwd=world.base)                    # and git can really use it
+    assert git("rev-parse", "HEAD", cwd=fresh / "common-core" / "libft") == libft and (fresh / "rncp" / "nm" / "first.txt").exists()
 
 
-def test_a_project_that_cannot_be_fetched_is_reported_and_does_not_stop_the_others(world):
-    world.project("libft"), world.project("nm")
-    world.build("common-core/libft", "rncp/nm")
-    world.commit("libft", "second")
-    nm_new = world.commit("nm", "second")
-    shutil.rmtree(world.base / "remotes" / "libft.git")                                                       # its 'GitHub' is gone
-    code, out = world.update()
-    assert code == 1 and "fail common-core/libft: could not fetch from its origin" in out and "1 project(s) could not be updated" in out
-    assert world.position("rncp/nm") == nm_new                                                                  # the other one was still done
-
-
-def test_only_the_updated_projects_are_committed_never_something_else_that_was_staged(world):
+def test_sorting_twice_adds_nothing_the_second_time(world):
     world.project("libft")
-    world.build("common-core/libft")
-    (world.cursus / "notes.md").write_text("my notes\n")
-    git("add", "notes.md", cwd=world.cursus)
-    world.commit("libft", "second")
-    code, out = world.update()
-    assert code == 0, out
-    assert git("show", "--name-only", "--format=", "HEAD", cwd=world.cursus) == "common-core/libft"
-    assert git("status", "--porcelain", cwd=world.cursus) == "A  notes.md"                                    # still staged, not committed
-
-
-def test_nothing_is_pushed_unless_asked_and_then_it_is(world):
-    world.project("libft")
-    world.build("common-core/libft")
-    bare = world.base / "remotes" / "42Cursus.git"
-    newest = world.commit("libft", "second")
-    code, out = world.update()
-    assert code == 0 and world.position("common-core/libft", bare) != newest                                  # committed here, not on 'GitHub'
-    newest = world.commit("libft", "third")
-    code, out = world.update(CURSUS_PUSH="1")
-    assert code == 0 and "cursus: pushed" in out and world.position("common-core/libft", bare) == newest
-
-
-def test_positions_recorded_on_another_machine_are_picked_up_first(world):
-    world.project("libft")
-    world.build("common-core/libft")
-    other = world.base / "other"
-    git("clone", "-q", "--recurse-submodules", str(world.base / "remotes" / "42Cursus.git"), str(other), cwd=world.base)
-    newest = world.commit("libft", "second")
-    code, out = world.update(other, CURSUS_PUSH="1")                                                          # the other machine updates and pushes
-    assert code == 0 and world.position("common-core/libft", other) == newest
+    world.local("libft")
+    world.build()
+    world.run("sort", "libft=common-core")
     before = world.commits()
-    code, out = world.update()                                                                                # this one fast-forwards to it first
-    assert code == 0 and world.position("common-core/libft") == newest and "nothing to update" in out
-    assert world.commits() == before + 1                                                                      # (the other machine's commit, not a new one)
+    code, out = world.run("sort", "libft=common-core")
+    assert code == 0 and "ok   libft: already in common-core/" in out and "nothing to add" in out and world.commits() == before
 
 
-def test_it_explains_when_there_is_no_repository_or_no_project_yet(world, tmp_path):
-    code, out = world.update(tmp_path / "does-not-exist")
-    assert code == 1 and "does not exist yet: run init first" in out
-    empty = tmp_path / "empty"
-    git("init", "-q", "-b", "main", str(empty), cwd=tmp_path)
-    code, out = world.update(empty)
-    assert code == 0 and "no projects in" in out and "run sort first" in out
+def test_unpushed_work_is_warned_about_and_the_commit_recorded_is_the_one_github_has(world):
+    on_github = world.project("libft")
+    local = world.local("libft")
+    (local / "mine.txt").write_text("not pushed")
+    git("add", "-A", cwd=local)
+    git("commit", "-q", "-m", "local only", cwd=local)
+    (local / "dirty.txt").write_text("not even committed")
+    world.build()
+    code, out = world.run("sort", "libft=common-core")
+    assert code == 0 and "warn libft: unpushed commits or uncommitted changes" in out and "make cursus-push" in out
+    assert world.position("common-core/libft") == on_github
 
 
-def test_the_make_target_and_the_usage_line_exist():
+def test_a_project_whose_github_cannot_be_read_is_reported_and_the_others_are_still_added(world):
+    world.project("libft"), world.project("nm")
+    world.local("libft")
+    nm = world.local("nm")
+    world.build()
+    git("remote", "set-url", "origin", str(world.base / "remotes" / "gone.git"), cwd=world.projects / "libft")
+    code, out = world.run("sort", "libft=common-core", "nm=rncp")
+    assert code == 1 and "fail libft: could not read" in out and "1 project(s) could not be added" in out
+    assert git("ls-tree", "--name-only", "HEAD", "rncp/nm", cwd=world.cursus) == "rncp/nm" and git("ls-tree", "--name-only", "HEAD", "common-core/libft", cwd=world.cursus) == ""
+
+
+def test_a_project_with_no_subject_pdf_of_its_name_needs_a_track_and_a_wrong_one_is_refused(world):
+    world.project("zzz_not_a_subject")
+    world.local("zzz_not_a_subject")
+    world.build()
+    code, out = world.run("sort")
+    assert code == 0 and "skip zzz_not_a_subject: no subject PDF with this name; run again with zzz_not_a_subject=<track>" in out and "nothing to add" in out
+    code, out = world.run("sort", "zzz_not_a_subject=nowhere")
+    assert code == 1 and "unknown track 'nowhere'" in out
+    code, out = world.run("sort", "libft")
+    assert code == 1 and "expected name=track" in out
+
+
+def test_a_dry_run_of_sort_pushes_nothing(world):
+    world.project("libft")
+    world.local("libft")
+    world.build()
+    before = world.commits()
+    code, out = world.run("sort", "libft=common-core", CURSUS_DRY_RUN="1")
+    assert code == 0 and "add  libft" in out and "dry run, nothing pushed" in out and world.commits() == before
+
+
+# ---------------------------------------------------------------- push
+
+
+def test_pushing_sends_the_new_commits_of_every_project_and_says_what_to_do_next(world):
+    world.project("libft"), world.project("nm")
+    libft, nm = world.local("libft"), world.local("nm")
+    for repo, text in ((libft, "a"), (libft, "b")):
+        (repo / f"{text}.txt").write_text(text)
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", text, cwd=repo)
+    (nm / "wip.txt").write_text("not committed")
+    code, out = world.run("push")
+    assert code == 0, out
+    assert "push libft: 2 commit(s) of main" in out and "ok   nm: nothing to push (uncommitted changes are not pushed)" in out
+    assert git("rev-parse", "main", cwd=world.remote("libft")) == git("rev-parse", "HEAD", cwd=libft)
+    assert "pushed 1 project(s); run: make cursus-update" in out
+    code, out = world.run("push")
+    assert code == 0 and "ok   libft: nothing to push" in out and "pushed 0" not in out and "make cursus-update" not in out
+
+
+def test_only_the_named_projects_are_pushed_and_a_bad_name_is_refused(world):
+    world.project("libft"), world.project("nm")
+    libft, nm = world.local("libft"), world.local("nm")
+    for repo in (libft, nm):
+        (repo / "x.txt").write_text("x")
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", "x", cwd=repo)
+    code, out = world.run("push", "nm")
+    assert code == 0 and "push nm" in out and "libft" not in out
+    assert git("rev-parse", "main", cwd=world.remote("libft")) != git("rev-parse", "HEAD", cwd=libft)
+    for bad in ("../libft", "a/b", ".hidden", ""):
+        code, out = world.run("push", bad)
+        assert code == 1 and "is not a project name" in out, bad
+    code, out = world.run("push", "missing")
+    assert code == 1 and "no project 'missing'" in out
+
+
+def test_a_push_is_never_forced_and_a_failure_does_not_stop_the_others(world):
+    world.project("libft"), world.project("nm")
+    libft, nm = world.local("libft"), world.local("nm")
+    world.commit("libft", "elsewhere")                                                    # GitHub moved on without this clone
+    for repo in (libft, nm):
+        (repo / "mine.txt").write_text("mine")
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", "mine", cwd=repo)
+    on_github = git("rev-parse", "main", cwd=world.remote("libft"))
+    code, out = world.run("push")
+    assert code == 1 and "fail libft: not pushed" in out and "never forced" in out and "push nm: 1 commit(s)" in out
+    assert git("rev-parse", "main", cwd=world.remote("libft")) == on_github                  # untouched
+
+
+def test_a_new_branch_is_pushed_with_its_upstream_and_a_detached_head_or_no_origin_is_skipped(world):
+    world.project("libft"), world.project("nm")
+    libft, nm = world.local("libft"), world.local("nm")
+    git("checkout", "-q", "-b", "feature", cwd=libft)
+    (libft / "f.txt").write_text("f")
+    git("add", "-A", cwd=libft)
+    git("commit", "-q", "-m", "f", cwd=libft)
+    git("checkout", "-q", "--detach", cwd=nm)
+    git("init", "-q", "-b", "main", str(world.projects / "alone"), cwd=world.base)
+    code, out = world.run("push")
+    assert code == 0, out
+    assert "push libft: 1 commit(s) of feature" in out and "skip nm: not on a branch" in out and "skip alone: no origin remote" in out
+    assert git("rev-parse", "feature", cwd=world.remote("libft")) == git("rev-parse", "HEAD", cwd=libft)
+    assert git("rev-parse", "--abbrev-ref", "@{u}", cwd=libft) == "origin/feature"
+
+
+def test_a_dry_run_of_push_pushes_nothing(world):
+    world.project("libft")
+    libft = world.local("libft")
+    (libft / "x.txt").write_text("x")
+    git("add", "-A", cwd=libft)
+    git("commit", "-q", "-m", "x", cwd=libft)
+    on_github = git("rev-parse", "main", cwd=world.remote("libft"))
+    code, out = world.run("push", CURSUS_DRY_RUN="1")
+    assert code == 0 and "dry  libft: would push 1 commit(s) of main" in out and git("rev-parse", "main", cwd=world.remote("libft")) == on_github
+
+
+# ---------------------------------------------------------------- init
+
+
+def fake_gh(world, *, logged_in=True):
+    """A `gh` that creates the bare repository instead of GitHub, and records how it was called."""
+    bin_dir = world.base / "bin"
+    bin_dir.mkdir()
+    log = world.base / "gh.log"
+    gh = bin_dir / "gh"
+    gh.write_text(f"""#!/bin/sh
+echo "$@" >> {log}
+case "$1 $2" in
+    "auth status") exit {0 if logged_in else 1} ;;
+    "repo view") exit 1 ;;
+    "repo create") git init -q --bare -b main "{world.cursus}" ;;
+esac
+""")
+    gh.chmod(0o755)
+    return {"PATH": f"{bin_dir}:{ENV['PATH']}"}, log
+
+
+def test_init_creates_the_github_repo_when_it_is_missing_and_gives_it_a_first_commit(world):
+    env, log = fake_gh(world)
+    code, out = world.run("init", **env)
+    assert code == 0, out
+    assert "repo create Rodolfo9898/42Cursus --private --description" in log.read_text()
+    assert git("log", "--format=%s", cwd=world.cursus) == "Initial commit" and "common-core/" in git("show", "HEAD:README.md", cwd=world.cursus)
+    assert "git clone --recurse-submodules git@github.com:Rodolfo9898/42Cursus.git" in git("show", "HEAD:README.md", cwd=world.cursus)
+    assert world.leftovers() == [] and "is ready (private)" in out
+    code, out = world.run("init", **env)                                                  # safe to run again
+    assert code == 0 and "is ready on GitHub" in out and log.read_text().count("repo create") == 1
+
+
+def test_init_fills_a_repo_that_exists_but_is_empty_without_creating_another(world):
+    git("init", "-q", "--bare", "-b", "main", str(world.cursus), cwd=world.base)
+    env, log = fake_gh(world)
+    code, out = world.run("init", **env)
+    assert code == 0 and "exists on GitHub but is empty" in out and not log.exists()
+    assert git("log", "--format=%s", cwd=world.cursus) == "Initial commit"
+
+
+def test_init_needs_the_github_cli_to_be_logged_in_and_checks_the_visibility(world):
+    env, log = fake_gh(world, logged_in=False)
+    code, out = world.run("init", **env)
+    assert code == 1 and "not logged in" in out and "repo create" not in log.read_text()
+    code, out = world.run("init", CURSUS_VISIBILITY="secret")
+    assert code == 1 and "CURSUS_VISIBILITY must be private or public" in out
+
+
+def test_a_dry_run_of_init_creates_nothing(world):
+    env, log = fake_gh(world)
+    code, out = world.run("init", CURSUS_DRY_RUN="1", **env)
+    assert code == 0 and "would create Rodolfo9898/42Cursus" in out and not world.cursus.exists() and not log.exists()
+
+
+# ---------------------------------------------------------------- make
+
+
+def test_the_make_targets_and_the_usage_line_exist():
     makefile = (ROOT / "Makefile").read_text()
-    assert "cursus-update:\n\t@sh scripts/cursus.sh update\n" in makefile and "cursus-update" in makefile.split(".PHONY:")[1]
+    for target, command in (("cursus-update", "update"), ("cursus-push", "push $(ONLY)"), ("cursus-sort", "sort $(MAP)"), ("cursus", "init")):
+        assert f"\n{target}:\n\t@sh scripts/cursus.sh {command}\n" in makefile, target
+        assert target in makefile.split(".PHONY:")[1].split()
     done = subprocess.run(["sh", str(SCRIPT), "nonsense"], capture_output=True, text=True)
-    assert done.returncode == 2 and "| update" in done.stderr
+    assert done.returncode == 2 and "| update | push [name ...]" in done.stderr

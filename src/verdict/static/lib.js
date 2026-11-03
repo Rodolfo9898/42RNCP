@@ -296,6 +296,93 @@ function rainbow(lines, skip = new Set(["s", "c"])) {
   return result;
 }
 
+// ------------------------------------------------------------------ workbench helpers (keys, fuzzy search, tab order): pure, so Node tests them
+
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+
+const isWordStart = (text, i) => i === 0 || "/\\._- ".includes(text[i - 1]) || (/[A-Z]/.test(text[i]) && /[a-z]/.test(text[i - 1]));
+
+// VS Code's fuzzy matching: every character of `query` must be in `text`, in order, and the best alignment wins. A match at the
+// start of a word (after / . _ - or a space, or a capital) and a match right after the previous one score higher, so "fr" finds
+// the start of "frontend.js" rather than the first f and r it meets. Returns null, or { score, positions } (the matched indexes).
+function fuzzyMatch(query, text) {
+  const wanted = query.replace(/\s+/g, "");
+  if (!wanted) return { score: 0, positions: [] };
+  const q = wanted.toLowerCase(), t = text.toLowerCase(), m = q.length, n = t.length;
+  if (m > n) return null;
+  let k = 0;
+  for (const ch of t) if (ch === q[k] && ++k === m) break;
+  if (k < m) return null;                                         // not even a subsequence
+  const best = Array.from({ length: m }, () => new Array(n).fill(-Infinity));
+  const prev = Array.from({ length: m }, () => new Array(n).fill(-1));
+  const upTo = Array.from({ length: m }, () => new Array(n).fill(-1));   // the position <= j with the best score in row i
+  for (let i = 0; i < m; i++) {
+    for (let j = i; j < n; j++) {
+      if (t[j] === q[i]) {
+        const gain = 1 + (isWordStart(text, j) ? 5 : 0) + (text[j] === wanted[i] ? 1 : 0);
+        if (i === 0) {
+          best[i][j] = gain - j * 0.02;                             // (earlier is slightly better)
+        } else {
+          let score = -Infinity, from = -1;
+          if (j >= 1 && best[i - 1][j - 1] > -Infinity) { score = best[i - 1][j - 1] + gain + 8; from = j - 1; }     // right after the previous match: worth more than a word start
+          const p = j >= 2 ? upTo[i - 1][j - 2] : -1;
+          if (p >= 0 && best[i - 1][p] + gain > score) { score = best[i - 1][p] + gain; from = p; }
+          best[i][j] = score;
+          prev[i][j] = from;
+        }
+      }
+      const last = j > 0 ? upTo[i][j - 1] : -1;
+      upTo[i][j] = last >= 0 && best[i][last] >= best[i][j] ? last : (best[i][j] > -Infinity ? j : last);
+    }
+  }
+  let end = upTo[m - 1][n - 1];
+  if (end < 0 || best[m - 1][end] === -Infinity) return null;
+  const positions = [];
+  for (let i = m - 1, j = end; i >= 0; i--) { positions.unshift(j); j = prev[i][j]; }
+  return { score: best[m - 1][end] - n * 0.01, positions };
+}
+
+// Does keyboard event `ev` match a binding such as "mod+shift+p", "ctrl+`", "alt+w" or "f1"? "mod" is Cmd on a Mac and Ctrl elsewhere.
+// The physical key is accepted too (Alt changes the character on a Mac, and the key under Esc is ² on a Belgian keyboard).
+function matchesKey(ev, binding, isMac) {
+  const parts = binding.toLowerCase().split("+");
+  const key = parts.pop();
+  const want = { ctrl: false, meta: false, alt: false, shift: false };
+  for (const part of parts) want[part === "mod" ? (isMac ? "meta" : "ctrl") : part] = true;
+  if (!!ev.ctrlKey !== want.ctrl || !!ev.metaKey !== want.meta || !!ev.altKey !== want.alt || !!ev.shiftKey !== want.shift) return false;
+  const typed = String(ev.key || "").toLowerCase(), code = String(ev.code || "");
+  if (key === "`") return typed === "`" || code === "Backquote";
+  if (/^[a-z]$/.test(key)) return typed === key || code === `Key${key.toUpperCase()}`;
+  return typed === key || code.toLowerCase() === key;
+}
+
+// How a binding is shown: "⇧⌘P" on a Mac, "Ctrl+Shift+P" elsewhere.
+function showKey(binding, isMac) {
+  const parts = binding.split("+");
+  const key = parts.pop();
+  const label = key.length === 1 ? key.toUpperCase() : key[0].toUpperCase() + key.slice(1);
+  const names = { mod: isMac ? "⌘" : "Ctrl", ctrl: isMac ? "⌃" : "Ctrl", alt: isMac ? "⌥" : "Alt", shift: isMac ? "⇧" : "Shift", meta: isMac ? "⌘" : "Meta" };
+  const order = isMac ? ["ctrl", "alt", "shift", "mod", "meta"] : ["ctrl", "mod", "meta", "alt", "shift"];     // (the order each platform writes them in)
+  const shown = order.filter((name) => parts.map((p) => p.toLowerCase()).includes(name)).map((name) => names[name]);
+  return isMac ? shown.join("") + label : [...shown, label].join("+");
+}
+
+// Which tabs "Close Others", "Close to the Right" and "Close All" close. entries: [{ key, closable, session }] in tab order. A session
+// (claude, the shell) is a running conversation, not a document: closing it ends it, so these never close one.
+function tabsToClose(entries, mode, key) {
+  const at = entries.findIndex((e) => e.key === key);
+  return entries.filter((e, i) => e.closable && !e.session
+    && (mode === "all" || (mode === "others" && e.key !== key) || (mode === "right" && i > at))).map((e) => e.key);
+}
+
+// The order of the tabs after dragging `from` onto `to` (dropped on its left half, or its right half when `after`).
+function moveKey(keys, from, to, after = false) {
+  if (from === to || !keys.includes(from) || !keys.includes(to)) return keys.slice();
+  const rest = keys.filter((k) => k !== from);
+  rest.splice(rest.indexOf(to) + (after ? 1 : 0), 0, from);
+  return rest;
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
+  module.exports = { fuzzyMatch, matchesKey, showKey, tabsToClose, moveKey, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
 }

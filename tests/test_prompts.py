@@ -241,7 +241,7 @@ def test_live_claude_is_told_it_is_in_the_real_folder_and_saves_its_report_outsi
     assert "nothing has been built or run" not in context                                     # (true of a copy, false of a live folder)
     assert "building leaves build output there" in prompt and "`make fclean`" in prompt
     assert "`/scratch/reports/abc123/claude-review.md` (the only file you may create or change; it is outside the project on purpose" in prompt
-    assert "in the current directory" not in prompt
+    assert "`claude-review.md` in the current directory" not in prompt                         # (the report is not in the project)
 
 
 def test_the_default_prompt_is_unchanged_for_a_copy():
@@ -249,3 +249,45 @@ def test_the_default_prompt_is_unchanged_for_a_copy():
     assert "Your working directory is a copy of the student's repository: only the files they committed, nothing has been built or run." in prompt
     assert "save your complete report as `claude-review.md` in the current directory (the only file you may create; I will approve that write)" in prompt
     assert "real project folder" not in prompt and "make fclean" not in prompt
+
+
+# ---------------------------------------------------------------- claude is told who the evaluator is
+
+
+def test_the_review_prompt_says_the_evaluator_is_rperez_t():
+    from verdict.shared import EVALUATOR
+    prompt, _ = build()
+    assert EVALUATOR == "rperez-t"
+    assert 'I am the evaluator: rperez-t (my 42 login; my email, for a 42 header the Norm asks for, is rperez-t@student.42belgium.be)' in prompt.split("CONTEXT")[0]
+    assert 'Wherever this prompt says "I" or "me", it is rperez-t speaking to you' in prompt
+
+
+def test_a_fix_in_a_c_project_knows_the_author_line_of_the_42_header_and_a_cpp_one_hears_nothing_of_it():
+    from verdict.shared import EVALUATOR_EMAIL, HEADER_AUTHOR
+    assert EVALUATOR_EMAIL == "rperez-t@student.42belgium.be" and HEADER_AUTHOR == "rperez-t <rperez-t@student.42belgium.be>"
+    c, _ = fix([r("fail", "Passes norminette", "2 errors")])
+    assert "its author line is `By: rperez-t <rperez-t@student.42belgium.be>`" in c and "leave the header of an existing file as it is" in c
+    cpp, _ = build_fix_prompt(project="cpp01", subjects=[], lang="cpp", results=[r("fail", "Compiles", "No.")])
+    assert "42 header" not in cpp and "student.42belgium.be" not in cpp and "norminette" not in cpp
+
+
+def test_the_review_prompt_points_at_readpdf_for_the_subject():
+    prompt, _ = build_review_prompt(project="push_swap", subjects=["push_swap.pdf"], lang="c", results=RESULTS, subjects_dir="/scratch/subjects/abc123")
+    assert "Use the `readpdf` command (`readpdf NAME 4-6` prints pages, `readpdf NAME --grep WORD` searches" in prompt
+    assert "do not write your own script to extract a PDF" in prompt
+    assert "readpdf" not in build_review_prompt(project="p", subjects=["p.pdf"], lang="c", results=RESULTS)[0]      # no folder, nothing to read
+
+
+# ---------------------------------------------------------------- claude tries the project where it is, not in a copy in /tmp
+
+
+def test_the_review_and_the_fix_prompt_both_say_to_test_in_the_current_directory_never_in_tmp():
+    from verdict.shared import TEST_HERE
+    assert "never copy the project to /tmp" in TEST_HERE and "current directory" in TEST_HERE
+    for live in (False, True):
+        review, _ = build_review_prompt(project="push_swap", subjects=["push_swap.pdf"], lang="c", results=RESULTS, live=live)
+        assert TEST_HERE in review.split("HOW TO WORK")[1], live
+    fix_prompt, _ = fix([r("fail", "Passes norminette", "2 errors")])
+    assert TEST_HERE in fix_prompt.split("HOW TO WORK")[1]
+    cpp, _ = build_fix_prompt(project="cpp01", subjects=[], lang="cpp", results=[r("fail", "Compiles", "No.")])
+    assert TEST_HERE in cpp

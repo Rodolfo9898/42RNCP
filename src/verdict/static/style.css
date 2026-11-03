@@ -122,19 +122,6 @@ pre.log { margin: 6px 0 0; padding: 8px; background: #151515; border: 1px solid 
 #modal[hidden] { display: none; }
 .dialog { background: var(--side); border: 1px solid var(--border); box-shadow: 0 8px 30px #000a; min-width: 460px; max-width: 640px; max-height: 70vh; overflow: auto; padding: 16px; }
 .dialog h3 { margin: 0 0 10px; font-size: 14px; }
-.dialog:has(.changes) { max-width: 900px; width: 90vw; }
-.changes .change-list { max-height: 48vh; overflow: auto; border: 1px solid var(--border); padding: 4px 8px; }
-.changes .change { padding: 2px 0; }
-.changes .change label { display: flex; gap: 8px; align-items: baseline; }
-.changes button.name { background: none; border: 0; padding: 0; color: inherit; font: 12px var(--mono); cursor: pointer; text-align: left; }
-.changes button.name:hover { text-decoration: underline; }
-.changes .note { display: block; margin-left: 52px; font-size: 12px; color: var(--dim); }
-.changes .note.bad { color: var(--warn); }
-.changes .chg-chip { display: inline-block; width: 16px; text-align: center; font-weight: 700; }
-.changes .chg-chip.added { color: var(--pass); } .changes .chg-chip.modified { color: var(--manual); } .changes .chg-chip.deleted { color: var(--fail); }
-pre.diff { margin: 4px 0 8px 26px; padding: 6px; background: #151515; border: 1px solid var(--border); max-height: 240px; overflow: auto; font: 12px/1.4 var(--mono); white-space: pre; }
-pre.diff[hidden] { display: none; }
-pre.diff .add { color: var(--pass); } pre.diff .del { color: var(--fail); } pre.diff .hunk { color: var(--manual); }
 .dialog textarea.prompt { width: 100%; height: 42vh; box-sizing: border-box; padding: 8px; background: #151515; border: 1px solid var(--border); color: inherit; font: 12px/1.4 var(--mono); resize: vertical; }
 .dialog input[type=text] { width: 100%; padding: 6px 8px; background: #3c3c3c; border: 1px solid var(--border); color: #fff; font: inherit; }
 .dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
@@ -263,3 +250,52 @@ button.linklike { background: none; border: 0; color: var(--manual); padding: 0;
 .dialog .md-bar { position: static; margin: -4px -4px 10px; padding: 0 0 8px; }
 .dialog .folder-list { max-height: 36vh; overflow: auto; padding: 6px 4px; }
 .dialog input[type=radio] { margin: 0; }
+
+/* ---- the workbench: what makes the page behave like VS Code ------------------------------------------------------------ */
+body.side-hidden { --side-w: 0px; }
+body.side-hidden #sidebar, body.side-hidden #side-resizer { display: none; }
+
+/* explorer header buttons, shown while the pointer is over the header (as in VS Code) */
+#sidebar h2 { display: flex; align-items: center; }
+#sidebar h2 .tools { margin-left: auto; display: flex; gap: 2px; visibility: hidden; }
+#sidebar section:hover h2 .tools, #sidebar h2 .tools:focus-within { visibility: visible; }
+#sidebar h2 .tools button { background: none; padding: 0 5px; font-size: 13px; line-height: 18px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+#sidebar h2 .tools button:hover { background: #45494e; }
+
+/* the explorer: the row the keyboard is on is outlined, the file in front is filled */
+.tree { outline: none; }
+.tree .row.selected { background: var(--sel); }
+.tree:focus-within .row.selected { outline: 1px solid var(--accent); outline-offset: -1px; background: #04395e; }
+.tree .row.active.selected { background: #094771; }
+
+/* tabs: a preview tab is in italics, a tab being dragged shows where it will land */
+.tab { position: relative; user-select: none; }
+.tab.preview { font-style: italic; }
+.tab.drop-before::before, .tab.drop-after::after { content: ""; position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent-h); }
+.tab.drop-before::before { left: 0; }
+.tab.drop-after::after { right: 0; }
+.tab .close { visibility: hidden; padding: 0 3px; border-radius: 3px; }
+.tab.active .close, .tab:hover .close { visibility: visible; }
+.tab .close:hover { background: #ffffff1f; }
+
+/* the context menu */
+#ctxmenu { position: fixed; z-index: 40; min-width: 190px; padding: 4px 0; background: #252526; border: 1px solid #454545; box-shadow: 0 2px 10px #000b; outline: none; }
+#ctxmenu .mi { padding: 3px 22px; cursor: default; white-space: nowrap; }
+#ctxmenu .mi:hover:not(.disabled), #ctxmenu .mi.focus { background: var(--accent); color: #fff; }
+#ctxmenu .mi.disabled { color: var(--dim); }
+#ctxmenu .sep { height: 1px; margin: 4px 0; background: #454545; }
+
+/* quick open and the command palette */
+#palette { position: fixed; inset: 0; z-index: 30; display: flex; justify-content: center; align-items: flex-start; padding-top: 8vh; }
+#palette[hidden] { display: none; }
+#palette .palette-box { width: min(600px, 92vw); background: #252526; border: 1px solid #454545; box-shadow: 0 6px 24px #000c; }
+#palette input { width: 100%; padding: 6px 8px; margin: 0; background: #3c3c3c; border: 1px solid transparent; border-bottom-color: #454545; color: #fff; font: inherit; outline: none; }
+#palette input:focus { border-color: var(--accent-h); }
+#palette .palette-list { max-height: 50vh; overflow: auto; padding: 3px 0; }
+#palette .palette-item { display: flex; gap: 8px; align-items: baseline; padding: 2px 10px; cursor: pointer; white-space: nowrap; }
+#palette .palette-item.selected { background: #04395e; color: #fff; }
+#palette .pi-label { overflow: hidden; text-overflow: ellipsis; }
+#palette .pi-detail { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#palette .pi-key { margin-left: auto; padding-left: 12px; color: var(--dim); font-size: 12px; flex: none; }
+#palette .hl { color: #18a3ff; font-weight: 600; }
+#palette .palette-empty { padding: 8px 10px; color: var(--dim); }

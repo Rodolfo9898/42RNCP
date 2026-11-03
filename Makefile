@@ -70,11 +70,15 @@ models:
 	[ -n "$$base" ] || { echo "Set LLM_BASE_URL in .env first."; exit 1; }; \
 	curl -fsS -m 30 "$$base/models" $${key:+-H "Authorization: Bearer $$key"} | python3 scripts/models.py
 
-# 42Cursus: the repo with every project as a submodule, grouped by track (see scripts/cursus.sh).
-#   make cursus                      create it (local folder next to this repo + GitHub, private)
-#   make cursus-sort                 move what is in the projects folder into it as submodules
+# 42Cursus: the repo with every project as a submodule, grouped by track (see scripts/cursus.sh). GitHub is the only copy: each
+# command clones it into a temporary folder, works there, pushes the result and deletes the folder. Add CURSUS_DRY_RUN=1 to any
+# of them to do everything except pushing and creating.
+#   make cursus-push                 push your projects (all of ./projects) to their own GitHub repos, so the rest sees them
+#   make cursus-push ONLY="libft nm" ...or only these
+#   make cursus                      create the private GitHub repo (once)
+#   make cursus-sort                 add what is in the projects folder to it as submodules, and push
 #   make cursus-sort MAP="ft_transcendence=common-core"   for a project that has no subject PDF with its name
-#   make cursus-update               move every submodule to the newest commit of its own repo and commit that (CURSUS_PUSH=1 also pushes)
+#   make cursus-update               move every submodule to the newest commit of its own GitHub repo, and push
 cursus:
 	@sh scripts/cursus.sh init
 
@@ -84,4 +88,7 @@ cursus-sort:
 cursus-update:
 	@sh scripts/cursus.sh update
 
-.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort cursus-update
+cursus-push:
+	@sh scripts/cursus.sh push $(ONLY)
+
+.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort cursus-update cursus-push

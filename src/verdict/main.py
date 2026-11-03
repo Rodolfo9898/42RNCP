@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import hashlib
 import json
 import logging
 import os
 import re
 import shutil
-import stat
 import tempfile
 import threading
 import time
@@ -28,7 +26,7 @@ from . import repo as repo_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
 from .prompts import build_fix_prompt, build_review_prompt, find_docker_files, manual_items
-from .changes import TERMINAL_REPORTS_ROOT, TERMINAL_SUBJECTS_ROOT, change_policy
+from .shared import TERMINAL_REPORTS_ROOT, TERMINAL_SUBJECTS_ROOT
 from .checks import EXCLUDED_DIRS, VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
 from .pdfread import read_pages, render_page
@@ -877,252 +875,6 @@ def end_shell(session_id: str) -> dict:
         return {"ended": bool(response.json().get("ended"))}
     except Exception:
         return {"ended": False}
-
-
-# ------------------------------------------------------------------ changes made in the terminal, sent back to the project
-#
-# claude and the shell work on a throw-away copy in the terminal container, which can only read the projects folder. Getting
-# their changes into your project is a separate, explicit step: the terminal container lists what changed, you pick, and this
-# app (which owns the projects folder) writes it. Every rule is checked here again, whatever the terminal container says.
-
-MAX_APPLY_FILES = 500
-MAX_DIFF_LINES = 400
-MAX_DIFF_CHARS = 40_000
-
-
-def terminal_call(endpoint: str, **params):
-    if not (TERMINAL_URL and TERMINAL_TOKEN):
-        raise HTTPException(503, "the terminal is not configured; start the app with `make run`")
-    try:
-        import httpx
-
-        with httpx.Client(trust_env=False, timeout=30) as client:
-            return client.get(f"{TERMINAL_URL}{endpoint}", params=params, headers={"x-terminal-token": TERMINAL_TOKEN})
-    except Exception as exc:
-        raise HTTPException(503, "could not reach the terminal service") from exc
-
-
-def terminal_changes(session_id: str) -> dict:
-    response = terminal_call("/changes", sid=session_id)
-    if response.status_code != 200:
-        raise HTTPException(503, "the terminal service could not list the changes")
-    try:
-        data = response.json()
-        return data if isinstance(data, dict) else {"found": False, "files": []}
-    except ValueError:
-        raise HTTPException(503, "the terminal service gave an unreadable answer") from None
-
-
-def copy_file(session_id: str, rel: str) -> bytes:
-    response = terminal_call("/changes/file", sid=session_id, path=rel)
-    if response.status_code != 200:
-        raise ValueError("the terminal no longer has this file")
-    return response.content
-
-
-def project_path(root: Path, rel: str, *, create: bool = False) -> Path:
-    """Where `rel` lives in the project. Refuses anything that is not a plain path inside it: no `..`, nothing under .git or
-    claude's files, no link on the way and no link or special file at the end. `create` makes the missing folders."""
-    if change_policy(rel)[0]:
-        raise ValueError("not a plain path inside the project")
-    current = root
-    for part in rel.split("/")[:-1]:
-        current = current / part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            if not create:
-                return root / rel
-            current.mkdir()
-            continue
-        if not stat.S_ISDIR(info.st_mode):
-            raise ValueError("a link or a file is in the way")
-    target = root / rel
-    try:
-        info = target.lstat()
-    except FileNotFoundError:
-        return target
-    if not stat.S_ISREG(info.st_mode):
-        raise ValueError("it is a link or not an ordinary file")
-    return target
-
-
-def file_sha(path: Path) -> str | None:
-    """sha256 of an ordinary file, None when it does not exist."""
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return None
-
-
-def decide_change(root: Path, entry: dict) -> tuple[str, str]:
-    """("apply" | "skip", why) for one change, by comparing your project now with what the copy started from."""
-    try:
-        current = file_sha(project_path(root, entry["path"]))
-    except (ValueError, OSError) as exc:
-        return "skip", str(exc)
-    original, new = str(entry.get("original") or ""), str(entry.get("sha") or "")
-    if entry["status"] == "modified":
-        if current is None:
-            return "skip", "deleted on your machine since the copy was made"
-        if current == new:
-            return "skip", "already the same on your machine"
-        return ("apply", "") if current == original else ("skip", "changed on your machine since the copy was made")
-    if entry["status"] == "added":
-        if current is None:
-            return "apply", ""
-        return ("skip", "already there") if current == new else ("skip", "a different file with this name is already in your project")
-    if entry["status"] == "deleted":
-        if current is None:
-            return "skip", "already gone from your project"
-        return ("apply", "") if current == original else ("skip", "changed on your machine since the copy was made")
-    return "skip", "unknown kind of change"
-
-
-def reviewed_changes(root: Path, listing: dict) -> list[dict]:
-    """The terminal's list, cleaned (only the fields we know, only changes we understand) and judged against your project."""
-    out = []
-    for raw in list(listing.get("files") or [])[:MAX_APPLY_FILES]:
-        if not isinstance(raw, dict) or not isinstance(raw.get("path"), str) or raw.get("status") not in ("added", "modified", "deleted"):
-            continue
-        blocked, warn = change_policy(raw["path"])
-        blocked = blocked or str(raw.get("blocked") or "")
-        warn = warn or str(raw.get("warn") or "")
-        entry = {"path": raw["path"], "status": raw["status"], "size": int(raw.get("size") or 0), "binary": bool(raw.get("binary")),
-                 "exec": bool(raw.get("exec")), "original": str(raw.get("original") or ""), "sha": str(raw.get("sha") or ""),
-                 "blocked": blocked, "warn": warn}
-        entry["action"], entry["note"] = ("skip", blocked) if blocked else decide_change(root, entry)
-        entry["selected"] = entry["action"] == "apply" and not warn and not entry["binary"]
-        out.append(entry)
-    return out
-
-
-def write_file(root: Path, rel: str, data: bytes, executable: bool) -> None:
-    """Replace (or create) one file in the project in one step, so a half-written file is never left behind."""
-    target = project_path(root, rel, create=True)
-    try:
-        mode = stat.S_IMODE(target.lstat().st_mode)               # an existing file keeps its permissions
-    except FileNotFoundError:
-        mode = 0o755 if executable else 0o644
-    fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=".verdict-")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, target)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
-def project_root_for_changes(session: Session) -> Path:
-    root = repo_dir(session)
-    if root is None or not root.is_dir():
-        raise HTTPException(400, "this session has no project folder")
-    return root
-
-
-@app.get("/api/sessions/{session_id}/changes")
-def list_changes(session_id: str) -> dict:
-    """What claude or the shell changed in the terminal's working copy, judged against your project folder."""
-    session = session_or_404(session_id)
-    root = project_root_for_changes(session)
-    listing = terminal_changes(session_id)
-    if not listing.get("found"):
-        return {"found": False, "live": bool(listing.get("live")), "project": session.repo.path, "files": [], "truncated": False,
-                "review": review_status(session)}
-    return {"found": True, "live": False, "project": session.repo.path, "files": reviewed_changes(root, listing),
-            "truncated": bool(listing.get("truncated")), "review": review_status(session)}
-
-
-@app.get("/api/sessions/{session_id}/changes/diff")
-def change_diff(session_id: str, path: str) -> dict:
-    session = session_or_404(session_id)
-    root = project_root_for_changes(session)
-    entry = next((e for e in reviewed_changes(root, terminal_changes(session_id)) if e["path"] == path), None)
-    if entry is None:
-        raise HTTPException(404, "this file is not in the list of changes")
-    if entry["blocked"]:
-        return {"diff": "", "note": entry["blocked"], "truncated": False}
-    if entry["binary"]:
-        return {"diff": "", "note": "binary file", "truncated": False}
-    try:
-        target = project_path(root, path)
-        old = target.read_bytes() if target.exists() else b""
-        new = b"" if entry["status"] == "deleted" else copy_file(session_id, path)
-    except (ValueError, OSError) as exc:
-        raise HTTPException(409, str(exc)) from exc
-    lines = list(difflib.unified_diff(old.decode("utf-8", "replace").splitlines(), new.decode("utf-8", "replace").splitlines(),
-                                      f"a/{path}", f"b/{path}", lineterm="", n=3))
-    text = "\n".join(lines[:MAX_DIFF_LINES])
-    return {"diff": text[:MAX_DIFF_CHARS], "note": "", "truncated": len(lines) > MAX_DIFF_LINES or len(text) > MAX_DIFF_CHARS}
-
-
-class ApplyRequest(BaseModel):
-    paths: list[str] = []          # files of the working copy to write into the project (copy mode only)
-    review: bool = False           # also force claude's review into verdict.md in the project
-
-
-@app.post("/api/sessions/{session_id}/changes/apply")
-def apply_changes(session_id: str, req: ApplyRequest) -> dict:
-    """Apply to the project: claude's review is forced into verdict.md when asked for, and the chosen files of the working copy are
-    written into the project folder (only what is in the terminal's current list, only what is still safe to write, and only if
-    your files have not changed since the copy was made)."""
-    session = session_or_404(session_id)
-    if session.state in ("cloning", "running"):
-        raise HTTPException(409, f"session is busy ({session.state})")
-    root = project_root_for_changes(session)
-    applied: list[str] = []
-    skipped: list[dict] = []
-    entries: dict[str, dict] = {}
-    if req.paths:
-        listing = terminal_changes(session_id)
-        if listing.get("live"):
-            raise HTTPException(409, "claude and the shell work directly in your project, so there is nothing to apply: every change is already in it")
-        if not listing.get("found"):
-            raise HTTPException(409, "there is no working copy any more: it exists only while a claude or shell tab is open")
-        entries = {e["path"]: e for e in reviewed_changes(root, listing)}
-    for rel in dict.fromkeys(req.paths[:MAX_APPLY_FILES]):
-        entry = entries.get(rel)
-        if entry is None:
-            skipped.append({"path": rel, "reason": "not in the current list of changes"})
-        elif entry["action"] != "apply":
-            skipped.append({"path": rel, "reason": entry["note"]})
-        else:
-            try:
-                if entry["status"] == "deleted":
-                    project_path(root, rel).unlink()
-                else:
-                    data = copy_file(session_id, rel)
-                    if hashlib.sha256(data).hexdigest() != entry["sha"]:
-                        raise ValueError("it changed again while it was being sent")
-                    write_file(root, rel, data, entry["exec"])
-                applied.append(rel)
-            except (ValueError, OSError) as exc:
-                skipped.append({"path": rel, "reason": str(exc)})
-    review = None
-    if req.review:
-        try:
-            review = {"applied": True, **merge_claude_review(session)}
-        except HTTPException as exc:                      # nothing to merge is an answer, not a failure of the files above
-            review = {"applied": False, "reason": str(exc.detail)}
-    return {"applied": applied, "skipped": skipped, "project": session.repo.path, "review": review}
-
-
-def review_status(session: Session) -> dict:
-    """For the Apply dialog: is a report from claude waiting in the terminal, and is it already in verdict.md?"""
-    try:
-        data = fetch_claude_result(session.id)
-    except Exception:
-        data = {"found": False}
-    text = data.get("text", "") if data.get("found") else ""
-    ready = bool(text.strip())
-    return {"results": bool(session.results), "found": ready, "name": data.get("name", "") if ready else "", "chars": len(text) if ready else 0,
-            "applied": ready and text == session.claude_review, "merged": bool(session.claude_review), "merged_at": session.claude_review_at,
-            "structured": session.claude.structured, "assessed": session.claude.assessed, "total": session.claude.total,
-            "verdict_file": session.verdict_file}
 
 
 def review_prompt_for(session: Session) -> tuple[str, dict]:
