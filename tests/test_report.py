@@ -188,9 +188,10 @@ def test_the_merged_page_does_not_repeat_claudes_prose():
 
 def test_the_headline_and_final_verdict_carry_both_opinions():
     md = merged_document()
-    assert "❌ **FAIL** · Claude: **do not pass**" in md.split("## At a glance")[0]
+    assert "❌ **FAIL** · decided by Claude: **do not pass**" in md.split("## At a glance")[0]
     final = md[md.index("## Final verdict"):]
     assert "**Result: FAIL** · **Claude: do not pass**" in final and "> The README is missing and strchr is wrong." in final
+    assert "Claude has the final say." in final
     assert "What to do next (2 thing(s) lacking" in final and "1. README.md meets the subject's requirements" in final
     assert "2. The strchr function must find any byte. — Bytes above 0x7f" in final
     assert "Still open: 3 point(s) for a second look; 1 requirement(s) nobody has assessed yet." in final
@@ -243,3 +244,52 @@ def test_not_applicable_is_listed_as_such_and_does_not_need_a_second_look():
     skipped = result("skipped", title="Passes norminette", detail="norminette is not installed.")
     assert summarize([result("pass"), na, skipped])["overall"] == "PASS WITH ISSUES"
     assert "### Warnings and checks that could not run (1)" in render_markdown(repo=None, subjects=[], results=[na, skipped], improvements=[])
+
+
+# ---------------------------------------------------------------- once claude's review is merged, claude has the final say
+
+
+def decided(decision, results, **kw):
+    claude = ClaudeReport(structured=True, verdict=ClaudeVerdict(decision=decision, reason="Because."), **kw)
+    return summarize(results, judged(), claude), claude
+
+
+def test_claudes_decision_is_the_result_whatever_the_lists_say():
+    failing = [result("pass"), result("fail")]
+    clean = [result("pass")]
+    for decision, expected in (("ready to pass", "PASS"), ("pass with reservations", "PASS WITH ISSUES"), ("do not pass", "FAIL")):
+        for results, lists in ((failing, "FAIL"), (clean, "PASS")):
+            summary, _ = decided(decision, results)
+            assert (summary["overall"], summary["decided_by"], summary["lists"]) == (expected, "claude", lists), (decision, lists)
+
+
+def test_without_a_decision_from_claude_the_lists_decide_as_before():
+    results = [result("pass"), result("fail")]
+    for claude in (None, ClaudeReport(), ClaudeReport(structured=True)):                  # no review, or a report with no verdict in it
+        summary = summarize(results, None, claude)
+        assert (summary["overall"], summary["decided_by"], summary["lists"]) == ("FAIL", "scripts", "FAIL")
+    assert summarize([], None, ClaudeReport(verdict=ClaudeVerdict(decision="ready to pass")))["overall"] == "NOT RUN"     # nothing to decide on
+
+
+def test_the_document_says_claude_decided_and_what_the_lists_alone_would_have_said():
+    results = [result("pass"), result("fail", title="No README", detail="Missing.")]
+    summary, claude = decided("ready to pass", results)
+    md = render_markdown(repo=None, subjects=[], results=results, claude=claude)
+    assert "✅ **PASS** · decided by Claude: **ready to pass** (the lists below alone say FAIL)" in md.split("## At a glance")[0]
+    final = md[md.index("## Final verdict"):]
+    assert "**Result: PASS** · **Claude: ready to pass**" in final and "Claude has the final say: the lists above alone would say FAIL." in final
+    assert "What to do next (1 thing(s) lacking" in final and "Nothing is lacking and nothing needs a second look" not in final     # (still true to the lists)
+    assert "Once claude's review is merged, claude has the final say" in md
+    agree = render_markdown(repo=None, subjects=[], results=[result("pass")], claude=decided("ready to pass", [result("pass")])[1])
+    assert "(the lists below alone say" not in agree and "Claude has the final say." in agree and "Nothing is lacking and nothing needs a second look." in agree
+    plain = render_markdown(repo=None, subjects=[], results=results)
+    assert "decided by Claude" not in plain and "Claude has the final say." not in plain
+
+
+def test_the_sentences_about_what_is_open_describe_the_lists_not_claudes_decision():
+    results = [result("pass"), manual("r1", "Handles bad input.")]
+    claude = ClaudeReport(structured=True, verdict=ClaudeVerdict(decision="ready to pass", reason="Fine."))
+    md = render_markdown(repo=None, subjects=[], results=results, claude=claude)
+    final = md[md.index("## Final verdict"):]
+    assert "**Result: PASS**" in final and "Claude has the final say: the lists above alone would say PASS WITH ISSUES." in final
+    assert "Nothing is lacking." in final and "nothing needs a second look" not in final and "Still open: 1 point(s) for a second look" in final

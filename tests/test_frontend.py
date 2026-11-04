@@ -375,3 +375,19 @@ def test_the_terminal_tab_says_whether_git_over_ssh_works_there():
     body = app[app.index("async function openTerminal"):app.index("addTab(key, `⌨ ${name}`")]
     assert "sshNote(status.ssh === true)" in body                                                    # only a clear yes counts as on
     assert "gitNote" in body.split('class: "term-bar"')[1]                                           # it is in the bar, for the shell and for claude
+
+
+def test_the_verdict_window_says_when_claude_decided_and_what_the_lists_alone_say():
+    cases = [None, {"decided_by": "scripts", "overall": "FAIL", "lists": "FAIL"}, {"decided_by": "claude", "overall": "PASS", "lists": "PASS"},
+             {"decided_by": "claude", "overall": "PASS WITH ISSUES", "lists": "FAIL"}]
+    assert json.loads(run_js("decided", json.dumps(cases))) == ["", "", "Decided by Claude.", "Decided by Claude. The lists alone say FAIL."]
+
+
+def test_a_run_clears_claudes_tab_the_verdict_and_the_open_files_and_does_not_collect_what_claude_saved():
+    app = static("app.js")
+    clear = app[app.index("function clearForNewRun"):app.index("async function run()")]
+    assert 'claude.discard = true; closeTab("terminal")' in clear and 'closeTab("verdict.md")' in clear and "tab.repoFile" in clear
+    body = app[app.index("async function run()"):app.index("async function poll()")]
+    assert body.index("post(`sessions/${sid}/run`)") < body.index("clearForNewRun()") < body.index("poll()")          # (nothing is closed if the server refuses)
+    terminal = app[app.index("tabs.get(key).onClose"):app.index("showTab(key);\n\n  const term")]
+    assert "!tabs.get(key)?.discard" in terminal and "if (shell || discard) return;" in terminal                  # (no /end call, no collecting timer)

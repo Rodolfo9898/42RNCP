@@ -21,6 +21,8 @@ def client(tmp_path, monkeypatch):
     import verdict.main as main
 
     importlib.reload(main)
+    main._test_real_end_claude, main._test_ended_claude = main.end_claude, []
+    monkeypatch.setattr(main, "end_claude", main._test_ended_claude.append)          # (a run asks the terminal service to end claude: not over the network here)
     return TestClient(main.app), main
 
 
@@ -1138,7 +1140,7 @@ def test_a_report_without_the_block_still_appears_but_is_flagged(client, monkeyp
     assert c.get(f"/api/sessions/{sid}").json()["claude"]["structured"] is False
 
 
-def test_a_new_run_keeps_claudes_answers(client, monkeypatch):
+def test_a_new_run_starts_from_nothing_claudes_answers_included(client, monkeypatch):
     c, main = client
     sid, repo = prepared_session(c, main, "mg3")
     run_to_completion(c, sid)
@@ -1148,9 +1150,12 @@ def test_a_new_run_keeps_claudes_answers(client, monkeypatch):
     items = main.store.get(sid).review_items
     terminal_returns(monkeypatch, main, lambda session_id: structured_review([i.n for i in items]))
     c.post(f"/api/sessions/{sid}/claude-review/save")
+    assert "Requirements claude found ok" in (repo / "verdict.md").read_text() and main.store.get(sid).claude.structured
+    terminal_returns(monkeypatch, main, lambda session_id: None)                             # (claude was ended, its report is gone with it)
     again = run_to_completion(c, sid)
-    assert {v["by"] for v in again["ai"]["reviews"].values()} == {"Claude"} and again["claude"]["structured"]
-    assert "Requirements claude found ok" in (repo / "verdict.md").read_text()
+    assert again["ai"]["reviews"] == {} and again["claude"]["structured"] is False and again["claude"]["verdict"] is None
+    assert "Requirements claude found ok" not in (repo / "verdict.md").read_text() and "decided by Claude" not in (repo / "verdict.md").read_text()
+    assert_no_review(c, main, sid)
 
 
 # ---------------------------------------------------------------- the environment check (sandbox + claude's terminal)
@@ -1306,11 +1311,13 @@ def assert_no_review(c, main, sid):
     assert c.get(f"/api/sessions/{sid}").json()["claude"]["verdict"] is None
 
 
-def test_a_review_stays_while_the_same_project_is_checked_again(client, monkeypatch):
+def test_a_review_does_not_survive_the_next_run_even_for_the_same_project(client, monkeypatch):
     c, main = client
     sid, repo = reviewed_session(c, main, monkeypatch, "ctx0")
+    saving_terminal(monkeypatch, main, None)
     run_to_completion(c, sid)
-    assert main.store.get(sid).claude_review == REVIEW and "Claude's review" in (repo / "verdict.md").read_text()
+    assert main.store.get(sid).claude_review == "" and "Claude's review" not in (repo / "verdict.md").read_text()
+    assert_no_review(c, main, sid)
 
 
 def test_another_repository_never_inherits_the_previous_review(client, monkeypatch):
@@ -1698,13 +1705,11 @@ def test_a_review_lost_after_a_new_run_comes_back_when_it_is_saved_again_even_if
     sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "ap3")
     assert save(c, sid).status_code == 200
     run_to_completion(c, sid)
-    assert "note for 1" in (repo / "verdict.md").read_text()                             # a plain new run keeps the review
+    assert "note for 1" not in (repo / "verdict.md").read_text()                         # a new run starts from nothing: the review is gone
     session = main.store.get(sid)
-    session.review_context = '["something else"]'                                        # what makes the app drop it: another commit or subject set
-    main.refresh_context(session)
     assert session.claude_review == "" and session.claude.structured is False
     run_to_completion(c, sid)
-    assert "note for 1" not in (repo / "verdict.md").read_text()                         # the review is gone from the project's verdict.md
+    assert "note for 1" not in (repo / "verdict.md").read_text()                         # and it stays gone
     c.get(f"/api/sessions/{sid}/review-prompt")                                          # (the numbering of the current run)
     terminal_returns(monkeypatch, main, lambda session_id: structured_review([i.n for i in main.store.get(sid).review_items]))
     main.store.get(sid).review_context = '["a different commit"]'                        # the app thinks this report belongs to something else
@@ -1792,3 +1797,221 @@ def test_the_norm_is_refreshed_too(client):
     assert norm.rules
     norm.rules = []                                                                         # a Norm stored by an older parser
     assert main.refresh_subject_rules(session) is True and session.subjects["en.norm.pdf"].rules
+
+
+# ---------------------------------------------------------------- every run starts fresh: claude ended, old verdict removed, project pulled
+
+
+def prepared_with_verdict(c, main, name):
+    sid, repo = prepared_session(c, main, name)
+    run_to_completion(c, sid)
+    assert (repo / "verdict.md").is_file() and main.store.get(sid).verdict_file == "verdict.md"
+    return sid, repo
+
+
+def stop_the_checks(monkeypatch, main):
+    """Lets a run start (everything that happens in the endpoint) without the background checks."""
+    monkeypatch.setattr(main, "_run", lambda session: None)
+
+
+def test_a_run_ends_claude_removes_the_old_verdict_and_forgets_every_review_before_anything_else(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "fr1")
+    assert save(c, sid).status_code == 200
+    session = main.store.get(sid)
+    assert session.claude_review and session.claude.structured and session.results and session.improvements
+    stop_the_checks(monkeypatch, main)
+    first_run = session.runs
+    main._test_ended_claude.clear()
+    answer = c.post(f"/api/sessions/{sid}/run").json()
+    assert main._test_ended_claude == [sid]                                          # claude's session is stopped (its report is not collected)
+    assert not (repo / "verdict.md").exists() and session.verdict_file == "" and answer["verdict_file"] == ""
+    assert answer["state"] == "running" and answer["results"] == [] and answer["improvements"] == [] and answer["summary"]["overall"] == "NOT RUN"
+    assert answer["ai"]["reviews"] == {} and answer["ai"]["state"] == "idle" and answer["claude"]["structured"] is False
+    assert session.claude_review == "" and session.claude_review_at == "" and session.review_items == [] and session.readme == {}
+    assert session.runs == first_run + 1
+
+
+def test_a_verdict_md_that_is_the_projects_own_is_never_removed(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "fr2")
+    (repo / "verdict.md").write_text("# my own notes about verdicts\n")                # (not written by this app: no marker)
+    (repo / "claude-review.md").write_text("my own file\n")
+    stop_the_checks(monkeypatch, main)
+    assert c.post(f"/api/sessions/{sid}/run").status_code == 200
+    assert (repo / "verdict.md").read_text() == "# my own notes about verdicts\n" and (repo / "claude-review.md").read_text() == "my own file\n"
+
+
+def test_the_generated_verdict_files_of_any_version_are_removed_and_a_link_is_never_followed(client, monkeypatch, tmp_path):
+    c, main = client
+    sid, repo = prepared_with_verdict(c, main, "fr3")
+    marker = (repo / "verdict.md").read_text().splitlines()[0]
+    (repo / "verdict-report.md").write_text(marker + "\nold\n")
+    (repo / "claude-review.md").write_text(marker + "\nold review\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text(marker + "\nnot in the project\n")
+    (repo / "claude-review-report.md").symlink_to(outside)
+    stop_the_checks(monkeypatch, main)
+    c.post(f"/api/sessions/{sid}/run")
+    assert not any((repo / n).exists() for n in ("verdict.md", "verdict-report.md", "claude-review.md"))
+    assert outside.exists()                                                           # (the link may point anywhere: it is left alone)
+
+
+def test_a_terminal_opened_before_the_run_cannot_bring_its_report_back(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_with_verdict(c, main, "fr4")
+    session = main.store.get(sid)
+    old_context = main.review_context(session)
+    stop_the_checks(monkeypatch, main)
+    c.post(f"/api/sessions/{sid}/run")
+    monkeypatch.setattr(main, "fetch_claude_review", lambda session_id: REVIEW)       # the old terminal still has its report when it closes
+    assert main.collect_claude_review(session, old_context) is False
+    assert session.claude_review == "" and not (repo / "verdict.md").exists()
+    assert main.review_context(session) != old_context
+
+
+def test_a_run_stops_a_running_ai_review(client, monkeypatch):
+    import threading
+    c, main = client
+    sid, repo = prepared_with_verdict(c, main, "fr5")
+    job = type("Job", (), {"cancel": threading.Event()})()
+    main._ai_jobs[sid] = job
+    session = main.store.get(sid)
+    session.ai = main.AIState(state="running", job=4)
+    session.review_context = main.review_context(session)                              # (so that nothing but the run itself stops the job)
+    stop_the_checks(monkeypatch, main)
+    c.post(f"/api/sessions/{sid}/run")
+    assert job.cancel.is_set() and session.ai.state == "idle" and session.ai.job > 4 and sid not in main._ai_jobs     # (a running job that finishes now is ignored)
+
+
+def test_the_terminal_service_is_asked_to_end_claudes_session_without_collecting_anything(client, monkeypatch):
+    import httpx
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path, dict(request.url.params), request.headers.get("x-terminal-token")))
+        return httpx.Response(200, json={"ended": True})
+
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(handler)))
+    main._test_real_end_claude(sid)
+    assert calls == [("POST", "/pty/end", {"sid": sid}, "tok")]                       # claude's session only: the shell (kind=shell) is left running
+    monkeypatch.setattr(main, "TERMINAL_URL", "")
+    calls.clear()
+    main._test_real_end_claude(sid)
+    assert calls == []                                                                # no terminal service configured: nothing to end
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ConnectError("down")))))
+    main._test_real_end_claude(sid)                                                   # unreachable: the run must still start
+
+
+# ---- the pull that opens every run
+
+
+def pulls(monkeypatch, main, behaviour):
+    """Replaces git pull; `behaviour(path)` returns (RepoInfo, summary) or raises RepoError. Returns the list of calls."""
+    calls = []
+
+    def fake(path, known_hosts):
+        calls.append(path)
+        return behaviour(path)
+
+    monkeypatch.setattr(main.repo_mod, "pull", fake)
+    return calls
+
+
+def git_repo_in(main, sid, name):
+    repo = attach_repo(main, sid, name)
+    (repo / ".git").mkdir()
+    return repo
+
+
+def test_every_run_pulls_first_and_shows_what_the_pull_did(client, monkeypatch):
+    from verdict.repo import RepoInfo
+    c, main = client
+    sid, repo = prepared_session(c, main, "pl1")
+    seen = []
+    calls = pulls(monkeypatch, main, lambda path: (seen.append(main.store.get(sid).results.copy()) or RepoInfo(url="git@example.com:a/b.git", commit="def5678", subject="newer", author="me"), "Fast-forward"))
+    done = run_to_completion(c, sid)
+    assert calls == [repo] and seen == [[]]                                           # the pull came before any check produced a result
+    assert done["repo"]["commit"] == "def5678" and done["repo"]["subject"] == "newer" and done["message"] == "git pull: now at def5678"
+    assert done["state"] == "done" and done["results"]
+    again = pulls(monkeypatch, main, lambda path: (RepoInfo(url="git@example.com:a/b.git", commit="def5678", subject="newer", author="me"), "Already up to date."))
+    done = run_to_completion(c, sid)
+    assert len(again) == 1 and done["message"] == "git pull: already up to date (def5678)"
+
+
+def test_a_pull_that_cannot_be_done_does_not_stop_the_checks(client, monkeypatch):
+    from verdict.repo import RepoError
+    c, main = client
+    sid, repo = prepared_session(c, main, "pl2")
+
+    def refuse(path):
+        raise RepoError("git pull failed: diverged")
+
+    pulls(monkeypatch, main, refuse)
+    done = run_to_completion(c, sid)
+    assert done["state"] == "done" and done["results"] and done["message"] == "git pull skipped: git pull failed: diverged"
+    assert done["repo"]["commit"] == "abc1234"                                        # unchanged
+
+
+def test_a_project_without_a_remote_is_not_pulled(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "pl3")
+    main.store.get(sid).repo.url = ""
+    calls = pulls(monkeypatch, main, lambda path: pytest.fail("there is nothing to pull from"))
+    answer = c.post(f"/api/sessions/{sid}/run").json()
+    assert answer["message"] == ""                                                    # (it does not even say it is pulling)
+    for _ in range(100):
+        state = c.get(f"/api/sessions/{sid}").json()
+        if state["state"] != "running":
+            break
+        __import__("time").sleep(0.1)
+    assert calls == [] and state["state"] == "done" and state["message"] == ""
+
+
+def test_the_status_says_it_is_pulling_while_it_does(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "pl4")
+    stop_the_checks(monkeypatch, main)
+    assert c.post(f"/api/sessions/{sid}/run").json()["message"] == "git pull…"
+
+
+def test_the_checks_look_at_what_was_pulled(client, monkeypatch):
+    from verdict.repo import RepoInfo
+    c, main = client
+    sid, repo = prepared_session(c, main, "pl5")
+    assert not (repo / "NEW.md").exists()
+
+    def pull_a_file(path):
+        (path / "NEW.md").write_text("arrived with the pull\n")
+        return RepoInfo(url="git@example.com:a/b.git", commit="aaa1111", subject="s", author="a"), ""
+
+    pulls(monkeypatch, main, pull_a_file)
+    run_to_completion(c, sid)
+    assert "NEW.md" in [e["path"] for e in c.get(f"/api/sessions/{sid}/tree").json()]
+    assert "aaa1111" in (repo / "verdict.md").read_text()                               # the verdict names the commit that was checked
+
+
+# ---- claude has the final say once its review is merged
+
+
+def test_after_the_merge_claudes_decision_is_the_result_in_the_app_and_in_verdict_md(client, monkeypatch):
+    from verdict.models import ClaudeVerdict
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "fs1")
+    before = c.get(f"/api/sessions/{sid}").json()["summary"]
+    assert before["decided_by"] == "scripts"
+    assert save(c, sid).status_code == 200
+    summary = c.get(f"/api/sessions/{sid}").json()["summary"]
+    assert main.store.get(sid).claude.verdict.decision == "pass with reservations"
+    assert (summary["overall"], summary["decided_by"]) == ("PASS WITH ISSUES", "claude") and summary["lists"] == "FAIL"     # (item 1 is a problem, claude is more lenient)
+    text = (repo / "verdict.md").read_text()
+    assert "decided by Claude: **pass with reservations** (the lists below alone say FAIL)" in text and "**Result: PASS WITH ISSUES**" in text
+    for decision, expected in (("ready to pass", "PASS"), ("do not pass", "FAIL")):
+        main.store.get(sid).claude.verdict = ClaudeVerdict(decision=decision, reason="x")
+        assert c.get(f"/api/sessions/{sid}").json()["summary"]["overall"] == expected
+        assert f"**Result: {expected}**" in c.get(f"/api/sessions/{sid}/verdict.md").text

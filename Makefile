@@ -3,8 +3,9 @@ COMPOSE = docker compose
 # TERMINAL_SSH=1 (on the command line, or a line TERMINAL_SSH=1 in .env) gives claude's terminal and the shell tab your
 # ssh-agent so `git push` works there. Off by default: while it is on, anything running in that container, including a
 # project's code that claude builds, can use your keys. See docker-compose.ssh.yml.
-TERMINAL_SSH ?= $(shell grep -m1 '^TERMINAL_SSH=' .env 2>/dev/null | cut -d= -f2-)
-ifeq ($(TERMINAL_SSH),1)
+# (spaces, tabs, quotes and a Windows line ending around the 1 are ignored: "TERMINAL_SSH=1 " must not silently mean off)
+TERMINAL_SSH ?= $(shell grep -m1 '^TERMINAL_SSH=' .env 2>/dev/null | cut -d= -f2- | tr -d ' \t\r"')
+ifeq ($(strip $(TERMINAL_SSH)),1)
 COMPOSE = docker compose -f docker-compose.yml -f docker-compose.ssh.yml
 endif
 

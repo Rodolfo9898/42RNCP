@@ -44,11 +44,17 @@ def test_clone_uses_ssh_agent_and_never_prompts(tmp_path, monkeypatch):
     assert "GITHUB_TOKEN" not in env
 
 
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    monkeypatch.setattr(repo, "RETRY_PAUSE", 0)
+
+
 def test_clone_failure_reports_the_last_git_line_and_cleans_up(tmp_path, monkeypatch):
     dest = tmp_path / "projects" / "ps"
 
     def fake_run(cmd, **kwargs):
-        dest.mkdir(parents=True, exist_ok=True)
+        if cmd[0] == "git":
+            dest.mkdir(parents=True, exist_ok=True)
         return subprocess.CompletedProcess(cmd, 128, "", "Cloning...\ngit@github.com: Permission denied (publickey).\n")
 
     monkeypatch.setattr(repo.subprocess, "run", fake_run)
@@ -216,3 +222,117 @@ def test_pull_needs_a_git_repository(tmp_path):
     (tmp_path / "plain").mkdir()
     with pytest.raises(repo.RepoError, match="not a git repository"):
         repo.pull(tmp_path / "plain", tmp_path / "known_hosts")
+
+
+# ---------------------------------------------------------------- a refused sign-in: one more try, then say what ssh did
+
+
+OFFERED_TWO = """debug1: Will attempt key: me@mac ED25519 SHA256:aaaa agent
+debug1: Offering public key: me@mac ED25519 SHA256:aaaa agent
+debug1: Authentications that can continue: publickey
+debug1: Offering public key: me@mac ED25519 SHA256:bbbb agent
+debug1: Authentications that can continue: publickey
+git@github.com: Permission denied (publickey).
+"""
+DENIED = "Cloning into 'x'...\ngit@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n"
+
+
+def clone_with(tmp_path, monkeypatch, clone_results, probe_stderr="", probe_stdout="", url="git@github.com:user/repo.git", probe_raises=None):
+    """Runs repo.clone with fake git and ssh. clone_results: what each git clone attempt answers (stderr, or "" for success)."""
+    dest = tmp_path / "projects" / "ps"
+    seen = {"clones": 0, "probes": []}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "ssh":
+            seen["probes"].append((cmd, kwargs))
+            if probe_raises:
+                raise probe_raises
+            return subprocess.CompletedProcess(cmd, 255, probe_stdout, probe_stderr)
+        if "clone" in cmd:
+            stderr = clone_results[min(seen["clones"], len(clone_results) - 1)]
+            seen["clones"] += 1
+            if stderr:
+                dest.mkdir(parents=True, exist_ok=True)         # git leaves a half-made folder behind
+                return subprocess.CompletedProcess(cmd, 128, "", stderr)
+            dest.mkdir(parents=True)
+        return subprocess.CompletedProcess(cmd, 0, "abc1234\nsubject\nauthor\n", "")
+
+    monkeypatch.setattr(repo.subprocess, "run", fake_run)
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/agent.sock")
+    try:
+        return repo.clone(url, dest, tmp_path / "ws" / "known_hosts"), seen, dest
+    except repo.RepoError as exc:
+        return exc, seen, dest
+
+
+def test_a_sign_in_that_fails_once_and_works_the_second_time_is_a_success(tmp_path, monkeypatch):
+    result, seen, dest = clone_with(tmp_path, monkeypatch, [DENIED, ""])
+    assert isinstance(result, repo.RepoInfo) and result.commit == "abc1234" and seen["clones"] == 2 and seen["probes"] == []
+    assert dest.exists()
+
+
+def test_it_only_tries_twice_and_a_refused_key_that_stays_refused_gets_a_diagnosis(tmp_path, monkeypatch):
+    error, seen, dest = clone_with(tmp_path, monkeypatch, [DENIED], probe_stderr=OFFERED_TWO)
+    assert isinstance(error, repo.RepoError) and seen["clones"] == 2 and len(seen["probes"]) == 1 and not dest.exists()
+    text = str(error)
+    assert "github.com accepted none of the 2 key(s) the ssh-agent offered: SHA256:aaaa (me@mac), SHA256:bbbb (me@mac)" in text
+    assert "https://github.com/settings/keys" in text and "ssh-keygen -lf" in text
+    assert "Check the 'ssh' indicator" not in text                                      # the generic guess is replaced by what was found
+
+
+def test_the_probe_signs_in_the_way_the_clone_does_and_cannot_be_turned_into_a_command(tmp_path, monkeypatch):
+    _, seen, _ = clone_with(tmp_path, monkeypatch, [DENIED], probe_stderr=OFFERED_TWO, url="ssh://git@gitlab.example.org:2222/group/repo.git")
+    cmd, kwargs = seen["probes"][0]
+    assert cmd[:3] == ["ssh", "-v", "-T"] and cmd[-3:] == ["-p", "2222", "git@gitlab.example.org"] and "BatchMode=yes" in cmd
+    assert f"UserKnownHostsFile={tmp_path / 'ws' / 'known_hosts'}" in cmd and "GIT_SSH_COMMAND" not in kwargs["env"]
+    assert kwargs["env"]["SSH_AUTH_SOCK"] == "/run/agent.sock" and kwargs["timeout"] <= 30 and kwargs.get("shell") is not True
+    assert "github.com/settings/keys" not in str(clone_with(tmp_path / "again", monkeypatch, [DENIED], probe_stderr=OFFERED_TWO, url="ssh://git@gitlab.example.org:2222/group/repo.git")[0])
+
+
+@pytest.mark.parametrize("log,expected", [
+    ("", "offered no key to github.com at all"),
+    ("debug1: Offering public key: me@mac ED25519 SHA256:aaaa agent\ndebug1: Server accepts key: me@mac ED25519 SHA256:aaaa agent\n"
+     "git@github.com: Permission denied (publickey).\n", "github.com knows one of the keys the agent offered, but the agent did not sign with it: SHA256:aaaa"),
+    ("debug1: Offering public key: me@mac ED25519 SHA256:aaaa agent\ndebug1: Server accepts key: me@mac ED25519 SHA256:aaaa agent\n"
+     "Authenticated to github.com ([1.2.3.4]:22) using \"publickey\".\nHi Rodolfo9898! You've successfully authenticated\n",
+     "github.com did accept your key and signed in as Rodolfo9898, so this account cannot read this repository"),
+])
+def test_what_ssh_did_is_told_in_plain_words(tmp_path, monkeypatch, log, expected):
+    error, _, _ = clone_with(tmp_path, monkeypatch, [DENIED], probe_stderr=log)
+    assert expected in str(error)
+
+
+def test_if_the_probe_cannot_run_the_ordinary_message_is_kept(tmp_path, monkeypatch):
+    for raises in (FileNotFoundError("ssh"), subprocess.TimeoutExpired("ssh", 30)):
+        error, _, _ = clone_with(tmp_path, monkeypatch, [DENIED], probe_raises=raises)
+        assert "Permission denied (publickey)" in str(error) and "Check the 'ssh' indicator" in str(error), raises
+
+
+def test_other_failures_are_neither_retried_nor_probed(tmp_path, monkeypatch):
+    error, seen, _ = clone_with(tmp_path, monkeypatch, ["Host key verification failed.\n"])
+    assert seen["clones"] == 1 and seen["probes"] == [] and "known_hosts" in str(error)
+    error, seen, _ = clone_with(tmp_path, monkeypatch, ["ERROR: Repository not found.\nfatal: Could not read from remote repository.\n"])
+    assert seen["clones"] == 1 and seen["probes"] == [] and "Repository not found" in str(error)
+
+
+def test_a_dropped_connection_is_retried_too(tmp_path, monkeypatch):
+    result, seen, _ = clone_with(tmp_path, monkeypatch, ["Connection closed by 20.26.156.215 port 22\nfatal: Could not read from remote repository.\n", ""])
+    assert isinstance(result, repo.RepoInfo) and seen["clones"] == 2
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("git@github.com:user/repo.git", ("git", "github.com", None)),
+    ("ssh://git@gitlab.example.org:2222/group/repo.git", ("git", "gitlab.example.org", 2222)),
+    ("ssh://me@host/repo", ("me", "host", None)),
+    ("me@vogsphere.42lisboa.com:vogsphere/intra-uuid-1234", ("me", "vogsphere.42lisboa.com", None)),
+])
+def test_user_host_and_port_come_out_of_an_address(url, expected):
+    assert repo.ssh_target(repo.validate_url(url)) == expected
+
+
+def test_the_second_try_waits_a_moment_first(tmp_path, monkeypatch):
+    pauses = []
+    monkeypatch.setattr(repo, "RETRY_PAUSE", 2)
+    monkeypatch.setattr(repo.time, "sleep", pauses.append)
+    clone_with(tmp_path, monkeypatch, [DENIED, ""])
+    assert pauses == [2]

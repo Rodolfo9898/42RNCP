@@ -151,7 +151,7 @@ HOW TO WORK
 2. For each item in A: say "likely ok", "likely a problem" or "unclear", give one line on what I should check by hand, and cite file:line.
 3. Then go through B and report concrete findings, each with file:line. Say "unclear" instead of guessing.
 4. Finish with at most 10 improvements grouped as structure, code, logic and readability, most important first.
-5. When you are done, save your complete report as {report_at} ({report_rule}) and tell me it is saved. Its last prose section must be titled "Verdict": one of "ready to pass", "pass with reservations" or "do not pass", then two sentences saying why.
+5. When you are done, save your complete report as {report_at} ({report_rule}) and tell me it is saved. Its last prose section must be titled "Verdict": one of "ready to pass", "pass with reservations" or "do not pass", then two sentences saying why. Your decision is the final result of this review (ready to pass is PASS, pass with reservations is PASS WITH ISSUES, do not pass is FAIL), whatever the scripts above reported, so weigh their results too.
 6. The file must END with exactly one fenced json block. That block is what gets merged into the verdict document, so put every finding in it; the prose above it can be short. Use exactly this shape:
 ```json
 {{

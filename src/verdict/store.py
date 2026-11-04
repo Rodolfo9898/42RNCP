@@ -52,6 +52,7 @@ class Session(BaseModel):
     review_items: list[ReviewItem] = Field(default_factory=list)   # numbering of the requirements in the last prompt
     review_context: str = ""       # the repository, commit and subjects that claude's and the AI's reviews were made for
     verdict_file: str = ""  # name of the verdict written into the repository
+    runs: int = 0                  # how many times ▶ Run checks started: a terminal opened before the latest run can never bring its report back
     state: Literal["idle", "cloning", "running", "done", "error"] = "idle"
     message: str = ""
 

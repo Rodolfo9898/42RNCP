@@ -47,5 +47,6 @@ else if (command === "key") process.stdout.write(JSON.stringify(JSON.parse(input
 else if (command === "showkey") process.stdout.write(JSON.stringify(JSON.parse(input).map(([binding, mac]) => lib.showKey(binding, mac))));
 else if (command === "close") { const [entries, mode, key] = JSON.parse(input); process.stdout.write(JSON.stringify(lib.tabsToClose(entries, mode, key))); }
 else if (command === "move") { const [keys, from, to, after] = JSON.parse(input); process.stdout.write(JSON.stringify(lib.moveKey(keys, from, to, after))); }
+else if (command === "decided") process.stdout.write(JSON.stringify(JSON.parse(input).map(lib.decidedNote)));
 else if (command === "sshnote") process.stdout.write(JSON.stringify(JSON.parse(input).map(lib.sshNote)));
 else { console.error("unknown command"); process.exit(2); }

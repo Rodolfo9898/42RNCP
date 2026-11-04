@@ -383,6 +383,12 @@ function moveKey(keys, from, to, after = false) {
   return rest;
 }
 
+// Who decided the overall result: once claude's review is merged, claude has the final say, and the lists of verdict.md may differ.
+function decidedNote(summary) {
+  if (!summary || summary.decided_by !== "claude") return "";
+  return summary.lists === summary.overall ? "Decided by Claude." : `Decided by Claude. The lists alone say ${summary.lists}.`;
+}
+
 // What a terminal tab says about git over ssh: a clone or a push only signs in when the terminal container was given your ssh-agent.
 function sshNote(shared) {
   return shared ? "git over ssh works here: your ssh-agent is shared with this tab."
@@ -390,5 +396,5 @@ function sshNote(shared) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { sshNote, fuzzyMatch, matchesKey, showKey, tabsToClose, moveKey, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
+  module.exports = { decidedNote, sshNote, fuzzyMatch, matchesKey, showKey, tabsToClose, moveKey, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
 }

@@ -34,23 +34,33 @@ def shown_status(r: CheckResult, ai: AIState | None) -> str:
     return REVIEWED_STATUS.get(review.assessment, "manual") if review else r.status
 
 
+# claude's decision, as the result it stands for. Once its report is merged, claude has the final say.
+CLAUDE_DECIDES = {"ready to pass": "PASS", "pass with reservations": "PASS WITH ISSUES", "do not pass": "FAIL"}
+
+
 def summarize(results: list[CheckResult], ai: AIState | None = None, claude: ClaudeReport | None = None) -> dict:
-    """The result follows the two lists of verdict.md (mandatory part, claude's answers included):
-    anything under "Lacking" is a FAIL; otherwise anything under "Second look" is a PASS WITH ISSUES; otherwise PASS."""
+    """Before claude's review is merged the result follows the two lists of verdict.md (mandatory part): anything under
+    "Lacking" is a FAIL; otherwise anything under "Second look" is a PASS WITH ISSUES; otherwise PASS. After the merge claude
+    has the final say: its decision (ready to pass / pass with reservations / do not pass) is the result, and `lists` keeps
+    what the lists alone would have said."""
     counts = {sec: Counter(shown_status(r, ai) for r in results if r.section == sec) for sec in ("mandatory", "bonus")}
     if not results:
-        overall = "NOT RUN"
+        lists = "NOT RUN"
     else:
         mandatory = bucket([r for r in results if r.section == "mandatory"], ai)
         if mandatory.lacking:
-            overall = "FAIL"
+            lists = "FAIL"
         elif mandatory.second or (claude is not None and claude.corrections):
-            overall = "PASS WITH ISSUES"
+            lists = "PASS WITH ISSUES"
         else:
-            overall = "PASS"
+            lists = "PASS"
+    decision = claude.verdict.decision if claude is not None and claude.verdict is not None else None
+    final = CLAUDE_DECIDES.get(decision) if results and decision else None
     m = counts["mandatory"]
     return {
-        "overall": overall,
+        "overall": final or lists,
+        "decided_by": "claude" if final else "scripts",
+        "lists": lists,
         "mandatory": {s: m[s] for s in ORDER},
         "bonus": {s: counts["bonus"][s] for s in ORDER},
     }
@@ -273,8 +283,10 @@ def render_markdown(*, repo: dict | None, subjects: list[str], results: list[Che
         out += ["**NOT RUN** — the checks have not been run yet.", ""]
     else:
         headline = f"{icon} **{summary['overall']}**"
-        if claude.verdict:
-            headline += f" · Claude: **{claude.verdict.decision}**"
+        if summary["decided_by"] == "claude":
+            headline += f" · decided by Claude: **{claude.verdict.decision}**"
+            if summary["lists"] != summary["overall"]:
+                headline += f" (the lists below alone say {summary['lists']})"
         out += [headline, "",
                 f"{lacking} thing(s) lacking · {second} to look at a second time · {ok} ok" + (" (mandatory part)" if bonus.ok or bonus.lacking or bonus.second else ""), ""]
     if repo:
@@ -291,7 +303,9 @@ def render_markdown(*, repo: dict | None, subjects: list[str], results: list[Che
     if any((bonus.lacking, bonus.second, bonus.ok, bonus.not_applicable)):
         out.append(f"| Bonus part | {len(bonus.lacking)} | {len(bonus.second)} | {len(bonus.ok) + len(bonus.not_applicable)} |")
     out += ["", "> FAIL when anything is lacking, PASS WITH ISSUES when something still needs a second look, PASS when both "
-                "lists are empty. Items marked `Claude` were assessed by claude in the terminal. The peer evaluation decides the grade.", ""]
+                "lists are empty. Once claude's review is merged, claude has the final say: ready to pass is PASS, pass with "
+                "reservations is PASS WITH ISSUES, do not pass is FAIL. Items marked `Claude` were assessed by claude in the "
+                "terminal. The peer evaluation decides the grade.", ""]
 
     # ---------------------------------------------------------------- lacking
     out += ["## ❌ Lacking — fix these", ""]
@@ -350,6 +364,8 @@ def render_markdown(*, repo: dict | None, subjects: list[str], results: list[Che
 def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport, *, has_review: bool) -> list[str]:
     overall = summary["overall"]
     out = ["## Final verdict", "", f"**Result: {overall}**" + (f" · **Claude: {claude.verdict.decision}**" if claude.verdict else ""), ""]
+    if summary["decided_by"] == "claude":
+        out += ["Claude has the final say" + ("" if summary["lists"] == overall else f": the lists above alone would say {summary['lists']}") + ".", ""]
     if claude.verdict and claude.verdict.reason:
         out += [f"> {_inline(claude.verdict.reason)}", ""]
     if overall == "NOT RUN":
@@ -362,7 +378,7 @@ def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport
         if len(todo) > 8:
             out.append(f"{len(todo)}. … and {len(todo) - 8} more (listed above)")
         out.append("")
-    elif overall == "PASS":
+    elif summary["lists"] == "PASS":
         out += ["Nothing is lacking and nothing needs a second look.", ""]
     else:
         out += ["Nothing is lacking.", ""]

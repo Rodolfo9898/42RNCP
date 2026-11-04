@@ -281,7 +281,8 @@ already uses for cloning (no `.env`, no API keys; the sandbox that runs student 
 while it is on, anything that runs in that container can use your keys through the agent, including a peer's code that claude
 builds or runs there. The agent never reveals the key, but it signs for GitHub as you, so such code could push to any repository
 your key can write to. So load a **dedicated key** that only reaches the repositories you push to (`ssh-add -D`, then
-`ssh-add ~/.ssh/that_key`), and turn the switch off (`make run` without it) when you review code you do not trust.
+`ssh-add ~/.ssh/that_key`), and turn the switch off (`make run` without it) when you review code you do not trust. The line in `.env` may have spaces or quotes around the `1`;
+anything else than `1` leaves it off, and the terminal tab says so.
 
 Inside the tab, once: `git config --global user.name "…"` and `git config --global user.email "…"` (kept in `claude-home`).
 The copy's `origin` is restored from the clone when it is a plain `git@host:path`, `ssh://git@host/…` or `https://host/…`
@@ -355,6 +356,16 @@ Still stuck? This shows what the container sees:
 docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; ssh-add -l'
 ```
 
+A failed clone now says what the container's ssh did: when GitHub refuses the sign-in, the app tries once more (a server can
+answer differently from one connection to the next), then shows the fingerprints of the keys the agent offered and whether GitHub
+accepted none of them, knew one but got no signature from the agent, or signed you in as an account that cannot read the
+repository. Compare the fingerprints with https://github.com/settings/keys (`ssh-keygen -lf ~/.ssh/<name>.pub` prints yours). To see
+the same from the container by hand:
+
+```sh
+docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@github.com 2>&1 | grep -E "Offering|accepts|Authenticated|Hi |denied"'
+```
+
 `make` mounts your `$SSH_AUTH_SOCK` on Linux and Docker Desktop's `/run/host-services/ssh-auth.sock` on macOS
 (`SSH_AGENT_MOUNT` overrides it). Running `docker compose` by hand skips that: use `make`, or export `SSH_AGENT_MOUNT`.
 
@@ -388,12 +399,21 @@ docker compose run --rm --entrypoint sh web -c 'id; ls -l /run/host-services/; s
    `born2beroot`'s and `leaffliction`'s `signature.txt`, `ft_select`'s `author`, `libftpp`'s headers); a test pins the exact
    result for every subject, so a parser change that adds or drops one shows up for review. Since the rules are read again from
    the PDFs at every ▶ Run checks, an existing review gets them without adding the subject again.
-3. **Verdict**: it follows the two lists of `verdict.md` for the mandatory part, claude's answers included. `FAIL` when
+3. **Verdict**: until claude's review is merged it follows the two lists of `verdict.md` for the mandatory part. `FAIL` when
    anything is under **❌ Lacking** (whatever else there is), `PASS WITH ISSUES` when nothing is lacking but something is
    under **⚠️ Second look** (warnings, requirements nobody or claude could not settle, claude disagreeing with a check),
    `PASS` when both lists are empty. Bonus results are reported separately and never fail the verdict.
-   A review (claude's or the AI's) belongs to one repository, commit and set of subjects: changing any of them drops it,
-   so the next project never inherits the previous one's answers.
+   **After claude's merge, claude has the final say**: its decision is the result (`ready to pass` is `PASS`, `pass with
+   reservations` is `PASS WITH ISSUES`, `do not pass` is `FAIL`), even when the lists alone would say something else. The Verdict
+   window and `verdict.md` then read "decided by Claude" and say what the lists alone would have said, so you can see the
+   disagreement. A report without a verdict in it decides nothing: the lists do.
+4. **Every ▶ Run checks starts from nothing.** The server first ends claude's session (its report is thrown away, not
+   collected), forgets claude's review and the AI review, deletes the `verdict.md` it wrote into the project (a `verdict.md`
+   of your own, without this app's marker, is never touched), and runs a `git pull` (fast-forward only) in the project, so the
+   checks look at what is on GitHub now. A pull that cannot be done (no remote, no network, local changes in the way) is
+   reported in the status bar (`git pull skipped: …`) and the checks run anyway. In the page, claude's tab, the verdict window
+   and the open files are closed and the explorer is read again; the subject PDFs and the shell tab stay. A terminal opened
+   before the run can never bring its old report back. Close and reopen ⌨ Claude after the run to review the new state.
 
 ## Limits
 

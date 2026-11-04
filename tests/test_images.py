@@ -176,8 +176,8 @@ def test_the_ssh_override_only_gives_the_terminal_the_agent_and_the_means_to_dro
 
 def test_the_ssh_override_is_only_used_when_asked_for():
     assert re.search(r"^TERMINAL_SSH \?= \$\(shell grep -m1 '\^TERMINAL_SSH=' \.env", MAKEFILE, re.M)
-    assert re.search(r"^ifeq \(\$\(TERMINAL_SSH\),1\)\nCOMPOSE = docker compose -f docker-compose\.yml -f docker-compose\.ssh\.yml\nendif$", MAKEFILE, re.M)
-    assert "docker-compose.ssh.yml" not in re.sub(r"ifeq \(\$\(TERMINAL_SSH\),1\)\n.*?\nendif", "", without_comments(MAKEFILE), flags=re.S)
+    assert re.search(r"^ifeq \(\$\(strip \$\(TERMINAL_SSH\)\),1\)\nCOMPOSE = docker compose -f docker-compose\.yml -f docker-compose\.ssh\.yml\nendif$", MAKEFILE, re.M)
+    assert "docker-compose.ssh.yml" not in re.sub(r"ifeq \(\$\(strip \$\(TERMINAL_SSH\)\),1\)\n.*?\nendif", "", without_comments(MAKEFILE), flags=re.S)
 
 def test_the_terminal_image_can_push_over_ssh_but_trusts_only_githubs_pinned_key():
     final = final_stage(TERMINAL)

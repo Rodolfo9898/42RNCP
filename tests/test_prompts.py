@@ -291,3 +291,10 @@ def test_the_review_and_the_fix_prompt_both_say_to_test_in_the_current_directory
     assert TEST_HERE in fix_prompt.split("HOW TO WORK")[1]
     cpp, _ = build_fix_prompt(project="cpp01", subjects=[], lang="cpp", results=[r("fail", "Compiles", "No.")])
     assert TEST_HERE in cpp
+
+
+def test_the_review_prompt_tells_claude_its_decision_is_the_final_result():
+    for live in (False, True):
+        prompt, _ = build_review_prompt(project="push_swap", subjects=["push_swap.pdf"], lang="c", results=RESULTS, live=live)
+        assert ("Your decision is the final result of this review (ready to pass is PASS, pass with reservations is PASS WITH ISSUES, "
+                "do not pass is FAIL), whatever the scripts above reported") in prompt

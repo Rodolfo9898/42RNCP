@@ -356,10 +356,10 @@ def sync_norm(session: Session) -> None:
 
 
 def review_context(session: Session) -> str:
-    """What a review is about: the cloned commit and the subjects. A review made for another context is stale."""
+    """What a review is about: the cloned commit, the subjects and the run it follows. A review made for another context is stale."""
     repo = session.repo
     subjects = sorted(name for name, s in session.subjects.items() if s.kind == "subject")
-    return json.dumps([[repo.url, repo.path, repo.commit] if repo else None, subjects])
+    return json.dumps([[repo.url, repo.path, repo.commit] if repo else None, subjects, session.runs])
 
 
 def drop_stale_reviews(session: Session) -> bool:
@@ -1010,9 +1010,76 @@ def make_work_copy(session: Session, clone: Path) -> Path:
     return work
 
 
+def end_claude(session_id: str) -> None:
+    """Stop claude's session for this review (if one is open) and let the terminal service delete its report. Its report is NOT
+    collected: the run that is starting discards it. Best effort: an unreachable terminal service must not stop a run."""
+    if not (TERMINAL_URL and TERMINAL_TOKEN):
+        return
+    try:
+        import httpx
+
+        with httpx.Client(trust_env=False, timeout=5) as client:
+            client.post(f"{TERMINAL_URL}/pty/end", params={"sid": session_id}, headers={"x-terminal-token": TERMINAL_TOKEN})
+    except Exception:
+        pass
+
+
+def remove_generated_files(session: Session) -> None:
+    """Delete the verdict this app wrote into the project (verdict.md, or verdict-report.md, and the review files of earlier
+    versions). A file of the project's own with such a name is never touched."""
+    root = repo_dir(session)
+    if root is not None:
+        for name in ("verdict.md", "verdict-report.md", *OLD_REVIEW_FILES):
+            if is_generated(root / name):
+                (root / name).unlink(missing_ok=True)
+    session.verdict_file = ""
+
+
+def start_fresh(session: Session) -> None:
+    """Everything of the previous run goes: claude's session and report, the AI review, the results, suggestions and the
+    verdict.md in the project. The next run is assessed anew."""
+    job = _ai_jobs.pop(session.id, None)
+    if job:
+        job.cancel.set()
+    end_claude(session.id)
+    with store.lock:
+        session.runs += 1                                  # (a terminal opened before this run is now for another context)
+        session.ai = AIState(job=session.ai.job + 1)
+        session.claude_review = session.claude_review_at = ""
+        session.claude = ClaudeReport()
+        session.review_items = []
+        session.review_context = ""
+        session.results, session.improvements, session.readme = [], [], {}
+    remove_generated_files(session)
+
+
+def pull_before_run(session: Session) -> str:
+    """git pull (fast-forward only) in the project before the checks, so they look at what is on GitHub now. Returns what to say
+    in the status bar. Never raises: a pull that cannot be done (no network, local changes in the way) must not stop the checks."""
+    if not session.repo or not session.repo.url:
+        return ""                                          # a folder without a remote: nothing to pull
+    root = repo_dir(session)
+    if root is None or not root.is_dir():
+        return ""
+    try:
+        info, _summary = repo_mod.pull(root, WORKSPACE / "known_hosts")
+    except repo_mod.RepoError as exc:
+        return f"git pull skipped: {exc}"
+    changed = info.commit != session.repo.commit
+    session.repo = RepoMeta(**info.__dict__, name=session.repo.name, path=session.repo.path)
+    sync_norm(session)                                     # (the new commit may have C code, or no longer have it)
+    return f"git pull: now at {info.commit}" if changed else f"git pull: already up to date ({info.commit})"
+
+
 def _run(session: Session) -> None:
-    clone = repo_dir(session).resolve()
     work: Path | None = None
+    try:
+        session.message = pull_before_run(session)         # (what the pull did; the status bar keeps saying it)
+        clone = repo_dir(session).resolve()
+    except Exception as exc:
+        session.state, session.message = "error", f"{type(exc).__name__}: {exc}"
+        store.save(session)
+        return
 
     def emit(result: CheckResult) -> None:
         with store.lock:
@@ -1048,8 +1115,9 @@ def run(session_id: str) -> dict:
         raise HTTPException(400, "add at least one subject PDF first")
     refresh_subject_rules(session)                      # (so a better parser applies at once, not only to subjects added from now on)
     refresh_context(session)
-    session.results, session.improvements, session.state, session.message = [], [], "running", ""
-    session.ai = AIState(reviews={k: v for k, v in session.ai.reviews.items() if v.by == "Claude"})
+    start_fresh(session)                                # every run starts from nothing: claude, its report, the AI review, the old verdict
+    session.state, session.message = "running", "git pull…" if session.repo.url else ""
+    store.save(session)
     threading.Thread(target=_run, args=(session,), daemon=True).start()
     return view(session)
 

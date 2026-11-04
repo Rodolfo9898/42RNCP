@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,14 +97,20 @@ def clone(url: str, dest: Path, known_hosts: Path) -> RepoInfo:
         "-c", "protocol.ssh.allow=always", "-c", "core.symlinks=true",
         "clone", "--no-recurse-submodules", "--", url, str(dest),          # full history: a real repository with its .git
     ]
-    try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=CLONE_TIMEOUT)
-    except subprocess.TimeoutExpired as exc:
-        shutil.rmtree(dest, ignore_errors=True)
-        raise RepoError(f"git clone timed out after {CLONE_TIMEOUT}s") from exc
-    if proc.returncode != 0:
+    for attempt in range(1 + CLONE_RETRIES):
+        try:
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=CLONE_TIMEOUT)
+        except subprocess.TimeoutExpired as exc:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise RepoError(f"git clone timed out after {CLONE_TIMEOUT}s") from exc
+        if proc.returncode == 0:
+            break
         shutil.rmtree(dest, ignore_errors=True)  # safe: resolve_destination guaranteed it did not exist
-        raise RepoError(explain_clone_failure(proc.stderr, proc.returncode))
+        if attempt < CLONE_RETRIES and is_transient(proc.stderr):
+            time.sleep(RETRY_PAUSE)             # a server that answers differently from one connection to the next
+            continue
+        login = describe_login(probe_login(url, known_hosts, env), url) if SIGN_IN_FAILED in proc.stderr else ""
+        raise RepoError(explain_clone_failure(proc.stderr, proc.returncode, login))
     subprocess.run(["chmod", "-R", "u+rwX", str(dest)], check=False)
     log = subprocess.run(
         ["git", "-C", str(dest), "log", "-1", "--format=%h%n%s%n%an"],
@@ -112,11 +119,82 @@ def clone(url: str, dest: Path, known_hosts: Path) -> RepoInfo:
     return RepoInfo(url=url, commit=log[0], subject=log[1], author=log[2])
 
 
-def explain_clone_failure(stderr: str, returncode: int) -> str:
+SIGN_IN_FAILED = "Permission denied (publickey"
+CLONE_RETRIES = 1         # one more try when the failure looks like the connection, not like a key that is refused for good
+RETRY_PAUSE = 2
+TRANSIENT = ("Permission denied (publickey", "Connection closed by", "Connection reset", "kex_exchange_identification",
+             "Connection timed out", "Operation timed out")
+
+
+def is_transient(stderr: str) -> bool:
+    return any(sign in stderr for sign in TRANSIENT)
+
+
+def ssh_target(url: str) -> tuple[str, str, int | None]:
+    """(user, host, port) of an address that validate_url accepted."""
+    if url.startswith("ssh://"):
+        user, _, rest = url[len("ssh://"):].partition("@")
+        authority = rest.split("/", 1)[0]
+        host, _, port = authority.partition(":")
+        return user, host, int(port) if port else None
+    user, _, rest = url.partition("@")
+    return user, rest.split(":", 1)[0], None
+
+
+_FINGERPRINT = r"SHA256:[A-Za-z0-9+/]+"
+_OFFERED = re.compile(rf"Offering public key: (?P<what>.*?) (?P<fp>{_FINGERPRINT})")
+_ACCEPTED = re.compile(rf"Server accepts key: .*?(?P<fp>{_FINGERPRINT})")
+_ACCOUNT = re.compile(r"Hi (?P<name>[^!\s]+)!")
+
+
+def probe_login(url: str, known_hosts: Path, env: dict[str, str]) -> dict | None:
+    """Sign in to the server of `url` the way the clone does and report what happened: which keys the ssh-agent offered, which of
+    them the server accepted, whether the login worked, and (GitHub) as which account. None when ssh could not be run."""
+    user, host, port = ssh_target(url)
+    cmd = ["ssh", "-v", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=accept-new",
+           "-o", f"UserKnownHostsFile={known_hosts}", *(["-p", str(port)] if port else []), f"{user}@{host}"]
+    try:
+        proc = subprocess.run(cmd, env={k: v for k, v in env.items() if k != "GIT_SSH_COMMAND"}, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    log = f"{proc.stderr}\n{proc.stdout}"
+    accepted = {m["fp"] for m in _ACCEPTED.finditer(log)}
+    offered, seen = [], set()
+    for m in _OFFERED.finditer(log):
+        if m["fp"] not in seen:
+            seen.add(m["fp"])
+            offered.append({"fingerprint": m["fp"], "comment": m["what"].rsplit(" ", 1)[0] if " " in m["what"] else m["what"], "accepted": m["fp"] in accepted})
+    account = _ACCOUNT.search(log)
+    return {"host": host, "offered": offered, "authenticated": "Authenticated to" in log, "account": account["name"] if account else None}
+
+
+def describe_login(probe: dict | None, url: str) -> str:
+    """What probe_login found, in words (an empty string when there is nothing to add)."""
+    if probe is None:
+        return ""
+    host, offered = probe["host"], probe["offered"]
+    if not offered:
+        return f"The ssh in the container offered no key to {host} at all: its ssh-agent is empty or cannot be reached (run `make ssh`)."
+    keys = ", ".join(f"{k['fingerprint']}" + (f" ({k['comment']})" if k["comment"] else "") for k in offered)
+    if probe["authenticated"]:
+        who = f" as {probe['account']}" if probe["account"] else ""
+        return (f"{host} did accept your key and signed in{who}, so this account cannot read this repository (check its name and that "
+                f"{probe['account'] or 'the account'} has access), or the sign-in only failed this time: try again.")
+    if any(k["accepted"] for k in offered):
+        return (f"{host} knows one of the keys the agent offered, but the agent did not sign with it: {keys}. On your computer, run "
+                "`ssh-add -l`, then `ssh-add` the key again (it may be waiting for a passphrase or a confirmation).")
+    where = " Compare with the keys on https://github.com/settings/keys." if host == "github.com" else ""
+    return (f"{host} accepted none of the {len(offered)} key(s) the ssh-agent offered: {keys}. Add the public key of one of them to your "
+            f"account (`ssh-keygen -lf ~/.ssh/<name>.pub` on your computer shows the fingerprint to look for).{where}")
+
+
+def explain_clone_failure(stderr: str, returncode: int, login: str = "") -> str:
     lines = [l.strip() for l in stderr.splitlines() if l.strip() and not l.startswith("Cloning into")]
     message = " | ".join(lines[-4:]) if lines else f"no error output (exit code {returncode})"
     hint = ""
-    if "Permission denied (publickey" in stderr or "Could not read from remote repository" in stderr:
+    if login:
+        hint = f" — {login}"
+    elif "Permission denied (publickey" in stderr or "Could not read from remote repository" in stderr:
         hint = (" — SSH could not authenticate. Check the 'ssh' indicator in the status bar: the container needs your "
                 "ssh-agent with a key loaded (run `ssh-add` on your computer), and that key must have access to this repository.")
     elif "Host key verification failed" in stderr:

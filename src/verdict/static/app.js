@@ -175,6 +175,7 @@ function renderOverview() {
     session.repo && h("div", { class: "meta" }, `${session.repo.url} · ${session.repo.path} · ${session.repo.commit} ${session.repo.subject} — ${session.repo.author}`),
     session.ai.state === "running" && aiOverview(),   // pinned to the top while it works
     h("div", { class: `verdict-badge ${css}` }, s.overall),
+    decidedNote(s) && h("div", { class: "meta" }, decidedNote(s)),
     h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), ...ORDER.map((k) => h("th", {}, SHORT[k])))),
       h("tbody", {}, row("mandatory", s.mandatory), row("bonus", s.bonus))),
     h("ol", { class: "steps" },
@@ -561,9 +562,11 @@ async function openTerminal(promptId, kind = "claude") {
     if (tabs.get(key)) tabs.get(key).closing = true;
     tabs.get(key)?.socket?.close();
     // Closing the tab ends claude (or the shell) on purpose. (A reload or a lost connection does not: the session keeps running.)
-    if (!tabs.get(key)?.keep) fetch(`/api/sessions/${sid}/${shell ? "shell" : "terminal"}/end`, { method: "POST" }).catch(() => {});
+    // (A new run closes claude's tab itself: the server has already ended it and dropped its report, so nothing is collected.)
+    if (!tabs.get(key)?.keep && !tabs.get(key)?.discard) fetch(`/api/sessions/${sid}/${shell ? "shell" : "terminal"}/end`, { method: "POST" }).catch(() => {});
+    const discard = !!tabs.get(key)?.discard;
     tabs.get(key)?.term?.dispose();
-    if (shell) return;
+    if (shell || discard) return;
     // The server collects the saved report as the terminal closes; show it once it has.
     setTimeout(async () => { session = await api(`sessions/${sid}`); render(); loadTree(); refreshVerdict(false).catch(() => {}); }, 2000);
   };
@@ -1089,11 +1092,22 @@ async function openClone() {
   show(existing.folders.length && !session.repo?.url && session.repo ? "existing" : "clone");
 }
 
+// Every run starts from nothing. The server ends claude and drops its report and every review, removes the old verdict.md and pulls
+// the project before the checks begin; here go the windows that showed the old run: claude's tab, the verdict, the open files.
+function clearForNewRun() {
+  const claude = tabs.get("terminal");
+  if (claude) { claude.discard = true; closeTab("terminal"); }
+  closeTab("verdict.md");
+  for (const [key, tab] of [...tabs]) if (tab.repoFile) closeTab(key);           // (their contents are from before the pull)
+}
+
 async function run() {
   if (!session.repo) return toast("Clone a repository first.");
   if (!session.subjects.length) return toast("Add at least one subject PDF first.");
   setSession(await post(`sessions/${sid}/run`));
+  clearForNewRun();
   showTab("overview");
+  loadTree().catch(() => {});                                                    // (verdict.md is gone; the pull may bring more)
   poll();
 }
 
