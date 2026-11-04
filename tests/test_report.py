@@ -1,5 +1,7 @@
-from verdict.models import AIReview, AIState, CheckResult, ClaudeReport, ClaudeVerdict, Correction, Evidence, Improvement, Source
-from verdict.report import _inline, render_markdown, summarize
+import pytest
+
+from verdict.models import AIReview, AIState, CheckResult, ClaudeReport, ClaudeVerdict, Correction, Evidence, Fix, Improvement, Source
+from verdict.report import _inline, corrected, render_markdown, summarize
 
 
 def result(status, title="T", detail="", section="mandatory", **kw):
@@ -124,6 +126,7 @@ def test_claudes_review_is_defused_and_demoted_when_it_cannot_be_merged():
 def merged_document():
     results = [
         result("fail", title="README.md meets the subject's requirements", detail="No README.md found."),
+        result("fail", title="Makefile has a bonus rule", detail="no bonus files in the repository"),
         result("pass", title="Required files", detail="all there"),
         result("skipped", title="Passes norminette", detail="norminette is not installed."),
         CheckResult(rule_id="r1", title="Needs manual review", status="manual", detail="The strchr function must find any byte.", sources=[Source(pdf="libft.pdf", page=9)]),
@@ -143,7 +146,7 @@ def merged_document():
     })
     claude = ClaudeReport(
         structured=True, assessed=5, total=6,
-        corrections=[Correction(check="Makefile has a bonus rule", says="no bonus files in the repository", actually="The list functions are built by `make bonus`.")],
+        corrections=[Correction(check="Makefile has a bonus rule", says="no bonus files in the repository", actually="The list functions are built by `make bonus`.", status="likely_ok")],
         verdict=ClaudeVerdict(decision="do not pass", reason="The README is missing and strchr is wrong."),
         improvements=[Improvement(category="code", priority="high", title="Fix strchr", detail="Compare as char.", evidence=[Evidence(file="ft_strchr.c", line=20)], source="ai")],
         problems=["Claude did not answer 1 of 6 requirement(s): #5."])
@@ -172,11 +175,12 @@ def test_every_requirement_lands_in_the_bucket_claude_chose():
         assert text not in lacking and text not in second
 
 
-def test_claudes_corrections_of_the_scripts_are_visible_in_second_look():
-    second = section(merged_document(), "## ⚠️ Second look", "## ✅ Ok")
-    assert "Claude disagrees with an automated result (1)" in second
-    assert "**Makefile has a bonus rule** — the script says: no bonus files in the repository" in second
-    assert "Actually: The list functions are built by `make bonus`." in second
+def test_what_claude_found_different_overwrites_the_script_instead_of_being_appended():
+    md = merged_document()
+    assert "no bonus files in the repository" not in md and "disagrees" not in md and "the script says" not in md
+    assert "Makefile has a bonus rule" not in section(md, "## ❌ Lacking", "## ✅ Ok")
+    ok = section(md, "## ✅ Ok", "## Improvements")
+    assert "Makefile has a bonus rule — The list functions are built by `make bonus`. `Claude`" in ok
 
 
 def test_the_merged_page_does_not_repeat_claudes_prose():
@@ -186,9 +190,10 @@ def test_the_merged_page_does_not_repeat_claudes_prose():
     assert "Claude answered 5 of 6 requirement(s)." in md
 
 
-def test_the_headline_and_final_verdict_carry_both_opinions():
+def test_the_headline_and_final_verdict_give_one_result_decided_by_claude():
     md = merged_document()
-    assert "❌ **FAIL** · decided by Claude: **do not pass**" in md.split("## At a glance")[0]
+    top = md.split("## At a glance")[0]
+    assert "❌ **FAIL** · decided by Claude: **do not pass**" in top and "> The README is missing and strchr is wrong." in top
     final = md[md.index("## Final verdict"):]
     assert "**Result: FAIL** · **Claude: do not pass**" in final and "> The README is missing and strchr is wrong." in final
     assert "Claude has the final say." in final
@@ -200,8 +205,8 @@ def test_the_headline_and_final_verdict_carry_both_opinions():
 
 def test_the_glance_table_counts_the_three_buckets():
     md = merged_document()
-    assert "| Mandatory part | 2 | 3 | 4 |" in section(md, "## At a glance", "## ❌ Lacking")
-    assert "2 thing(s) lacking · 3 to look at a second time · 4 ok" in md
+    assert "| Mandatory part | 2 | 3 | 5 |" in section(md, "## At a glance", "## ❌ Lacking")
+    assert "2 thing(s) lacking · 3 to look at a second time · 5 ok" in md
     assert "**[high] Fix strchr**" in md[md.index("## Improvements"):] and "heuristic suggestion" not in md
     assert "from claude's review" in md and "_(AI)_" not in md[md.index("## Improvements"):]
 
@@ -293,3 +298,129 @@ def test_the_sentences_about_what_is_open_describe_the_lists_not_claudes_decisio
     final = md[md.index("## Final verdict"):]
     assert "**Result: PASS**" in final and "Claude has the final say: the lists above alone would say PASS WITH ISSUES." in final
     assert "Nothing is lacking." in final and "nothing needs a second look" not in final and "Still open: 1 point(s) for a second look" in final
+
+
+# ---------------------------------------------------------------- claude's word replaces the script's, everywhere
+
+
+def fix_of(check, status="likely_ok", actually="what is true", **kw):
+    return Correction(check=check, status=status, actually=actually, **kw)
+
+
+def report_with(*corrections, decision=None, **kw):
+    verdict = ClaudeVerdict(decision=decision, reason="Because.") if decision else None
+    return ClaudeReport(structured=True, corrections=list(corrections), verdict=verdict, **kw)
+
+
+@pytest.mark.parametrize("status,shown", [("likely_ok", "pass"), ("likely_problem", "fail"), ("unclear", "warn"), ("not_applicable", "na")])
+def test_a_correction_replaces_the_status_the_text_and_the_log(status, shown):
+    script = result("fail", title="Compiles", detail="the script's words", log="the script's log", evidence=[Evidence(file="a.c", line=1)])
+    out = corrected([script], report_with(fix_of("Compiles", status, evidence=[Evidence(file="b.c", line=2)])))
+    assert len(out) == 1
+    assert (out[0].status, out[0].detail, out[0].log, out[0].by, out[0].title) == (shown, "what is true", "", "Claude", "Compiles")
+    assert [e.file for e in out[0].evidence] == ["b.c"]
+    assert script.detail == "the script's words" and script.by == "script"          # the session keeps what the scripts said
+
+
+def test_a_check_that_passed_can_be_overwritten_as_a_failure():
+    md = render_markdown(repo=None, subjects=[], results=[result("pass", title="Does not crash", detail="8 runs")],
+                         claude=report_with(fix_of("Does not crash", "likely_problem", "Segfaults on an empty file.")))
+    lacking = section(md, "## ❌ Lacking", "## ⚠️ Second look")
+    assert "**Does not crash** `Claude` — Segfaults on an empty file." in lacking and "8 runs" not in md
+
+
+def test_a_skipped_check_that_claude_tested_stops_being_a_second_look():
+    results = [result("skipped", title="No memory leaks", detail="No executable was built.")]
+    md = render_markdown(repo=None, subjects=[], results=results, claude=report_with(fix_of("No memory leaks", "likely_ok", "valgrind is clean.")))
+    assert "No executable was built" not in md and summarize(results, None, report_with(fix_of("No memory leaks")))["overall"] == "PASS"
+
+
+@pytest.mark.parametrize("check", [
+    "`make clean` keeps the program", "make clean keeps the program", "`MAKE CLEAN` keeps  the program",
+    "`make clean` keeps the program: `make clean` also removed the program(s): x.o", "`make clean` keeps the program — also removed", "`make clean` keeps th…",
+])
+def test_claude_may_name_a_check_the_way_the_prompts_print_it(check):
+    out = corrected([result("fail", title="`make clean` keeps the program", detail="also removed")], report_with(fix_of(check)))
+    assert len(out) == 1 and out[0].status == "pass"
+
+
+def test_a_longer_title_is_not_mistaken_for_a_shorter_one():
+    results = [result("fail", title="Makefile"), result("fail", title="Makefile rules")]
+    assert [r.status for r in corrected(results, report_with(fix_of("Makefile rules")))] == ["fail", "pass"]
+
+
+def test_a_requirement_can_be_overwritten_by_its_sentence():
+    manual = [CheckResult(rule_id="a", title="Needs manual review", status="manual", detail="Must  not relink."),
+              CheckResult(rule_id="b", title="Needs manual review", status="manual", detail="Must not relink.")]
+    out = corrected(manual, report_with(fix_of("Must not relink.", "likely_problem", "It relinks.")))
+    assert [(r.title, r.status, r.detail) for r in out] == [("Must not relink.", "fail", "It relinks.")]
+
+
+def test_a_finding_about_nothing_known_is_added_where_its_status_says():
+    results = [result("pass", title="Required files")]
+    claude = report_with(fix_of("Reads past the buffer", "likely_problem", "main.c overflows."), fix_of("Bonus leaks", "likely_problem", "x", section="bonus"))
+    out = corrected(results, claude)
+    assert [(r.title, r.status, r.section, r.by) for r in out[1:]] == [("Reads past the buffer", "fail", "mandatory", "Claude"), ("Bonus leaks", "fail", "bonus", "Claude")]
+    assert "**Reads past the buffer** `Claude` — main.c overflows." in section(render_markdown(repo=None, subjects=[], results=results, claude=claude), "## ❌ Lacking", "## ⚠️")
+
+
+def test_a_correction_without_a_status_is_a_second_look():
+    results = [result("fail", title="Norm", detail="3 errors")]
+    md = render_markdown(repo=None, subjects=[], results=results, claude=report_with(Correction(check="Norm", actually="they are vendored")))
+    second = section(md, "## ⚠️ Second look", "## ✅ Ok")
+    assert "Claude is unsure (1)" in second and "they are vendored" in second and "3 errors" not in md
+
+
+# ---------------------------------------------------------------- claude has the final say
+
+
+@pytest.mark.parametrize("decision,overall", [("ready to pass", "PASS"), ("pass with reservations", "PASS WITH ISSUES"), ("do not pass", "FAIL")])
+@pytest.mark.parametrize("scripts", ["pass", "warn", "fail"])
+def test_claudes_decision_and_reason_set_the_result_whatever_the_scripts_said(decision, overall, scripts):
+    summary = summarize([result(scripts)], None, report_with(decision=decision))
+    assert (summary["overall"], summary["decided_by"], summary["reason"]) == (overall, "claude", "Because.")
+
+
+def test_the_lists_read_what_claude_found_not_what_it_overwrote():
+    summary = summarize([result("fail", title="A", detail="false alarm")], None, report_with(fix_of("A"), decision="do not pass"))
+    assert (summary["overall"], summary["lists"], summary["mandatory"]["fail"], summary["mandatory"]["pass"]) == ("FAIL", "PASS", 0, 1)
+
+
+def test_without_a_decision_the_lists_decide():
+    assert summarize([result("fail")], None, report_with()) | {"mandatory": 0, "bonus": 0} == {
+        "overall": "FAIL", "decided_by": "scripts", "lists": "FAIL", "reason": "", "mandatory": 0, "bonus": 0}
+
+
+def test_the_page_never_contradicts_claudes_decision():
+    fail = render_markdown(repo=None, subjects=[], results=[result("pass")], claude=report_with(decision="do not pass"))
+    final = fail[fail.index("## Final verdict"):]
+    assert "Nothing is lacking.\n" not in final and "Claude decided this does not pass" in final and "advisory" not in final
+    passed = render_markdown(repo=None, subjects=[], results=[result("warn", title="W")], claude=report_with(decision="ready to pass"))
+    final = passed[passed.index("## Final verdict"):]
+    assert "✅ **PASS** · decided by Claude" in passed and "nothing needs a second look" not in final and "Claude has the final say" in passed
+
+
+# ---------------------------------------------------------------- what was corrected, and what is new
+
+
+def test_the_page_says_what_claude_corrected_and_what_is_new_to_improve():
+    claude = report_with(decision="ready to pass", fixes=[
+        Fix(issue="The README is `missing`", status="fixed", detail="Added it; checked with cat.", evidence=[Evidence(file="README.md", line=1)]),
+        Fix(issue="Norm <errors>", status="not a real problem", detail="They are vendored."), Fix(issue="Leak", status="not fixed", detail="Needs a redesign.")],
+        improvements=[Improvement(category="code", title="Split main", source="ai", new=True), Improvement(category="logic", title="Old idea", source="ai")])
+    md = render_markdown(repo=None, subjects=[], results=[result("pass")], claude=claude, improvements=claude.improvements)
+    fixes = md[md.index("## 🛠 What Claude corrected (3)"):md.index("## ❌ Lacking")]
+    assert "- ✅ **The README is `missing`** — fixed: Added it; checked with cat." in fixes and "`README.md:1`" in fixes
+    assert r"- ➖ **Norm \<errors\>** — not a real problem: They are vendored." in fixes and "- ❌ **Leak** — not fixed: Needs a redesign." in fixes
+    assert "**New improvements found (1):** Split main" in fixes
+    improvements = md[md.index("## Improvements"):]
+    assert "Split main** 🆕" in improvements and "Old idea** 🆕" not in improvements
+
+
+def test_the_page_says_so_when_nothing_new_was_found():
+    md = render_markdown(repo=None, subjects=[], results=[result("pass")], claude=report_with(fixes=[Fix(issue="X")]))
+    assert "**New improvements found:** none." in md
+
+
+def test_a_page_without_fixes_has_no_such_section():
+    assert "What Claude corrected" not in render_markdown(repo=None, subjects=[], results=[result("pass")], claude=report_with())

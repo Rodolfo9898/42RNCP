@@ -46,6 +46,7 @@ class CheckResult(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     log: str = ""
     auto: bool = True  # False when a script could not judge it
+    by: str = "script"  # who this statement comes from: "script", or "Claude" once its report has overwritten it
 
 
 Category = Literal["structure", "code", "logic", "readability"]
@@ -61,6 +62,7 @@ class Improvement(BaseModel):
     priority: Priority = "medium"
     evidence: list[Evidence] = Field(default_factory=list)
     source: Literal["static", "ai"] = "static"
+    new: bool = False  # claude found it while fixing: it was not in the list of its previous report
 
 
 class AIComponent(BaseModel):
@@ -118,9 +120,23 @@ class ReviewItem(BaseModel):
 
 
 class Correction(BaseModel):
+    """What claude says about a check or requirement. It replaces the script's statement; one that names nothing known is a new finding."""
+
     check: str
     says: str = ""
     actually: str
+    status: Literal["likely_ok", "likely_problem", "unclear", "not_applicable"] = "unclear"
+    evidence: list[Evidence] = Field(default_factory=list)
+    section: Section = "mandatory"
+
+
+class Fix(BaseModel):
+    """One thing claude was asked to fix, and what came of it."""
+
+    issue: str
+    status: Literal["fixed", "not fixed", "not a real problem"] = "fixed"
+    detail: str = ""
+    evidence: list[Evidence] = Field(default_factory=list)
 
 
 class ClaudeVerdict(BaseModel):
@@ -133,6 +149,7 @@ class ClaudeReport(BaseModel):
 
     structured: bool = False
     corrections: list[Correction] = Field(default_factory=list)
+    fixes: list[Fix] = Field(default_factory=list)
     verdict: ClaudeVerdict | None = None
     improvements: list[Improvement] = Field(default_factory=list)
     assessed: int = 0

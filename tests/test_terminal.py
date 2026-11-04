@@ -972,6 +972,13 @@ def test_claude_is_told_whom_it_works_for_in_every_way_it_is_started():
     assert "run norminette on what you create or change" in terminal.APPEND_PROMPT_LIVE
 
 
+def test_claude_in_the_terminal_knows_how_a_fix_reaches_verdict_md():
+    for text in (terminal.APPEND_PROMPT, terminal.APPEND_PROMPT_LIVE):
+        assert "never edit them" in text and '"fixes"' in text and "anything new you noticed while fixing" in text
+    assert "`claude-review.md` in the current directory" in terminal.APPEND_PROMPT
+    assert "REPORT_DIR environment variable" in terminal.APPEND_PROMPT_LIVE
+
+
 def test_claude_may_run_readpdf_without_asking_and_nothing_else_is_pre_approved():
     for argv in (terminal.interactive_argv(), terminal.interactive_argv(live=True), terminal.interactive_argv("Review it", live=True)):
         assert argv[1:3] == ["--allowedTools", "Bash(readpdf:*)"]                          # first, so that its list ends at the next option

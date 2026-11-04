@@ -30,7 +30,7 @@ from .shared import TERMINAL_REPORTS_ROOT, TERMINAL_SUBJECTS_ROOT
 from .checks import EXCLUDED_DIRS, VERDICT_MARKER, Ctx, run_checks
 from .models import CheckResult
 from .pdfread import read_pages, render_page
-from .report import render_markdown, summarize
+from .report import corrected, render_markdown, summarize
 from .sandbox import Sandbox, SandboxError, sandbox_selftest
 from .selftest import summarize as selftest_summary
 from .spec import parse_norm, parse_subject
@@ -98,7 +98,7 @@ def view(session: Session) -> dict:
             {"name": s.name, "kind": s.kind, "track": s.track, "lang": s.lang, "pages": s.pages, "rules": [r.model_dump() for r in s.rules]}
             for s in session.subjects.values()
         ],
-        "results": [r.model_dump() for r in session.results],
+        "results": [r.model_dump() for r in corrected(session.results, session.claude)],
         "improvements": [i.model_dump() for i in chosen_improvements(session)],
         "claude": session.claude.model_dump(),
         "readme": session.readme,
@@ -601,8 +601,13 @@ def apply_claude_review(session: Session) -> None:
     """Turn the structured block at the end of claude's report into assessments, corrections, improvements and a verdict."""
     root = repo_dir(session)
     files = line_index(root) if root is not None else {}
-    report, reviews = parse_report(session.claude_review, session.review_items, files)
+    earlier = {k: v for k, v in session.ai.reviews.items() if v.by == "Claude"}
+    report, reviews = parse_report(session.claude_review, session.review_items, files, previous=session.claude, previous_reviews=earlier)
     with store.lock:
+        if not report.structured and session.claude.structured:      # a report it could not read must not undo the one it could
+            session.claude.problems = report.problems
+            session.review_context = review_context(session)
+            return
         kept = {k: v for k, v in session.ai.reviews.items() if v.by != "Claude"}
         session.ai.reviews = {**kept, **reviews}
         session.claude = report
@@ -905,8 +910,10 @@ def fix_prompt(session_id: str) -> dict:
     session = session_or_404(session_id)
     if not session.results or session.repo is None:
         raise HTTPException(400, "run the checks first")
+    live = terminal_status()["workdir"] == "live"               # the same place as the review: outside the project
     text, stats = build_fix_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
-                                   lang=session.lang(), results=session.results, ai=session.ai, claude=session.claude)
+                                   lang=session.lang(), results=session.results, ai=session.ai, claude=session.claude,
+                                   report_dir=f"{TERMINAL_REPORTS_ROOT}/{session.id}" if live else None)
     return {"text": text, **stats}
 
 

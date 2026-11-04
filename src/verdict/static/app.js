@@ -176,6 +176,7 @@ function renderOverview() {
     session.ai.state === "running" && aiOverview(),   // pinned to the top while it works
     h("div", { class: `verdict-badge ${css}` }, s.overall),
     decidedNote(s) && h("div", { class: "meta" }, decidedNote(s)),
+    s.reason && h("div", { class: "meta" }, s.reason),
     h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), ...ORDER.map((k) => h("th", {}, SHORT[k])))),
       h("tbody", {}, row("mandatory", s.mandatory), row("bonus", s.bonus))),
     h("ol", { class: "steps" },
@@ -184,7 +185,8 @@ function renderOverview() {
       step(session.results.length > 0, "Run checks")),
     session.ai.state !== "running" && aiOverview(),
     session.state === "done" && h("p", { class: "meta" },
-      "FAIL when anything is lacking, PASS WITH ISSUES when something still needs a second look, PASS when both lists in verdict.md are empty."),
+      s.decided_by === "claude" ? "Claude has the final say on the result, and what it found replaces what the scripts reported."
+        : "FAIL when anything is lacking, PASS WITH ISSUES when something still needs a second look, PASS when both lists in verdict.md are empty. Once claude's review is merged, its decision sets the result."),
   ].filter((node) => node != null && node !== false));   // optional parts are false/null when absent: never show them as text
 }
 
@@ -265,7 +267,8 @@ async function afterReviewSaved(result) {
     return toast(`claude's report was added to ${session.verdict_file || "verdict.md"} as text: it has no data block at the end, so it could not be merged into the lists. ${(claude.problems || [])[0] || ""}`);
   }
   const gaps = claude.assessed < claude.total ? ` ${claude.total - claude.assessed} requirement(s) were not answered.` : "";
-  toast(`Merged claude's answers (${claude.assessed} of ${claude.total} requirements) into ${session.verdict_file || "verdict.md"}.${gaps}`, true);
+  const fixes = (claude.fixes || []).length ? ` ${claude.fixes.length} correction(s) listed.` : "";
+  toast(`Merged claude's answers (${claude.assessed} of ${claude.total} requirements) into ${session.verdict_file || "verdict.md"}.${fixes}${gaps}`, true);
 }
 
 // Type the review request into a claude that is already running: as one bracketed paste, then Enter.
@@ -299,7 +302,7 @@ async function startAi() {
       h("p", {}, "claude will receive a prompt built from this run: what the scripts verified (so it does not redo it), and everything they ",
         h("strong", {}, "could not"), " judge: the subject requirements that need a human, plus correctness, error handling, memory, design and readability."),
       h("p", {}, "It runs in the terminal: you watch it work, it asks before running anything, and you can answer or ask follow-up questions."),
-      h("p", { class: "hint" }, `The source files of ${files} are read by claude and sent to Anthropic using your Claude login. It works on a throw-away copy, never on the original. Its answers count in the result: a requirement it judges a problem makes it FAIL.`)), [
+      h("p", { class: "hint" }, `The source files of ${files} are read by claude and sent to Anthropic using your Claude login. It works on a throw-away copy, never on the original. It has the final say: what it finds replaces what the scripts reported, and its decision sets the result.`)), [
       h("button", { onclick: closeDialog }, "Cancel"),
       h("button", { class: "primary", onclick: () => guarded(reviewInTerminal) }, "Run"),
     ]);
@@ -401,6 +404,7 @@ function resultItem(r) {
       h("span", { class: "icon" }, ICON[shownStatus(r)]),
       h("span", { class: "item-title" }, r.title, r.section === "bonus" ? " [bonus]" : ""),
       ai.chip,
+      r.by === "Claude" && h("span", { class: "ai-chip na" }, "Claude"),
       h("span", { class: "item-detail" }, r.detail)),
     expandable && body);
 }

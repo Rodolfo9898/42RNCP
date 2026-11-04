@@ -172,11 +172,29 @@ def test_reviewer_findings_are_sorted_like_verdict_md_and_requirements_nobody_ju
     assert stats["must_fix"] == 1 and stats["look_at"] == 1
 
 
-def test_a_result_claude_disputes_is_something_to_look_at_not_to_fix_blindly():
-    claude = ClaudeReport(structured=True, corrections=[Correction(check="Norm", says="3 errors", actually="they are in vendored code")])
-    prompt, stats = fix([r("pass", "Required files")], claude=claude)
-    assert 'Norm — the script says "3 errors", but the reviewer says "they are in vendored code" [found by Claude]' in prompt
-    assert "A. MUST FIX" not in prompt and stats["look_at"] == 1 and stats["must_fix"] == 0
+def test_the_fix_prompt_follows_what_claude_found_not_what_the_script_said():
+    claude = ClaudeReport(structured=True, corrections=[
+        Correction(check="Norm", says="3 errors", actually="they are in vendored code", status="likely_ok"),
+        Correction(check="Compiles", actually="not sure it does", status="unclear"),
+        Correction(check="Does not crash", actually="segfaults on empty input", status="likely_problem")])
+    prompt, stats = fix([r("fail", "Norm", "3 errors"), r("fail", "Compiles", "no"), r("pass", "Does not crash", "8 runs")], claude=claude)
+    assert "Norm" not in prompt.split("A. MUST FIX")[1] and "3 errors" not in prompt
+    assert "Does not crash — segfaults on empty input [found by Claude]" in prompt and "Compiles — not sure it does [found by Claude]" in prompt
+    assert stats["must_fix"] == 1 and stats["look_at"] == 1
+
+
+def test_the_fix_prompt_ends_by_updating_the_verdict_through_the_report():
+    prompt, _ = fix([r("fail", "Norm", "3 errors")], report_dir="/scratch/reports/abc")
+    assert "`/scratch/reports/abc/claude-review.md`" in prompt and '"fixes"' in prompt and '"improvements"' in prompt
+    assert "anything new you noticed while fixing" in prompt and "it sets the result" in prompt and "Whatever you leave out stays as it was" in prompt
+    copy, _ = fix([r("fail", "Norm", "3 errors")])
+    assert "`claude-review.md` in the current directory" in copy
+
+
+def test_the_review_prompt_says_claude_overwrites_and_decides():
+    prompt, _ = build([r("fail", "Norm", "3 errors")])
+    assert "REPLACES the script's statement in the whole evaluation" in prompt and "it is the final say" in prompt
+    assert '"status": "likely ok", "actually"' in prompt and "under a new short title" in prompt
 
 
 def test_bonus_failures_are_a_separate_optional_section():

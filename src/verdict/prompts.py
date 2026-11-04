@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 
 from .models import AIState, CheckResult, ClaudeReport, ReviewItem
-from .shared import EVALUATOR, EVALUATOR_EMAIL, HEADER_AUTHOR, TEST_HERE
-from .report import Entry, _fenced, _where, bucket
+from .shared import EVALUATOR, EVALUATOR_EMAIL, HEADER_AUTHOR, TEST_HERE, verdict_update_rules
+from .report import Entry, _fenced, _where, bucket, corrected
 
 MAX_ITEMS = 60
 MAX_ITEM_CHARS = 400
@@ -145,6 +145,8 @@ A. Requirements from the subject that need judgement ({len(items)}):
 B. Limits of the scripts, which apply to every project. Look for real problems of these kinds in THIS code:
 {gaps}
 
+C. The automated results above that you can settle better than the script: anything it got wrong, and anything it could not run but you can test.
+
 HOW TO WORK
 0. Start by confirming the environment: run `cc --version`, `c++ --version`, `make --version` and `docker info`, and tell me at once if any of them fails.
 1. Read the Makefile and the README first, then the sources. Then try the project yourself, from scratch: build it with its own Makefile (or with Docker when the student ships a Dockerfile or compose file), run it on realistic input and on bad input (no arguments, empty, huge, malformed), and for C or C++ run it under valgrind. Before each command tell me what you will run and why; I will approve it. {TEST_HERE}{building}
@@ -156,12 +158,18 @@ HOW TO WORK
 ```json
 {{
   "items": [{{"n": 1, "status": "likely ok", "note": "one or two sentences", "check_by_hand": "what a human should still verify, or empty", "evidence": ["file:line"]}}],
-  "corrections": [{{"check": "title of an automated result above", "says": "what it reported", "actually": "what is true"}}],
+  "corrections": [{{"check": "title of an automated result above", "status": "likely ok", "actually": "what is true", "evidence": ["file:line"]}}],
   "improvements": [{{"category": "structure", "priority": "high", "title": "short title", "detail": "one or two sentences", "evidence": ["file:line"]}}],
   "verdict": {{"decision": "do not pass", "reason": "two sentences"}}
 }}
 ```
-Rules for the block: "items" has one entry for EVERY requirement in section A, with its number as "n"; "status" is "likely ok", "likely a problem", "unclear" or "not applicable" (use the last for rules that concern other projects); "corrections" lists every automated result above that you found wrong or incomplete (an empty list if none); "category" is structure, code, logic or readability; "priority" is high, medium or low; "decision" is "ready to pass", "pass with reservations" or "do not pass". Cite real files and lines only.
+Rules for the block:
+- "items" has one entry for EVERY requirement in section A, with its number as "n"; "status" is "likely ok", "likely a problem", "unclear" or "not applicable" (use the last for rules that concern other projects).
+- "corrections" lists every automated result above that you found wrong, incomplete or could settle yourself (an empty list if none): copy its title exactly, and give it a "status" like the items have. What you write there REPLACES the script's statement in the whole evaluation, so state what is true and do not refer to the script.
+- A real problem from B that no result covers goes in "corrections" too, under a new short title, so that it counts; add "section": "bonus" when it only concerns the bonus part.
+- "category" is structure, code, logic or readability; "priority" is high, medium or low.
+- "decision" is "ready to pass", "pass with reservations" or "do not pass", and it is the final say: it sets the result to PASS, PASS WITH ISSUES or FAIL, whatever the lists say, so make sure the lists support it.
+- Cite real files and lines only.
 Be specific and brief. Do not edit any other file."""
     return prompt, {"items": len(items), "passed": len(passed), "failed": len(failed), "not_run": len(not_run), "chars": len(prompt),
                     "docker_files": docker_files}
@@ -195,17 +203,15 @@ def _issue(n: int, e: Entry) -> list[str]:
 
 
 def build_fix_prompt(*, project: str, subjects: list[str], lang: str | None, results: list[CheckResult],
-                     ai: AIState | None = None, claude: ClaudeReport | None = None) -> tuple[str, dict]:
+                     ai: AIState | None = None, claude: ClaudeReport | None = None, report_dir: str | None = None) -> tuple[str, dict]:
     """A prompt that asks an AI to fix what the review found: the same things verdict.md lists as lacking or worth a second
-    look. Requirements nobody has assessed yet are not issues, so they are left out. Returns ("", stats) when there is nothing."""
-    mandatory = bucket([r for r in results if r.section == "mandatory"], ai)
-    bonus = bucket([r for r in results if r.section == "bonus"], ai)
+    look. Requirements nobody has assessed yet are not issues, so they are left out. Returns ("", stats) when there is nothing.
+    `report_dir`: where claude saves what it corrected, when that is not the current directory."""
+    shown = corrected(results, claude)
+    mandatory = bucket([r for r in shown if r.section == "mandatory"], ai)
+    bonus = bucket([r for r in shown if r.section == "bonus"], ai)
     unreviewed = {id(e) for e in mandatory.unreviewed}
-    second = [e for e in mandatory.second if id(e) not in unreviewed]
-    # An automated result the reviewer disputes: the script may be wrong, or the reviewer may be.
-    disputed = [Entry(c.check, f'the script says "{_short(c.says, MAX_ITEM_CHARS)}", but the reviewer says "{_short(c.actually, MAX_ITEM_CHARS)}"',
-                      by="Claude") for c in (claude.corrections if claude else [])]
-    look_at = second + disputed
+    look_at = [e for e in mandatory.second if id(e) not in unreviewed]
     stats = {"must_fix": len(mandatory.lacking), "look_at": len(look_at), "bonus": len(bonus.lacking)}
     stats["issues"] = sum(stats.values())
     if not stats["issues"]:
@@ -226,8 +232,8 @@ def build_fix_prompt(*, project: str, subjects: list[str], lang: str | None, res
             sections.append("\n".join([heading, *lines]))
 
     section(f"A. MUST FIX ({stats['must_fix']}): checks that failed, and requirements the review judged a problem", mandatory.lacking)
-    section(f"B. LOOK AT, AND FIX ONLY IF IT IS REAL ({stats['look_at']}): warnings, checks that could not run, points the reviewer was "
-            "unsure about, and automated results the reviewer disputes", look_at)
+    section(f"B. LOOK AT, AND FIX ONLY IF IT IS REAL ({stats['look_at']}): warnings, checks that could not run, and points the reviewer was "
+            "unsure about", look_at)
     section(f"C. BONUS PART ({stats['bonus']}), only if the bonus is meant to be graded", bonus.lacking)
 
     language = {"c": "C", "cpp": "C++98"}.get(lang or "", "the language the subject requires")
@@ -235,6 +241,7 @@ def build_fix_prompt(*, project: str, subjects: list[str], lang: str | None, res
     body = "\n\n".join(sections)
     proof = FIX_PROOF.get(lang or "", "the project's own build and tests")
     # (the Norm and its 42 header only exist for C)
+    report_at = f"`{report_dir}/claude-review.md`" if report_dir else "`claude-review.md` in the current directory"
     norm_rule = (f"- If a fix needs a 42 header at the top of a C file you create (the Norm requires one), its author line is `By: {HEADER_AUTHOR}`; "
                  "leave the header of an existing file as it is. Run norminette on every C file you change.\n") if lang == "c" else ""
     prompt = f"""You are helping fix a 42 school project: {project}. Subject(s): {', '.join(subjects) or 'unknown'}. The project is written in {language}.
@@ -246,11 +253,12 @@ HOW TO WORK
 - A finding can be wrong. Read the code and confirm each issue before you change anything; if it is not real, say so and leave the code as it is.
 - Fix the cause with the smallest change that removes the issue. Do not refactor, rename or restyle anything else, and do not add features the subject does not ask for.
 - {rules}
-- Do not edit verdict.md or verdict-report.md: the review tool generates them, and the next run replaces them.
+- Do not edit verdict.md or verdict-report.md by hand. You will update them through your report, as the last step says.
 {norm_rule}- Go in order. After each fix, prove it ({proof}, whichever fits) and tell me the command and its result before moving on.
 - {TEST_HERE}
 - Ask me before running anything that deletes files, installs software or uses the network.
 - When you are done, list every issue by number as fixed, not fixed (why) or not a real problem (why).
+- Then update the verdict. {verdict_update_rules(report_at)} Give every issue below an entry in "fixes", and a "correction" for every issue whose status changed.
 
 {body}"""
     return prompt, {**stats, "chars": len(prompt)}

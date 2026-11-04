@@ -20,7 +20,7 @@ GOOD = {
         {"n": 2, "status": "unclear", "note": "bonus relinks.", "check_by_hand": "", "evidence": ["Makefile:23-25"]},
         {"n": 3, "status": "likely ok", "note": "Fine.", "evidence": []},
     ],
-    "corrections": [{"check": "Makefile has a bonus rule", "says": "no bonus files", "actually": "ft_lst*.c exist"}],
+    "corrections": [{"check": "Makefile has a bonus rule", "status": "likely ok", "says": "no bonus files", "actually": "ft_lst*.c exist", "evidence": ["main.c:2", "ghost.c:1"]}],
     "improvements": [{"category": "code", "priority": "high", "title": "Fix strchr", "detail": "cast", "evidence": ["ft_strchr.c:20"]}],
     "verdict": {"decision": "do not pass", "reason": "README missing."},
 }
@@ -35,7 +35,8 @@ def test_a_good_block_is_merged_completely():
     assert [(e.file, e.line) for e in r1.evidence] == [("ft_strchr.c", 20)]
     assert reviews["r2"].assessment == "unclear" and [(e.file, e.line) for e in reviews["r2"].evidence] == [("Makefile", 23)]
     assert reviews["r3"].assessment == "likely_ok"
-    assert rep.corrections[0].actually == "ft_lst*.c exist"
+    assert rep.corrections[0].actually == "ft_lst*.c exist" and rep.corrections[0].status == "likely_ok"
+    assert [e.file for e in rep.corrections[0].evidence] == ["main.c"] and rep.fixes == []
     assert rep.verdict.decision == "do not pass" and rep.verdict.reason == "README missing."
     assert rep.improvements[0].title == "Fix strchr" and rep.improvements[0].source == "ai" and rep.improvements[0].priority == "high"
 
@@ -146,3 +147,68 @@ def test_an_unclosed_block_is_not_data():
 def test_the_block_may_have_no_language_tag_but_other_languages_are_skipped():
     assert extract_block('```\n{"items": []}\n```') == {"items": []}
     assert extract_block('```yaml\n{"items": []}\n```') is None
+
+
+# ---------------------------------------------------------------- an update after a fix is laid over the last report
+
+
+def first_report():
+    return parse_report(report(GOOD), ITEMS, FILES)
+
+
+def update(data, previous=None):
+    rep, reviews = previous or first_report()
+    return parse_report(report(data), ITEMS, FILES, previous=rep, previous_reviews=reviews)
+
+
+def test_an_update_only_has_to_say_what_changed():
+    rep, reviews = update({"fixes": [{"issue": "Fix strchr", "status": "fixed", "detail": "Cast to unsigned char.", "evidence": ["ft_strchr.c:20", "ghost.c:1"]}],
+                           "items": [{"n": 1, "status": "likely ok", "note": "Fixed now."}]})
+    assert rep.structured and rep.problems == [] and (rep.assessed, rep.total) == (3, 3)
+    assert reviews["r1"].assessment == "likely_ok" and reviews["r1b"].finding == "Fixed now."
+    assert reviews["r2"].assessment == "unclear" and reviews["r3"].assessment == "likely_ok"       # the rest stands
+    assert rep.verdict.decision == "do not pass" and rep.corrections[0].check == "Makefile has a bonus rule"
+    assert [(f.issue, f.status, [e.file for e in f.evidence]) for f in rep.fixes] == [("Fix strchr", "fixed", ["ft_strchr.c"])]
+
+
+def test_an_update_replaces_the_verdict_and_the_correction_of_the_same_check():
+    rep, _ = update({"fixes": [], "verdict": {"decision": "ready to pass", "reason": "All fixed."},
+                     "corrections": [{"check": "MAKEFILE has a bonus rule", "status": "likely a problem", "actually": "Removed by mistake."}]})
+    assert rep.verdict.decision == "ready to pass"
+    assert [(c.status, c.actually) for c in rep.corrections] == [("likely_problem", "Removed by mistake.")]
+
+
+def test_new_improvements_are_marked_and_the_list_is_replaced():
+    rep, _ = update({"fixes": [], "improvements": [{"title": "FIX STRCHR", "category": "code"}, {"title": "Split main", "category": "structure"}]})
+    assert [(i.title, i.new) for i in rep.improvements] == [("FIX STRCHR", False), ("Split main", True)]
+    done, _ = update({"fixes": [], "improvements": []})
+    assert done.improvements == []
+
+
+def test_an_update_that_leaves_improvements_out_keeps_them_and_nothing_is_new():
+    first = update({"fixes": [], "improvements": [{"title": "Split main", "category": "structure"}]})
+    rep, _ = update({"fixes": []}, previous=first)
+    assert [(i.title, i.new) for i in rep.improvements] == [("Split main", False)]
+
+
+def test_fixes_add_up_over_several_rounds_with_the_latest_word_on_each():
+    one = update({"fixes": [{"issue": "Leak", "status": "not fixed"}, {"issue": "Norm", "status": "fixed"}]})
+    rep, _ = update({"fixes": [{"issue": "leak", "status": "fixed", "detail": "Freed it."}]}, previous=one)
+    assert [(f.issue, f.status) for f in rep.fixes] == [("leak", "fixed"), ("Norm", "fixed")]
+
+
+def test_a_new_full_report_replaces_everything():
+    first = update({"fixes": [{"issue": "Leak"}]})
+    rep, reviews = parse_report(report({"items": [{"n": 1, "status": "ok"}]}), ITEMS, FILES, previous=first[0], previous_reviews=first[1])
+    assert rep.fixes == [] and rep.verdict is None and set(reviews) == {"r1", "r1b"} and any("did not answer" in p for p in rep.problems)
+
+
+def test_fixes_without_an_earlier_report_stand_alone():
+    rep, reviews = parse_report(report({"fixes": [{"issue": "Leak", "status": "weird"}], "improvements": [{"title": "A", "category": "code"}]}), ITEMS, FILES)
+    assert rep.structured and rep.fixes[0].status == "fixed" and rep.improvements[0].new and reviews == {}
+
+
+def test_a_correction_with_no_usable_status_is_reported():
+    rep, _ = parse_report(report({"items": [], "corrections": [{"check": "A", "status": "banana", "actually": "y"}, {"check": "B", "status": "bonus", "actually": "z", "section": "bonus"}]}), ITEMS, FILES)
+    assert [c.status for c in rep.corrections] == ["unclear", "unclear"] and rep.corrections[1].section == "bonus"
+    assert sum("no usable status" in p for p in rep.problems) == 2

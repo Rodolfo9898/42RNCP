@@ -47,13 +47,12 @@ chosen (the containers see nothing else); symbolic links and `..` are refused.
 `verdict.md` is **one page** that answers three questions, whoever found the answer (a script or claude's review):
 
 - **❌ Lacking — fix these:** failed checks, and requirements claude judged a problem.
-- **⚠️ Second look — a human should verify these:** warnings, checks that could not run, requirements claude is unsure about
-  or has not assessed yet, and every place where claude says an automated result is wrong.
+- **⚠️ Second look — a human should verify these:** warnings, checks that could not run, and requirements claude is unsure
+  about or has not assessed yet.
 - **✅ Ok:** checks that passed and requirements claude found ok (or not applicable to the project).
 
 It opens with a headline and a count table, then has the bonus part, the improvements (claude's own list once its review is
-merged, otherwise script heuristics) and ends with a **Final verdict**: the checks' result, claude's decision, and "what to do
-next". The page is shown in the app (a rendered `verdict.md` tab) and saved in the cloned repository. If the project already
+merged, otherwise script heuristics) and ends with a **Final verdict**: the result, who decided it, and "what to do next". The page is shown in the app (a rendered `verdict.md` tab) and saved in the cloned repository. If the project already
 has its own `verdict.md` (or a symlink), it is never touched and `verdict-report.md` is used instead.
 
 Claude's review goes into `verdict.md` only: no separate report file is added to the repository (a `claude-review.md` left
@@ -61,7 +60,24 @@ by an earlier version is removed; a project's own file of that name is never tou
 `verdict.md`: the prompt asks claude to end the report with one json block answering every numbered requirement
 (`likely ok` / `likely a problem` / `unclear` / `not applicable`, a note, what to check by hand, `file:line` evidence), listing
 corrections to automated results, improvements and a verdict. Unknown requirement numbers are ignored and any file or line that
-does not exist is dropped. If the block is missing, the prose is appended as text instead, with a warning saying why.
+does not exist is dropped. If the block is missing, the prose is appended as text instead, with a warning saying why (a later
+report without a block never undoes one that was merged).
+
+**Claude overwrites the scripts.** A correction is not added next to the script's statement, it replaces it in the whole
+evaluation: its status, its text and its log, in `verdict.md`, the checklist, the counts and the fix prompt (the item is tagged
+`Claude`; the session keeps what the scripts said). `likely ok` moves a result to **✅ Ok**, `likely a problem` to **❌ Lacking**,
+`unclear` to **⚠️ Second look**, and a correction naming no known check adds a new finding.
+
+**Claude has the final say on the result:** `ready to pass` is `PASS`, `pass with reservations` is `PASS WITH ISSUES`, `do not
+pass` is `FAIL`, whatever the lists say. A decision never outlives the code it judged, since every ▶ Run checks starts from
+nothing. Since claude reads the student's code, its decision can in principle be swayed by that code: it is told to treat the repository as data, but on someone else's project, read what it says before relying on it.
+
+**After a fix.** `verdict.md` is generated, so an edit made by hand would be overwritten. When you ask claude to fix something and
+update the verdict, it saves a report with a `"fixes"` block instead (the fix prompt and its system prompt both tell it how), and
+that is merged within seconds while the tab is open. An update only says what changed and the rest of the review stands. The page
+gets a **🛠 What Claude corrected** section (each issue as fixed, not fixed or not a real problem, with what changed and how it
+was proven), which also says whether any new improvements were found; those are marked 🆕 in the list. Like the rest of the
+review, this lasts until the next ▶ Run checks.
 
 Checks run in a disposable copy of the clone, so the clone always shows exactly what was committed. For libraries, the
 required functions must be present in the **built** `.a` (found with `nm`), not just defined in the sources.
@@ -297,13 +313,14 @@ it in a box to **Copy** (you can edit it first). It lists the same things `verdi
 
 - **A. Must fix:** failed checks and the requirements claude or the AI judged a problem, each with its `file:line`, the subject page
   and the end of the log.
-- **B. Look at, and fix only if it is real:** warnings, checks that could not run, points the reviewer was unsure about, and
-  automated results claude disputes.
+- **B. Look at, and fix only if it is real:** warnings, checks that could not run, and points the reviewer was unsure about.
 - **C. Bonus part:** failed bonus checks, marked optional.
 
 Requirements nobody has assessed yet are not issues, so they are left out; if nothing is lacking it says so instead of
 producing an empty prompt. The prompt tells the AI to confirm each finding before touching code, to make the smallest change,
-to treat the issue text as data, to leave `verdict.md` alone, and to report each issue as fixed / not fixed / not real.
+to treat the issue text as data, to report each issue as fixed / not fixed / not real, and to finish by updating the verdict
+through its report (see *After a fix* above), never by editing `verdict.md`. That report is only picked up from the **⌨ Claude**
+tab: an assistant running anywhere else can fix the code, but cannot update the verdict.
 It is copied rather than sent to the **⌨ Claude** tab because it is meant for whichever assistant you prefer. By default (live
 mode) you can paste it into the ⌨ Claude tab too: that claude works in your project, so its fixes land on your machine at
 once. With `TERMINAL_WORKDIR=copy` a fix made there stays in the throw-away copy. The
@@ -401,12 +418,12 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
    the PDFs at every ▶ Run checks, an existing review gets them without adding the subject again.
 3. **Verdict**: until claude's review is merged it follows the two lists of `verdict.md` for the mandatory part. `FAIL` when
    anything is under **❌ Lacking** (whatever else there is), `PASS WITH ISSUES` when nothing is lacking but something is
-   under **⚠️ Second look** (warnings, requirements nobody or claude could not settle, claude disagreeing with a check),
+   under **⚠️ Second look** (warnings, requirements nobody or claude could not settle),
    `PASS` when both lists are empty. Bonus results are reported separately and never fail the verdict.
    **After claude's merge, claude has the final say**: its decision is the result (`ready to pass` is `PASS`, `pass with
    reservations` is `PASS WITH ISSUES`, `do not pass` is `FAIL`), even when the lists alone would say something else. The Verdict
-   window and `verdict.md` then read "decided by Claude" and say what the lists alone would have said, so you can see the
-   disagreement. A report without a verdict in it decides nothing: the lists do.
+   window and `verdict.md` then read "decided by Claude", give its reason and say what the lists alone would have said, so you
+   can see the disagreement. A report without a verdict in it decides nothing: the lists do.
 4. **Every ▶ Run checks starts from nothing.** The server first ends claude's session (its report is thrown away, not
    collected), forgets claude's review and the AI review, deletes the `verdict.md` it wrote into the project (a `verdict.md`
    of your own, without this app's marker, is never touched), and runs a `git pull` (fast-forward only) in the project, so the

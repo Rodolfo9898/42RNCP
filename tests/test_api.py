@@ -1081,7 +1081,7 @@ def structured_review(item_ids):
         status = ["likely a problem", "unclear", "likely ok", "not applicable"][(n - 1) % 4]
         answers.append({"n": n, "status": status, "note": f"note for {n}", "check_by_hand": "run it" if n == 1 else "", "evidence": ["main.c:1"] if n == 1 else []})
     data = {"items": answers,
-            "corrections": [{"check": "Compiles with -Wall -Wextra -Werror", "says": "some message", "actually": "it does compile with them"}],
+            "corrections": [{"check": "Compiles with -Wall -Wextra -Werror", "status": "unclear", "says": "some message", "actually": "it does compile with them"}],
             "improvements": [{"category": "logic", "priority": "high", "title": "Check the allocation", "detail": "malloc can fail", "evidence": ["main.c:2", "ghost.c:9"]}],
             "verdict": {"decision": "pass with reservations", "reason": "Mostly sound."}}
     return "# My review\n\nLong prose that stays in the session only.\n\n```c\nint x;\n```\n\n```json\n" + __import__("json").dumps(data) + "\n```\n"
@@ -1107,12 +1107,12 @@ def test_the_prompt_stores_its_numbering_and_the_saved_report_is_merged_by_those
     lacking = document[document.index("## ❌ Lacking"):document.index("## ⚠️ Second look")]
     second = document[document.index("## ⚠️ Second look"):document.index("## ✅ Ok")]
     assert "`Claude`" in lacking and "note for 1" in lacking and "_Check by hand:_ run it" in lacking and "`main.c:1`" in lacking
-    assert "note for 2" in second and "it does compile with them" in second and "Claude disagrees" in second
+    assert "note for 2" in second and "it does compile with them" in second and "disagrees" not in document
     assert "Requirements claude found ok" in document
     assert "Long prose that stays in the session only." not in document                 # no second document stuffed into the first
     assert not (repo / "claude-review.md").exists() and "Claude's full report" not in document
     assert main.store.get(sid).claude_review == review                                    # the prose is kept in the session
-    assert "Claude: **pass with reservations**" in document and "> Mostly sound." in document
+    assert "⚠️ **PASS WITH ISSUES** · decided by Claude" in document and "> Mostly sound." in document
     improvements = document[document.index("## Improvements"):document.index("## Final verdict")]
     assert "Check the allocation" in improvements and "`main.c:2`" in improvements and "ghost.c" not in improvements   # invented file dropped
     assert "from claude's review" in improvements
@@ -1696,7 +1696,7 @@ def test_saving_forces_claudes_review_into_verdict_md_in_the_project(client, mon
     body = save(c, sid).json()
     assert body["saved"] is True and body["structured"] is True and body["assessed"] == body["total"] > 0
     document = (repo / "verdict.md").read_text()
-    assert "`Claude`" in document and "Claude: **pass with reservations**" in document and "note for 1" in document
+    assert "`Claude`" in document and "decided by Claude: **pass with reservations**" in document and "note for 1" in document
     assert not (repo / "claude-review.md").exists()                                      # and still no separate report file in the project
 
 
@@ -1797,6 +1797,107 @@ def test_the_norm_is_refreshed_too(client):
     assert norm.rules
     norm.rules = []                                                                         # a Norm stored by an older parser
     assert main.refresh_subject_rules(session) is True and session.subjects["en.norm.pdf"].rules
+
+
+# ---------------------------------------------------------------- claude overwrites, decides, and reports what it corrected
+
+
+def block(data):
+    return "# Report\n\n```json\n" + __import__("json").dumps(data) + "\n```\n"
+
+
+def session_with_merged_report(c, main, monkeypatch, name, data):
+    """A session whose checks ran, with claude's report `data` merged. Returns the session id, the repository and the terminal's report."""
+    sid, repo = prepared_session(c, main, name)
+    run_to_completion(c, sid)
+    c.get(f"/api/sessions/{sid}/review-prompt")
+    terminal = {"report": block(data)}
+    terminal_returns(monkeypatch, main, lambda session_id: terminal["report"])
+    assert save(c, sid).status_code == 200
+    return sid, repo, terminal
+
+
+def a_failed_check(c, sid):
+    return next(r for r in c.get(f"/api/sessions/{sid}").json()["results"] if r["status"] == "fail")
+
+
+def test_the_whole_evaluation_reads_claudes_word_and_the_session_keeps_the_scripts(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "ow1")
+    run_to_completion(c, sid)
+    failed = a_failed_check(c, sid)
+    c.get(f"/api/sessions/{sid}/review-prompt")
+    terminal_returns(monkeypatch, main, lambda session_id: block({"items": [], "verdict": {"decision": "ready to pass", "reason": "Good."},
+                     "corrections": [{"check": failed["title"], "status": "likely ok", "actually": "Claude tested this and it holds."}]}))
+    assert save(c, sid).status_code == 200
+
+    state = c.get(f"/api/sessions/{sid}").json()
+    shown = next(r for r in state["results"] if r["title"] == failed["title"])
+    assert (shown["status"], shown["detail"], shown["by"]) == ("pass", "Claude tested this and it holds.", "Claude")
+    assert state["summary"]["overall"] == "PASS" and state["summary"]["decided_by"] == "claude"
+    document = (repo / "verdict.md").read_text()
+    assert "Claude tested this and it holds." in document and "✅ **PASS** · decided by Claude" in document
+    assert not failed["detail"] or failed["detail"] not in document
+    kept = next(r for r in main.store.get(sid).results if r.title == failed["title"])
+    assert (kept.status, kept.detail, kept.by) == ("fail", failed["detail"], "script")
+    assert failed["title"] not in c.get(f"/api/sessions/{sid}/fix-prompt").json()["text"].split("HOW TO WORK")[1]
+
+
+def test_a_fix_report_updates_verdict_md_and_says_what_was_corrected(client, monkeypatch):
+    c, main = client
+    sid, repo, terminal = session_with_merged_report(c, main, monkeypatch, "ow2", {"items": [], "verdict": {"decision": "do not pass", "reason": "Broken."},
+                                           "improvements": [{"title": "Old idea", "category": "code"}]})
+    assert "❌ **FAIL** · decided by Claude" in (repo / "verdict.md").read_text()
+    terminal["report"] = block({"fixes": [{"issue": "The Makefile", "status": "fixed", "detail": "Added the rules; make re works.", "evidence": ["main.c:1"]}],
+                                "improvements": [{"title": "Old idea", "category": "code"}, {"title": "Brand new idea", "category": "logic"}],
+                                "verdict": {"decision": "ready to pass", "reason": "Fixed."}})
+    assert main.collect_claude_review(main.store.get(sid)) is True                       # (what the poll does while the tab is open)
+    document = (repo / "verdict.md").read_text()
+    assert "✅ **PASS** · decided by Claude" in document and "> Fixed." in document
+    fixes = document[document.index("## 🛠 What Claude corrected (1)"):document.index("## ❌ Lacking")]
+    assert "**The Makefile** — fixed: Added the rules; make re works." in fixes and "`main.c:1`" in fixes
+    assert "**New improvements found (1):** Brand new idea" in fixes and "Brand new idea** 🆕" in document
+
+
+def test_a_later_report_that_cannot_be_read_does_not_undo_the_merged_one(client, monkeypatch):
+    c, main = client
+    sid, repo, terminal = session_with_merged_report(c, main, monkeypatch, "ow3", {"items": [], "verdict": {"decision": "ready to pass", "reason": "Good."}})
+    terminal["report"] = "# just prose, no block"
+    main.collect_claude_review(main.store.get(sid))
+    state = c.get(f"/api/sessions/{sid}").json()
+    assert state["summary"]["decided_by"] == "claude" and state["claude"]["structured"] is True
+    document = (repo / "verdict.md").read_text()
+    assert "decided by Claude" in document and "no json block" in document and "just prose" not in document
+
+
+def test_a_run_ends_what_claude_said_its_corrections_and_what_it_fixed_included(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "ow4")
+    run_to_completion(c, sid)
+    failed = a_failed_check(c, sid)
+    c.get(f"/api/sessions/{sid}/review-prompt")
+    terminal_returns(monkeypatch, main, lambda session_id: block({
+        "items": [], "verdict": {"decision": "ready to pass", "reason": "Good."},
+        "corrections": [{"check": failed["title"], "status": "likely ok", "actually": "Claude tested this and it holds."}],
+        "fixes": [{"issue": "The Makefile", "status": "fixed", "detail": "Added the rules."}]}))
+    assert save(c, sid).status_code == 200
+    assert "What Claude corrected" in (repo / "verdict.md").read_text()
+
+    state = run_to_completion(c, sid)
+    assert state["summary"]["decided_by"] == "scripts" and state["summary"]["overall"] == "FAIL" and state["claude"]["fixes"] == []
+    assert next(r for r in state["results"] if r["title"] == failed["title"])["by"] == "script"
+    document = (repo / "verdict.md").read_text()
+    assert "What Claude corrected" not in document and "decided by Claude" not in document and "Claude tested this" not in document
+
+
+def test_the_fix_prompt_tells_claude_where_its_report_goes(client, monkeypatch):
+    c, main = client
+    sid, _ = prepared_session(c, main, "ow6")
+    run_to_completion(c, sid)
+    monkeypatch.setattr(main, "terminal_status", lambda: {"workdir": "live"})
+    assert f"`/scratch/reports/{sid}/claude-review.md`" in c.get(f"/api/sessions/{sid}/fix-prompt").json()["text"]
+    monkeypatch.setattr(main, "terminal_status", lambda: {"workdir": "copy"})
+    assert "`claude-review.md` in the current directory" in c.get(f"/api/sessions/{sid}/fix-prompt").json()["text"]
 
 
 # ---------------------------------------------------------------- every run starts fresh: claude ended, old verdict removed, project pulled
