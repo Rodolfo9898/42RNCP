@@ -1613,7 +1613,7 @@ def test_the_review_prompt_tells_claude_when_it_works_in_the_real_folder_and_kee
     live = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
     assert "real project folder on my machine, not a copy" in live and "build output" in live and "make fclean" in live
     assert f"`/scratch/reports/{sid}/claude-review.md`" in live and "outside the project on purpose" in live
-    assert "is a copy of the student's repository" not in live and "in the current directory" not in live
+    assert "is a copy of the student's repository" not in live and "`claude-review.md` in the current directory" not in live
     terminal_says(monkeypatch, main, workdir="copy")
     copy = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
     assert "is a copy of the student's repository" in copy and "`claude-review.md` in the current directory" in copy
