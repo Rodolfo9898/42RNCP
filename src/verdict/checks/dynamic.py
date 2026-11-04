@@ -184,14 +184,20 @@ def allowed_functions(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     undefined = {u for u in undefined if not u.startswith("_")}
     if rule.params.get("math"):
         allowed |= set(MATH_FUNCTIONS) | {f + "f" for f in MATH_FUNCTIONS} | {f + "l" for f in MATH_FUNCTIONS}
-    forbidden = {u for u in undefined - allowed if not (rule.params.get("mlx") and re.match(r"(mlx_|X[A-Z]|shm)", u))}
+    forbidden = {u for u in undefined - allowed if not (rule.params.get("mlx") and re.match(r"(mlx_|X[A-Za-z]|shm)", u))}
 
+    # The program also imports what its libraries use internally (MiniLibX calls getenv and
+    # strlen, for example). Only a call in the repo's own sources counts against it.
     violations: list[Evidence] = []
+    called: list[str] = []
     sources = ctx.source_files(unit)
     for name in sorted(forbidden):
-        violations += grep(ctx, sources, re.compile(rf"(?<![\w.>])\b{re.escape(name)}\s*\("), limit=5)
+        hits = grep(ctx, sources, re.compile(rf"(?<![\w.>])\b{re.escape(name)}\s*\("), limit=5)
+        if hits:
+            called.append(name)
+            violations += hits
     if violations:
-        yield result(rule, "fail", f"Calls to functions that are not authorized: {', '.join(sorted(forbidden))}.{note}", evidence=violations[:25])
+        yield result(rule, "fail", f"Calls to functions that are not authorized: {', '.join(called)}.{note}", evidence=violations[:25])
     elif forbidden and forbidden <= COMPILER_EMITTED:
         yield result(rule, "pass", f"Only compiler-generated calls to {', '.join(sorted(forbidden))}.{note}")
     else:
