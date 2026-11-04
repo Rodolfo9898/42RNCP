@@ -30,8 +30,13 @@ FROM python:3.14-slim
 
 # Toolchains used to build and check the repositories under review (keep in step with terminal/Dockerfile).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git build-essential make valgrind vim nano libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends git ca-certificates build-essential make valgrind vim nano libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# A project's submodules, with no key: there is no ssh client here, so a git@github.com: address is read as https://github.com/ and a
+# public repository can be fetched whichever form .gitmodules uses. It only reaches GitHub with docker-compose.sandbox-github.yml.
+RUN git config --system url."https://github.com/".insteadOf "git@github.com:" \
+    && git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose

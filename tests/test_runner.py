@@ -152,3 +152,7 @@ def test_the_http_handler_runs_a_command_with_subjects_dir_and_refuses_anything_
     for env in ({"LD_PRELOAD": "/tmp/evil.so"}, {"SUBJECTS_DIR": "/etc"}, {"SUBJECTS_DIR": str(tmp_path / "missing")}, ["SUBJECTS_DIR"]):
         status, body = post_exec(runner, {"argv": show, "cwd": str(tmp_path), "env": env})
         assert status == 400 and "error" in body, env                                                      # refused before anything runs
+
+
+def test_commands_never_get_an_ssh_agent(tmp_path, monkeypatch):
+    assert "SSH_AUTH_SOCK" not in load_runner(tmp_path, monkeypatch, SSH_AUTH_SOCK="/run/agent.sock").ENV

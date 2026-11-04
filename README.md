@@ -300,6 +300,23 @@ your key can write to. So load a **dedicated key** that only reaches the reposit
 `ssh-add ~/.ssh/that_key`), and turn the switch off (`make run` without it) when you review code you do not trust. The line in `.env` may have spaces or quotes around the `1`;
 anything else than `1` leaves it off, and the terminal tab says so.
 
+### Submodules during the checks: `SANDBOX_GITHUB=1`
+
+A project whose Makefile runs `git submodule update` fails **make builds** by default, because the sandbox has no route out. To let
+it fetch public submodules from GitHub:
+
+```sh
+make run SANDBOX_GITHUB=1      # or put a line SANDBOX_GITHUB=1 in .env, then make run
+```
+
+This adds `docker-compose.sandbox-github.yml`, which gives the sandbox one new route: `github-gateway`, which forwards to
+`github.com:443` and nothing else, so there is still no general internet. No key is involved: the sandbox has no ssh client and never
+gets your ssh-agent, so code under review cannot act as you. `git@github.com:` addresses are read as `https://github.com/`, so a
+public submodule works whichever form `.gitmodules` uses. A private submodule or one on another host stays unreachable.
+Code under review can still send data to GitHub over this route, so turn the switch off if that matters for what you are reviewing.
+
+Cloning and pushing over ssh are separate and do not change: the web app clones through your ssh-agent, and the terminal pushes with `TERMINAL_SSH=1`.
+
 Inside the tab, once: `git config --global user.name "…"` and `git config --global user.email "…"` (kept in `claude-home`).
 The copy's `origin` is restored from the clone when it is a plain `git@host:path`, `ssh://git@host/…` or `https://host/…`
 address (never `ext::`, a path or anything else), and `git push -u origin HEAD` sends the copy's commits there; the clone in

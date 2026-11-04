@@ -6,7 +6,18 @@ COMPOSE = docker compose
 # (spaces, tabs, quotes and a Windows line ending around the 1 are ignored: "TERMINAL_SSH=1 " must not silently mean off)
 TERMINAL_SSH ?= $(shell grep -m1 '^TERMINAL_SSH=' .env 2>/dev/null | cut -d= -f2- | tr -d ' \t\r"')
 ifeq ($(strip $(TERMINAL_SSH)),1)
-COMPOSE = docker compose -f docker-compose.yml -f docker-compose.ssh.yml
+COMPOSE_FILES += -f docker-compose.ssh.yml
+endif
+
+# SANDBOX_GITHUB=1 (same two places) gives the sandbox a route to github.com:443 only, so a project's public submodules can be fetched
+# during the checks. No key and no ssh-agent are involved. Off by default. See docker-compose.sandbox-github.yml.
+SANDBOX_GITHUB ?= $(shell grep -m1 '^SANDBOX_GITHUB=' .env 2>/dev/null | cut -d= -f2- | tr -d ' \t\r"')
+ifeq ($(strip $(SANDBOX_GITHUB)),1)
+COMPOSE_FILES += -f docker-compose.sandbox-github.yml
+endif
+
+ifneq ($(strip $(COMPOSE_FILES)),)
+COMPOSE = docker compose -f docker-compose.yml $(COMPOSE_FILES)
 endif
 
 # Host folder that holds the cloned projects (mounted at /projects in the containers).

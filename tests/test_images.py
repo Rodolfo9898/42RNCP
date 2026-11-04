@@ -176,7 +176,7 @@ def test_the_ssh_override_only_gives_the_terminal_the_agent_and_the_means_to_dro
 
 def test_the_ssh_override_is_only_used_when_asked_for():
     assert re.search(r"^TERMINAL_SSH \?= \$\(shell grep -m1 '\^TERMINAL_SSH=' \.env", MAKEFILE, re.M)
-    assert re.search(r"^ifeq \(\$\(strip \$\(TERMINAL_SSH\)\),1\)\nCOMPOSE = docker compose -f docker-compose\.yml -f docker-compose\.ssh\.yml\nendif$", MAKEFILE, re.M)
+    assert re.search(r"^ifeq \(\$\(strip \$\(TERMINAL_SSH\)\),1\)\nCOMPOSE_FILES \+= -f docker-compose\.ssh\.yml\nendif$", MAKEFILE, re.M)
     assert "docker-compose.ssh.yml" not in re.sub(r"ifeq \(\$\(strip \$\(TERMINAL_SSH\)\),1\)\n.*?\nendif", "", without_comments(MAKEFILE), flags=re.S)
 
 def test_the_terminal_image_can_push_over_ssh_but_trusts_only_githubs_pinned_key():
@@ -209,3 +209,38 @@ def test_the_terminal_can_read_pdfs_without_a_script_of_claudes_own():
     assert "RUN readpdf --help >/dev/null && pdftotext -v" in final                          # the build fails if either tool is broken
     script = (ROOT / "terminal" / "readpdf")
     assert script.read_text().startswith("#!/usr/bin/env python3") and script.stat().st_mode & 0o111
+
+
+SANDBOX_GITHUB = (ROOT / "docker-compose.sandbox-github.yml").read_text()
+
+
+def test_the_sandbox_stays_offline_unless_its_override_is_used():
+    block = services()["sandbox"]
+    assert "networks: [sandbox-net, docker-net]" in block                                          # no default network, no github-net
+    assert re.search(r"^  sandbox-net:\n    internal: true", COMPOSE, re.M)
+
+
+def test_the_sandbox_route_is_github_https_and_nothing_else():
+    code = without_comments(SANDBOX_GITHUB)
+    sandbox, gateway = code.split("services:", 1)[1].split("github-gateway:", 1)
+    assert "networks: [sandbox-net, docker-net, github-net]" in sandbox                            # never the default network (the internet)
+    assert '"github.com:10.255.42.6"' in sandbox and "ipv4_address: 10.255.42.6" in gateway
+    assert "ip_range: 10.255.42.0/30" in code                                                      # .6 is never handed out automatically
+    assert '"TCP:github.com:443"' in gateway and re.search(r"^  github-net:\s*\n    internal: true", code, re.M)
+    gateway = gateway.split("\nnetworks:", 1)[0]
+    assert "volumes" not in gateway and "environment" not in gateway                               # no files, no secrets
+
+
+@pytest.mark.parametrize("text", [SANDBOX_GITHUB, services()["sandbox"]])
+def test_the_sandbox_never_gets_an_ssh_agent_or_more_privileges(text):
+    code = without_comments(text)
+    assert "ssh-auth.sock" not in code and "SSH_AUTH_SOCK" not in code
+    assert "user: root" not in code and "SETUID" not in code
+
+
+def test_the_sandbox_image_has_no_ssh_client_and_reads_github_ssh_addresses_as_https():
+    final = final_stage(SANDBOX)
+    assert "openssh-client" not in apt_packages(SANDBOX)
+    assert 'url."https://github.com/".insteadOf "git@github.com:"' in final
+    assert 'url."https://github.com/".insteadOf "ssh://git@github.com/"' in final
+    assert "ENTRYPOINT" not in final and "\nUSER sandbox" in final

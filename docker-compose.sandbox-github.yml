@@ -1,0 +1,41 @@
+# Optional: lets the sandbox download PUBLIC GitHub repositories, so a project's `git submodule update` works during the checks.
+# Turn it on with SANDBOX_GITHUB=1 (`make run SANDBOX_GITHUB=1`, or a line SANDBOX_GITHUB=1 in .env); make adds this file for you.
+#
+# No key is involved: the sandbox gets neither your ssh-agent nor an ssh client, so code under review cannot act as you. Private
+# repositories stay out of reach. git@github.com: addresses are read as https://github.com/ (sandbox/Dockerfile).
+# Cloning and pushing over ssh are not affected: the web app and the terminal keep their own access.
+#
+# The sandbox still has no general internet: its only new route is github-gateway, which forwards to github.com:443 and nothing else.
+# The gateway only passes bytes along: git inside the sandbox checks GitHub's TLS certificate end to end.
+#
+# github.com is pinned to the gateway's fixed address in the sandbox alone. A network alias would not do: the gateway would then
+# resolve github.com to itself. If 10.255.42.0/29 is already in use on your computer, change every 10.255.42 address in this file.
+services:
+  sandbox:
+    networks: [sandbox-net, docker-net, github-net]
+    extra_hosts:
+      - "github.com:10.255.42.6"
+
+  github-gateway:
+    build: .                         # the web image, for its socat; no agent, no volumes and no secrets are given to it
+    user: "1000"
+    entrypoint: ["socat", "TCP-LISTEN:443,fork,reuseaddr,max-children=16", "TCP:github.com:443"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    networks:
+      default: {}
+      github-net:
+        ipv4_address: 10.255.42.6
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 64m
+
+networks:
+  github-net:                        # the sandbox and the gateway only
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.255.42.0/29
+          ip_range: 10.255.42.0/30   # automatic addresses stay below the gateway's: the sandbox must never be handed .6

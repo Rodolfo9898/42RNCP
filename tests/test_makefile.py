@@ -39,3 +39,32 @@ def test_off_by_default_and_on_from_the_command_line(tmp_path):
     assert uses_the_ssh_file(tmp_path, "TERMINAL_TOKEN=x\n", "TERMINAL_SSH=1")
     assert uses_the_ssh_file(tmp_path, "TERMINAL_SSH=0\n", "TERMINAL_SSH=1")        # the command line wins over .env
     assert uses_the_ssh_file(tmp_path, "TERMINAL_TOKEN=x\n", "TERMINAL_SSH=1 ")       # a space typed after the 1 on the command line
+
+
+def compose_of_run(tmp_path, env_text=None, *args):
+    """The `up` line of `make run`, with neither switch coming from your shell."""
+    shutil.copy(ROOT / "Makefile", tmp_path / "Makefile")
+    if env_text is not None:
+        (tmp_path / ".env").write_bytes(env_text.encode())
+    env = {k: v for k, v in os.environ.items() if k not in ("TERMINAL_SSH", "SANDBOX_GITHUB")}
+    done = subprocess.run(["make", "-n", "run", *args], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    up = [line for line in done.stdout.splitlines() if line.rstrip().endswith(" up")]
+    assert len(up) == 1, done.stdout
+    return up[0]
+
+
+@pytest.mark.parametrize("line", ["SANDBOX_GITHUB=1", "SANDBOX_GITHUB=1 ", "SANDBOX_GITHUB=1\r", 'SANDBOX_GITHUB="1"'])
+def test_the_sandbox_github_switch_in_env_works(tmp_path, line):
+    assert "-f docker-compose.yml -f docker-compose.sandbox-github.yml" in compose_of_run(tmp_path, f"{line}\n")
+
+
+@pytest.mark.parametrize("line", ["SANDBOX_GITHUB=0", "SANDBOX_GITHUB=", "SANDBOX_GITHUB=yes", "# SANDBOX_GITHUB=1", "SOME_SANDBOX_GITHUB=1", "TERMINAL_SSH=1"])
+def test_anything_but_a_one_leaves_the_sandbox_offline(tmp_path, line):
+    assert "sandbox-github" not in compose_of_run(tmp_path, f"{line}\n"), repr(line)
+
+
+def test_both_switches_together_and_neither(tmp_path):
+    both = compose_of_run(tmp_path, "TERMINAL_SSH=1\nSANDBOX_GITHUB=1\n")
+    assert "docker compose -f docker-compose.yml -f docker-compose.ssh.yml -f docker-compose.sandbox-github.yml up" in both
+    assert compose_of_run(tmp_path, "TERMINAL_TOKEN=x\n").strip().startswith("docker compose up")
