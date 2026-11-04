@@ -715,10 +715,10 @@ async def open_upstream(url: str, token: str):
 
 @app.get("/api/terminal")
 def terminal_status() -> dict:
-    """Is the terminal container configured and reachable, is `claude` installed in it, and does it work in your project folder
-    ("live") or in a throw-away copy ("copy")?"""
+    """Is the terminal container configured and reachable, is `claude` installed in it, does it work in your project folder
+    ("live") or in a throw-away copy ("copy"), and does it have your ssh-agent (so that git can clone and push over ssh)?"""
     if not (TERMINAL_URL and TERMINAL_TOKEN):
-        return {"configured": False, "reachable": False, "claude": False, "workdir": "copy"}
+        return {"configured": False, "reachable": False, "claude": False, "workdir": "copy", "ssh": False}
     try:
         import httpx
 
@@ -728,9 +728,9 @@ def terminal_status() -> dict:
         if response.status_code != 200 or data.get("status") != "ok":
             raise ValueError("unexpected answer")
         return {"configured": True, "reachable": True, "claude": bool(data.get("claude")),
-                "workdir": "live" if data.get("workdir") == "live" else "copy"}
+                "workdir": "live" if data.get("workdir") == "live" else "copy", "ssh": data.get("ssh") is True}
     except Exception:
-        return {"configured": True, "reachable": False, "claude": False, "workdir": "copy"}
+        return {"configured": True, "reachable": False, "claude": False, "workdir": "copy", "ssh": False}
 
 
 def same_origin(ws: WebSocket) -> bool:

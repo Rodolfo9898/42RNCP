@@ -545,13 +545,14 @@ async function openTerminal(promptId, kind = "claude") {
   const view = h("div", { class: "view term" });
   const holder = h("div", { class: "term-holder" });
   const project = `projects/${session.repo.path}`;
-  view.append(h("div", { class: "term-bar" }, h("span", {}, live
+  const gitNote = ` ${sshNote(status.ssh === true)}`;
+  view.append(h("div", { class: "term-bar" }, h("span", {}, (live
     ? (shell
       ? `A plain shell directly in your project (${project}): every change is on your machine at once, build output included (make fclean cleans it).`
       : `claude works directly in your project (${project}): every change it makes is on your machine at once. Its report is merged into verdict.md automatically.`)
     : (shell
       ? "A plain shell in a throw-away copy of your project (the one claude works in, if it is running). Nothing done here goes back to your project, and the copy is deleted when the last tab using it closes."
-      : "claude works in a throw-away copy of your project: nothing it changes goes back to your project. Its report is merged into verdict.md automatically."))), holder);
+      : "claude works in a throw-away copy of your project: nothing it changes goes back to your project. Its report is merged into verdict.md automatically.")) + gitNote)), holder);
   addTab(key, `⌨ ${name}`, view, true);
   tabs.get(key).onClose = () => {
     clearInterval(tabs.get(key)?.watcher);

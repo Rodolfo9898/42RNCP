@@ -265,7 +265,12 @@ merges the one it saved into `verdict.md` for the project as it is now, whatever
 
 ### `git push` from the terminal (opt-in)
 
-Off by default: the terminal container has none of your credentials. To push from claude's terminal or the shell, switch it on:
+Off by default: the terminal container has none of your credentials. To clone or push from claude's terminal or the shell, switch it on.
+A new key does not change that: the **Clone** dialog of the page works because the *web* container shares your ssh-agent, but a
+`git clone` typed in the **⌨ Shell** or **⌨ Claude** tab answers "Permission denied (publickey) … make sure you have the correct
+access rights" until this is on. Each of those tabs says which it is in the bar above the terminal ("git over ssh is off here" /
+"works here"). Only keys that are in your ssh-agent count (`ssh-add -l` on your computer); a key file in `~/.ssh` is not enough,
+and `make ssh` only loads files named `~/.ssh/id_*` (or `make ssh SSH_KEYS="~/.ssh/other"`).
 
 ```sh
 make run TERMINAL_SSH=1        # or put a line TERMINAL_SSH=1 in .env, then make run

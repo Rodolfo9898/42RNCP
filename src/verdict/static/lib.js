@@ -383,6 +383,12 @@ function moveKey(keys, from, to, after = false) {
   return rest;
 }
 
+// What a terminal tab says about git over ssh: a clone or a push only signs in when the terminal container was given your ssh-agent.
+function sshNote(shared) {
+  return shared ? "git over ssh works here: your ssh-agent is shared with this tab."
+    : "git over ssh is off here, so git clone and git push cannot sign in: put TERMINAL_SSH=1 in .env and run make run.";
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { fuzzyMatch, matchesKey, showKey, tabsToClose, moveKey, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
+  module.exports = { sshNote, fuzzyMatch, matchesKey, showKey, tabsToClose, moveKey, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
 }

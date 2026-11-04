@@ -269,12 +269,25 @@ def test_review_times_out(env, tmp_path, monkeypatch):
 
 
 def test_health_reports_whether_claude_is_installed(env, monkeypatch):
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     client = TestClient(terminal.app)
-    assert client.get("/health").json() == {"status": "ok", "claude": True, "workdir": "copy"}
+    assert client.get("/health").json() == {"status": "ok", "claude": True, "workdir": "copy", "ssh": False}
     monkeypatch.setattr(terminal, "WORKDIR_MODE", "live")
     assert client.get("/health").json()["workdir"] == "live"
     monkeypatch.setattr(terminal, "CLAUDE", "definitely-not-installed")
     assert client.get("/health").json()["claude"] is False
+
+
+def test_health_says_whether_the_terminal_was_given_the_ssh_agent(env, monkeypatch, tmp_path):
+    client = TestClient(terminal.app)
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    assert client.get("/health").json()["ssh"] is False                                        # the default: no agent, git cannot sign in
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "no-such.sock"))
+    assert client.get("/health").json()["ssh"] is False                                        # asked for, but the socket is not there
+    sock = tmp_path / "agent.sock"
+    sock.write_text("")                                                                        # (any file stands in for the socket)
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(sock))
+    assert client.get("/health").json()["ssh"] is True
 
 
 # ---------------------------------------------------------------- a review prompt typed into a NEW session

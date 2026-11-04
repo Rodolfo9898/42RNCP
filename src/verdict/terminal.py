@@ -380,9 +380,15 @@ def authorised(token: str | None) -> bool:
     return bool(expected) and bool(token) and hmac.compare_digest(token, expected)  # no token configured: nothing is allowed
 
 
+def ssh_available() -> bool:
+    """Was this container given your ssh-agent (docker-compose.ssh.yml, TERMINAL_SSH=1)? Without it git cannot sign in over ssh."""
+    sock = os.environ.get("SSH_AUTH_SOCK")
+    return bool(sock) and Path(sock).exists()
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "claude": shutil.which(CLAUDE) is not None, "workdir": "live" if in_place() else "copy"}
+    return {"status": "ok", "claude": shutil.which(CLAUDE) is not None, "workdir": "live" if in_place() else "copy", "ssh": ssh_available()}
 
 
 @app.get("/result")

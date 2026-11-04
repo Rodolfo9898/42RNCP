@@ -365,3 +365,13 @@ def test_no_shortcut_is_one_the_browser_keeps_and_none_is_given_twice():
 def test_nothing_in_the_workbench_hands_text_from_a_repository_to_innerhtml():
     for name in ("workbench.js", "app.js", "lib.js"):
         assert not re.search(r"\.(innerHTML|outerHTML)\b|insertAdjacentHTML\(|document\.write\(", static(name)), name
+
+
+def test_the_terminal_tab_says_whether_git_over_ssh_works_there():
+    on, off = json.loads(run_js("sshnote", json.dumps([True, False])))
+    assert on == "git over ssh works here: your ssh-agent is shared with this tab."
+    assert "git over ssh is off here" in off and "git clone and git push cannot sign in" in off and "TERMINAL_SSH=1" in off and "make run" in off
+    app = static("app.js")
+    body = app[app.index("async function openTerminal"):app.index("addTab(key, `⌨ ${name}`")]
+    assert "sshNote(status.ssh === true)" in body                                                    # only a clear yes counts as on
+    assert "gitNote" in body.split('class: "term-bar"')[1]                                           # it is in the bar, for the shell and for claude

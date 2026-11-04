@@ -729,10 +729,10 @@ def test_terminal_explains_when_the_service_is_missing(client, monkeypatch):
 
 def test_terminal_status_endpoint(client, monkeypatch):
     c, main = client
-    assert c.get("/api/terminal").json() == {"configured": False, "reachable": False, "claude": False, "workdir": "copy"}
+    assert c.get("/api/terminal").json() == {"configured": False, "reachable": False, "claude": False, "workdir": "copy", "ssh": False}
     monkeypatch.setattr(main, "TERMINAL_URL", "http://127.0.0.1:9")      # nothing listens there
     monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
-    assert c.get("/api/terminal").json() == {"configured": True, "reachable": False, "claude": False, "workdir": "copy"}
+    assert c.get("/api/terminal").json() == {"configured": True, "reachable": False, "claude": False, "workdir": "copy", "ssh": False}
 
 
 def test_the_terminal_status_says_where_claude_and_the_shell_work(client, monkeypatch):
@@ -743,7 +743,18 @@ def test_the_terminal_status_says_where_claude_and_the_shell_work(client, monkey
     for answer, expected in (({"status": "ok", "claude": True, "workdir": "live"}, "live"), ({"status": "ok", "claude": True, "workdir": "copy"}, "copy"),
                              ({"status": "ok", "claude": True}, "copy"), ({"status": "ok", "claude": True, "workdir": "surprise"}, "copy")):
         monkeypatch.setattr(httpx, "Client", lambda answer=answer, **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=answer))))
-        assert c.get("/api/terminal").json() == {"configured": True, "reachable": True, "claude": True, "workdir": expected}
+        assert c.get("/api/terminal").json() == {"configured": True, "reachable": True, "claude": True, "workdir": expected, "ssh": False}
+
+
+def test_the_terminal_status_says_whether_the_terminal_has_the_ssh_agent(client, monkeypatch):
+    import httpx
+    c, main = client
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    for answer, expected in (({"status": "ok", "claude": True, "ssh": True}, True), ({"status": "ok", "claude": True, "ssh": False}, False),
+                             ({"status": "ok", "claude": True}, False), ({"status": "ok", "claude": True, "ssh": "yes"}, False)):
+        monkeypatch.setattr(httpx, "Client", lambda answer=answer, **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=answer))))
+        assert c.get("/api/terminal").json()["ssh"] is expected, answer
 
 
 # ---------------------------------------------------------------- the review prompt for the terminal
@@ -1644,7 +1655,7 @@ def test_the_web_app_and_the_real_terminal_service_agree_on_live_mode(client, mo
     monkeypatch.setattr(httpx, "Client", lambda **kw: AppClient(terminal.app, base_url="http://terminal:8002"))
 
     monkeypatch.setattr(terminal, "WORKDIR_MODE", "live")
-    assert c.get("/api/terminal").json() == {"configured": True, "reachable": True, "claude": True, "workdir": "live"}
+    assert c.get("/api/terminal").json()["workdir"] == "live"
     live_prompt = c.get(f"/api/sessions/{sid}/review-prompt").json()["text"]
     assert "real project folder on my machine" in live_prompt and f"/scratch/reports/{sid}/claude-review.md" in live_prompt
 
