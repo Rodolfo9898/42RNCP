@@ -34,6 +34,9 @@ def program(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     title = label(rule, f"`make{' bonus' if rule.params.get('bonus_target') else ''}` builds `{name}`")
     build = ctx.build(rule.unit, bool(rule.params.get("bonus_target")))
     if not build.ok:
+        if reason := ctx.offline_reason(build):           # not the project's fault, and not a pass either: someone must build it with a network
+            yield result(rule, "warn", reason, title=title, log=build.log)
+            return
         yield result(rule, "fail", "The build failed." if build.ran else build.log, title=title, log=build.log)
         return
     path = ctx.unit_dir(rule.unit) / name
@@ -49,6 +52,9 @@ def program(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
 def build_unit(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     build = ctx.build(rule.unit)
     if not build.ok:
+        if reason := ctx.offline_reason(build):
+            yield result(rule, "warn", reason, log=build.log)
+            return
         yield result(rule, "fail", "The build failed." if build.ran else build.log, log=build.log)
         return
     built = ctx.executables(rule.unit) + ctx.libraries(rule.unit)

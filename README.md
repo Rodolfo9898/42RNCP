@@ -412,6 +412,14 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
    `make clean/fclean/re`, norminette, authorized functions (`nm`), C++ bans, a crash smoke test and a
    valgrind run. Anything that builds or runs the repo goes through the `sandbox` container, which has no
    network, no capabilities and a read-only root filesystem.
+   **Submodules.** The sandbox has no network on purpose, but many projects keep their libs (libft, ft_printf, MiniLibX) as
+   submodules that the Makefile downloads. So before the build the app downloads them into the disposable copy, at the commits the
+   project records: over https without credentials (or, for github.com, through your ssh-agent when the repository is private),
+   only from github.com, gitlab.com, bitbucket.org, codeberg.org and the project's own host, at most 10 and two levels deep (never an
+   `ext::` address, a path or an option). What lives in a submodule belongs to another repository, so it is not part of the project's
+   own files (no Norm, no function check, no required-files look at it). A build that still fails *because it needed the network*, or
+   because a submodule it needs is missing, is not called ❌ Lacking: it goes under **⚠️ Second look** with the reason and what was
+   tried, since only a build with a network can settle it (`git submodule update --init` and `make` in ⌨ Claude or ⌨ Shell).
    **File presence follows what the subject allows about structure.** A list such as ft_printf's
    `Makefile, *.h, */*.h, *.c, */*.c` means "at the root *or* in a subfolder", so `*.c` and `*/*.c` are one requirement and
    either place satisfies it (a project that keeps everything at the root is fine). A required file that exists but not where the

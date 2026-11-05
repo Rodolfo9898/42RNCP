@@ -360,6 +360,178 @@ def pull(path: Path, known_hosts: Path) -> tuple[RepoInfo, str]:
     return _folder_info(path), (lines[-1] if lines else "Already up to date.")
 
 
+# ---------------------------------------------------------------- submodules, fetched for the build
+
+# A project's libs (libft, ft_printf, MiniLibX...) are often submodules that its Makefile downloads with `git submodule update`.
+# The sandbox has no network on purpose, so the app downloads them into the disposable copy before the build. The addresses come
+# from the project's .gitmodules, which someone else wrote: only these hosts (and the project's own) are contacted, only over
+# https without credentials, or over ssh (your agent) to a host on the list, and never a path, `ext::` or `--option`.
+SUBMODULE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org")
+MAX_SUBMODULES = 10
+SUBMODULE_DEPTH = 2                 # a lib may have libs of its own
+SUBMODULE_TIMEOUT = 180             # for one download
+SUBMODULE_BUDGET = 420              # for all of them
+SUBMODULE_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*){0,3}")
+_HTTPS = re.compile(rf"^https://(?P<host>{_HOST})/{_PATH}$")
+
+
+@dataclass
+class SubmoduleNote:
+    path: str          # relative to the project
+    ok: bool
+    message: str       # why it could not be downloaded (or what was done)
+
+
+def submodule_source(url: str, extra_hosts: frozenset[str] | set[str] = frozenset()) -> str | None:
+    """'https' or 'ssh' when `url` is an address a submodule may be downloaded from, None otherwise."""
+    allowed = {h.lower() for h in SUBMODULE_HOSTS} | {h.lower() for h in extra_hosts}
+    if ".." in url or url.startswith("-"):
+        return None
+    if (m := _HTTPS.match(url)):
+        return "https" if m["host"].lower() in allowed else None
+    if SCP_RE.match(url) or SSH_RE.match(url):
+        return "ssh" if ssh_target(url)[1].lower() in allowed else None
+    return None
+
+
+def submodule_paths(root: Path) -> list[str]:
+    """The folders .gitmodules says are submodules (read as plain text: nothing is run)."""
+    try:
+        text = (root / ".gitmodules").read_text(encoding="utf-8", errors="replace")[:200_000]
+    except OSError:
+        return []
+    return [m["path"] for m in re.finditer(r"^\s*path\s*=\s*(?P<path>\S+)\s*$", text, re.M) if SUBMODULE_PATH.fullmatch(m["path"])]
+
+
+def empty_submodules(root: Path) -> list[str]:
+    """Submodule folders of `root` that hold nothing: they were never downloaded."""
+    out = []
+    for path in submodule_paths(root):
+        folder = root / path
+        if folder.is_symlink() or (folder.is_dir() and not any(folder.iterdir())) or not folder.exists():
+            out.append(path)
+    return out
+
+
+def _git_in(root: Path, env: dict[str, str], *args: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", f"safe.directory={root}", "-C", str(root), *args],
+                          env=env, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _gitlinks(root: Path, env: dict[str, str]) -> dict[str, str]:
+    """path -> the commit the project records for each submodule."""
+    out = _git_in(root, env, "-c", "core.quotepath=off", "ls-files", "-s", "-z").stdout
+    links = {}
+    for record in out.split("\0"):
+        meta, _, path = record.partition("\t")
+        parts = meta.split()
+        if len(parts) == 3 and parts[0] == "160000" and re.fullmatch(r"[0-9a-f]{40}", parts[1]):
+            links[path] = parts[1]
+    return links
+
+
+def _module_urls(root: Path, env: dict[str, str]) -> dict[str, str]:
+    """path -> url, from .gitmodules."""
+    out = _git_in(root, env, "config", "-f", ".gitmodules", "--null", "--list").stdout
+    settings: dict[str, dict[str, str]] = {}
+    for record in out.split("\0"):
+        key, _, value = record.partition("\n")
+        if key.startswith("submodule.") and "." in key[len("submodule."):]:
+            name, _, var = key[len("submodule."):].rpartition(".")
+            settings.setdefault(name, {})[var] = value
+    return {v["path"]: v.get("url", "") for v in settings.values() if "path" in v}
+
+
+def fetch_submodules(root: Path, known_hosts: Path, *, extra_hosts: set[str] | frozenset[str] = frozenset(), protocols: tuple[str, ...] = ("https", "ssh"),
+                     allow=submodule_source, budget: float = SUBMODULE_BUDGET, _depth: int = 0, _prefix: str = "", _clock=None) -> list[SubmoduleNote]:
+    """Download the submodules of the project in `root` (a disposable copy) at the commits the project records, so that the build
+    does not need the network. Never raises. Returns one note per submodule; a folder that already has content is left alone."""
+    clock = _clock or time.monotonic
+    deadline = clock() + budget
+    notes: list[SubmoduleNote] = []
+    try:
+        known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(known_hosts.parent), "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_ALLOW_PROTOCOL": ":".join(protocols),
+               "GIT_SSH_COMMAND": f"ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={known_hosts}"}
+        if os.environ.get("SSH_AUTH_SOCK"):
+            env["SSH_AUTH_SOCK"] = os.environ["SSH_AUTH_SOCK"]
+        links, urls = _gitlinks(root, env), _module_urls(root, env)
+    except Exception as exc:
+        return [SubmoduleNote("", False, f"could not read the submodules: {exc}")]
+    for count, (path, sha) in enumerate(sorted(links.items())):
+        shown = f"{_prefix}{path}"
+        if count >= MAX_SUBMODULES:
+            notes.append(SubmoduleNote(shown, False, f"more than {MAX_SUBMODULES} submodules: this one was not downloaded"))
+            continue
+        try:
+            notes.append(_fetch_one(root, path, sha, urls.get(path, ""), shown, env, extra_hosts, protocols, allow, deadline, clock))
+        except Exception as exc:
+            notes.append(SubmoduleNote(shown, False, f"{type(exc).__name__}: {exc}"))
+        if notes[-1].ok and _depth + 1 < SUBMODULE_DEPTH and (root / path / ".gitmodules").is_file():
+            notes += fetch_submodules(root / path, known_hosts, extra_hosts=extra_hosts, protocols=protocols, allow=allow,
+                                      budget=max(0.0, deadline - clock()), _depth=_depth + 1, _prefix=f"{shown}/", _clock=clock)
+    return notes
+
+
+def _fetch_one(root: Path, path: str, sha: str, url: str, shown: str, env: dict[str, str], extra_hosts, protocols, allow, deadline: float, clock) -> SubmoduleNote:
+    if not SUBMODULE_PATH.fullmatch(path) or ".git" in path.split("/"):
+        return SubmoduleNote(shown, False, "its folder name is not one this app will write to")
+    dest = root / path
+    if not dest.parent.resolve().is_relative_to(root.resolve()) or dest.is_symlink():
+        return SubmoduleNote(shown, False, "its folder is a link or leaves the project")
+    if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
+        return SubmoduleNote(shown, True, "already there")
+    if not url:
+        return SubmoduleNote(shown, False, ".gitmodules gives no address for it")
+    source = allow(url, extra_hosts)
+    if source is None:
+        return SubmoduleNote(shown, False, f"{url} is not an address this app downloads from (github.com, gitlab.com, bitbucket.org, codeberg.org, or the project's own host)")
+    if source == "ssh" and not env.get("SSH_AUTH_SOCK"):
+        return SubmoduleNote(shown, False, f"{url} needs your ssh-agent, which is not available")
+    attempts = [url]
+    if source == "https" and env.get("SSH_AUTH_SOCK") and (m := _HTTPS.match(url)) and m["host"].lower() == "github.com":
+        attempts.append("git@github.com:" + url[len("https://github.com/"):])        # a private repository: the same repository, through your agent
+    config = ["-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c", "credential.helper=",
+              *(a for proto in protocols for a in ("-c", f"protocol.{proto}.allow=always"))]
+    last = ""
+    for address in attempts:
+        left = deadline - clock()
+        if left <= 1:
+            return SubmoduleNote(shown, False, "ran out of time downloading submodules")
+        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            done = subprocess.run(["git", *config, "clone", "-q", "--no-recurse-submodules", "--", address, str(dest)], env=env, capture_output=True,
+                                  text=True, timeout=min(SUBMODULE_TIMEOUT, left), check=False)
+        except subprocess.TimeoutExpired:
+            last = "the download timed out"
+            _empty(dest)
+            continue
+        if done.returncode == 0:
+            last = ""
+            break
+        last = (done.stderr.strip().splitlines() or ["git clone failed"])[-1]
+        _empty(dest)
+    if last:
+        return SubmoduleNote(shown, False, last)
+    checkout = _git_in(dest, env, "-c", "advice.detachedHead=false", "checkout", "-q", "--detach", sha, timeout=60)
+    if checkout.returncode != 0:                                                            # a commit that is not on a branch the clone fetched
+        _git_in(dest, env, "fetch", "-q", "origin", sha, timeout=min(SUBMODULE_TIMEOUT, max(1.0, deadline - clock())))
+        checkout = _git_in(dest, env, "-c", "advice.detachedHead=false", "checkout", "-q", "--detach", sha, timeout=60)
+    if checkout.returncode != 0:
+        return SubmoduleNote(shown, False, f"downloaded, but the commit {sha[:7]} the project records is not in it")
+    return SubmoduleNote(shown, True, f"downloaded at {sha[:7]}")
+
+
+def _empty(folder: Path) -> None:
+    """Back to the empty folder it was: what a failed download left behind goes."""
+    for child in folder.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
 def safe_path(root: Path, rel: str) -> Path:
     """Resolve `rel` inside `root`; refuse traversal and symlinks that leave the repo."""
     root = root.resolve()

@@ -1078,6 +1078,28 @@ def pull_before_run(session: Session) -> str:
     return f"git pull: now at {info.commit}" if changed else f"git pull: already up to date ({info.commit})"
 
 
+def download_submodules(session: Session, work: Path) -> list:
+    """The sandbox has no network, so the project's submodules (libft, MiniLibX...) are downloaded into the disposable copy here,
+    at the commits the project records. Best effort: what cannot be downloaded is reported by the build check, not raised."""
+    if not repo_mod.submodule_paths(work):
+        return []
+    pulled = session.message                                  # (what the pull said)
+    session.message = "downloading the submodules…"
+    host = None
+    if session.repo and session.repo.url:
+        try:
+            host = repo_mod.ssh_target(session.repo.url)[1]
+        except Exception:
+            host = None
+    try:
+        notes = repo_mod.fetch_submodules(work, WORKSPACE / "known_hosts", extra_hosts={host} if host else set())
+    except Exception as exc:                               # (it is written not to raise; a bug in it must still not stop the checks)
+        notes = [repo_mod.SubmoduleNote("", False, f"{type(exc).__name__}: {exc}")]
+    fetched = sum(1 for n in notes if n.ok and n.message.startswith("downloaded"))
+    session.message = "; ".join(x for x in (pulled, f"{fetched} submodule(s) downloaded" if fetched else "") if x)
+    return notes
+
+
 def _run(session: Session) -> None:
     work: Path | None = None
     try:
@@ -1095,7 +1117,8 @@ def _run(session: Session) -> None:
     try:
         work = make_work_copy(session, clone)
         subjects = refresh_subject_files(session)
-        run_checks(Ctx(repo=work.resolve(), rules=session.rules(), lang=session.lang(),
+        notes = download_submodules(session, work)
+        run_checks(Ctx(repo=work.resolve(), rules=session.rules(), lang=session.lang(), cache={"submodule_notes": notes},
                        sandbox=sandbox.with_env({"SUBJECTS_DIR": str(subjects)}) if sandbox else None), emit)
         # Suggestions and the README look at what was committed, not at what building left behind.
         pristine = Ctx(repo=clone, rules=session.rules(), sandbox=None, lang=session.lang())

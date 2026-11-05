@@ -2116,3 +2116,49 @@ def test_after_the_merge_claudes_decision_is_the_result_in_the_app_and_in_verdic
         main.store.get(sid).claude.verdict = ClaudeVerdict(decision=decision, reason="x")
         assert c.get(f"/api/sessions/{sid}").json()["summary"]["overall"] == expected
         assert f"**Result: {expected}**" in c.get(f"/api/sessions/{sid}/verdict.md").text
+
+
+# ---- the submodules are downloaded into the disposable copy before the build (the sandbox has no network)
+
+
+def test_a_run_downloads_the_submodules_into_the_copy_and_says_so(client, monkeypatch):
+    from verdict.repo import SubmoduleNote
+    c, main = client
+    sid, repo = prepared_session(c, main, "sm1")
+    (repo / ".gitmodules").write_text('[submodule "libs/libft"]\n\tpath = libs/libft\n\turl = https://github.com/Rodolfo9898/libft.git\n')
+    (repo / "libs" / "libft").mkdir(parents=True)
+    seen = {}
+
+    def fake_fetch(work, known_hosts, **kw):
+        seen.update(work=work, known_hosts=known_hosts, extra_hosts=kw.get("extra_hosts"), listing=sorted(p.name for p in work.iterdir()))
+        return [SubmoduleNote("libs/libft", True, "downloaded at abc1234"), SubmoduleNote("libs/mlx", False, "no address")]
+
+    monkeypatch.setattr(main.repo_mod, "fetch_submodules", fake_fetch)
+    monkeypatch.setattr(main, "run_checks", lambda ctx, emit: seen.update(notes=ctx.cache.get("submodule_notes")))
+    done = run_to_completion(c, sid)
+    assert [(n.path, n.ok) for n in seen["notes"]] == [("libs/libft", True), ("libs/mlx", False)]                    # (so a failed build can say what was tried)
+    assert seen["work"] == main.WORKSPACE / sid / "work" and seen["known_hosts"] == main.WORKSPACE / "known_hosts"       # (the disposable copy, never the project)
+    assert seen["extra_hosts"] == {"example.com"} and ".gitmodules" in seen["listing"]                                  # (the project's own host may be used too)
+    assert done["state"] == "done" and "1 submodule(s) downloaded" in done["message"] and "git pull" in done["message"]
+    assert not (repo / "libs" / "libft" / "anything").exists() and list((repo / "libs" / "libft").iterdir()) == []       # the project itself is untouched
+
+
+def test_a_project_without_submodules_downloads_nothing(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "sm2")
+    monkeypatch.setattr(main.repo_mod, "fetch_submodules", lambda *a, **kw: pytest.fail("there are no submodules"))
+    assert run_to_completion(c, sid)["state"] == "done"
+
+
+def test_a_download_that_goes_wrong_never_stops_the_checks(client, monkeypatch):
+    c, main = client
+    sid, repo = prepared_session(c, main, "sm3")
+    (repo / ".gitmodules").write_text('[submodule "x"]\n\tpath = libs/x\n\turl = https://github.com/a/x.git\n')
+    (repo / "libs" / "x").mkdir(parents=True)
+
+    def broken(work, known_hosts, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main.repo_mod, "fetch_submodules", broken)
+    done = run_to_completion(c, sid)
+    assert done["state"] == "done" and done["results"] and "downloaded" not in done["message"]

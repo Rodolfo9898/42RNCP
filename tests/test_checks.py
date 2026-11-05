@@ -493,3 +493,86 @@ def test_build_unit_counts_a_library_but_not_bare_objects(tmp_path, local_sandbo
     (repo / "gnl.a").unlink()
     (repo / "gnl.o").unlink()
     assert list(build_unit(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0].status == "warn"
+
+
+# ---------------------------------------------------------------- a build that needs the network cannot be judged (the sandbox has none)
+
+
+OFFLINE_LOG = ("fatal: unable to access 'https://github.com/Rodolfo9898/libft.git/': Could not resolve host: github.com\n"
+               "fatal: clone of 'https://github.com/Rodolfo9898/libft.git' into submodule path '/work/libs/libft' failed\n"
+               "make: *** [Makefile:40: submodules] Error 1\n")
+
+
+def fractol_like(tmp_path, makefile):
+    """A project with a `libs/libft` submodule that was never downloaded (an empty folder), like the web app's clone of it."""
+    repo = tmp_path / "fractol"
+    (repo / "libs" / "libft").mkdir(parents=True)
+    (repo / ".gitmodules").write_text('[submodule "libs/libft"]\n\tpath = libs/libft\n\turl = https://github.com/Rodolfo9898/libft.git\n')
+    (repo / "Makefile").write_text(makefile)
+    (repo / "main.c").write_text("int main(void)\n{\n\treturn (0);\n}\n")
+    return repo
+
+
+def program_rule():
+    return Rule(id="p", kind="program", title="fractol", text="", section="mandatory", sources=[], params={"program": "fractol"})
+
+
+@needs_build_tools
+def test_a_build_that_tried_to_download_something_is_a_warning_not_a_failure(tmp_path, local_sandbox):
+    from verdict.checks.dynamic import program
+    from verdict.repo import SubmoduleNote
+    repo = fractol_like(tmp_path, f"all:\n\t@echo \"{OFFLINE_LOG.splitlines()[0]}\" >&2; exit 1\n")
+    rule = program_rule()
+    notes = [SubmoduleNote("libs/libft", False, "fatal: could not read Username for 'https://github.com'")]
+    out = list(program(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c", cache={"submodule_notes": notes}), rule))[0]
+    assert out.status == "warn" and "sandbox has no network on purpose" in out.detail
+    assert "libs/libft: fatal: could not read Username" in out.detail and "git submodule update --init" in out.detail
+    assert "Could not resolve host" in out.log                                  # the evidence stays in the log
+
+
+@needs_build_tools
+def test_the_same_goes_for_a_library_build_and_without_notes_it_still_explains(tmp_path, local_sandbox):
+    repo = fractol_like(tmp_path, "all:\n\t@echo \"fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com\" >&2; exit 1\n")
+    rule = Rule(id="b", kind="build_unit", title="b", text="", section="mandatory", sources=[])
+    out = list(build_unit(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0]
+    assert out.status == "warn" and "could not be checked" in out.detail and "download" in out.detail
+
+
+@needs_build_tools
+def test_a_missing_submodule_explains_a_failure_that_talks_about_it(tmp_path, local_sandbox):
+    from verdict.checks.dynamic import program
+    repo = fractol_like(tmp_path, "all:\n\t@echo 'main.c:1:10: fatal error: libs/libft/libft.h: No such file or directory' >&2; exit 1\n")
+    rule = program_rule()
+    out = list(program(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0]
+    assert out.status == "warn" and "libs/libft" in out.detail and "not downloaded" in out.detail
+
+
+@needs_build_tools
+def test_a_build_that_fails_for_the_projects_own_reasons_is_still_a_failure_even_with_an_empty_submodule(tmp_path, local_sandbox):
+    from verdict.checks.dynamic import program
+    repo = fractol_like(tmp_path, "all:\n\t@echo 'main.c:3:5: error: expected ; before return' >&2; exit 1\n")
+    rule = program_rule()
+    out = list(program(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0]
+    assert out.status == "fail" and out.detail == "The build failed."
+
+
+@needs_build_tools
+def test_a_plain_failure_without_any_submodule_is_a_failure(tmp_path, local_sandbox):
+    from verdict.checks.dynamic import program
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    (repo / "Makefile").write_text("all:\n\t@echo 'nope' >&2; exit 1\n")
+    rule = program_rule()
+    assert list(program(Ctx(repo=repo.resolve(), rules=[rule], sandbox=local_sandbox, lang="c"), rule))[0].status == "fail"
+
+
+def test_what_lives_in_a_submodule_is_not_the_projects_own_file(tmp_path):
+    repo = fractol_like(tmp_path, "all:\n")
+    (repo / "libs" / "libft" / "ft_split.c").write_text("int x;\n")
+    (repo / "libs" / "libft" / "Makefile").write_text("all:\n")
+    (repo / "src").mkdir()
+    (repo / "src" / "fractol.c").write_text("int y;\n")
+    ctx = Ctx(repo=repo.resolve(), rules=[], sandbox=None, lang="c")
+    names = {p.as_posix() for p in ctx.files()}
+    assert "src/fractol.c" in names and "Makefile" in names and not any(n.startswith("libs/libft/") for n in names)
+    assert [p.as_posix() for p in ctx.source_files()] == ["main.c", "src/fractol.c"]

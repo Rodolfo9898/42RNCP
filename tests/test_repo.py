@@ -336,3 +336,238 @@ def test_the_second_try_waits_a_moment_first(tmp_path, monkeypatch):
     monkeypatch.setattr(repo.time, "sleep", pauses.append)
     clone_with(tmp_path, monkeypatch, [DENIED, ""])
     assert pauses == [2]
+
+
+# ---------------------------------------------------------------- submodules downloaded for the build (bare repositories stand in for GitHub)
+
+
+import os
+import shutil
+
+GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow", "GIT_CONFIG_VALUE_0": "always", "GIT_TERMINAL_PROMPT": "0"}
+ANYTHING_LOCAL = lambda url, hosts: "file"                  # (the real rule only lets known hosts through: tested below)
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+
+
+def git(*args, cwd):
+    done = subprocess.run(["git", *args], cwd=cwd, env=GIT_ENV, capture_output=True, text=True)
+    assert done.returncode == 0, f"git {' '.join(args)}: {done.stderr}"
+    return done.stdout.strip()
+
+
+class Libs:
+    """Libraries with a 'GitHub' each, a project that has them as submodules, and a copy of the project as the web app makes it
+    (cloned without the submodules, so their folders are empty)."""
+
+    def __init__(self, base):
+        self.base = base
+        for d in ("remotes", "work", "ws"):
+            (base / d).mkdir()
+
+    def lib(self, name, nested=None):
+        work = self.base / "work" / name
+        bare = self.base / "remotes" / f"{name}.git"
+        git("init", "-q", "--bare", "-b", "main", str(bare), cwd=self.base)
+        git("init", "-q", "-b", "main", str(work), cwd=self.base)
+        (work / f"{name}.h").write_text(f"// {name}\n")
+        git("add", "-A", cwd=work)
+        git("commit", "-q", "-m", "first", cwd=work)
+        if nested:
+            git("submodule", "add", "-q", str(self.base / "remotes" / f"{nested}.git"), f"deps/{nested}", cwd=work)
+            git("commit", "-q", "-m", "with a lib of its own", cwd=work)
+        git("remote", "add", "origin", str(bare), cwd=work)
+        git("push", "-q", "origin", "main", cwd=work)
+        return git("rev-parse", "HEAD", cwd=work)
+
+    def advance(self, name):
+        """The library moves on after the project recorded its commit."""
+        work = self.base / "work" / name
+        (work / "later.txt").write_text("later")
+        git("add", "-A", cwd=work)
+        git("commit", "-q", "-m", "later", cwd=work)
+        git("push", "-q", "origin", "main", cwd=work)
+
+    def project(self, **libs):
+        """libs: name -> path inside the project."""
+        project = self.base / "work" / "project"
+        git("init", "-q", "-b", "main", str(project), cwd=self.base)
+        (project / "Makefile").write_text("all:\n")
+        for name, path in libs.items():
+            git("submodule", "add", "-q", str(self.base / "remotes" / f"{name}.git"), path, cwd=project)
+        git("add", "-A", cwd=project)
+        git("commit", "-q", "-m", "project", "--allow-empty", cwd=project)
+        copy = self.base / "copy"
+        git("clone", "-q", "--no-recurse-submodules", str(project), str(copy), cwd=self.base)
+        return copy
+
+    def fetch(self, copy, **kw):
+        kw.setdefault("allow", ANYTHING_LOCAL)
+        kw.setdefault("protocols", ("file",))
+        return repo.fetch_submodules(copy, self.base / "ws" / "known_hosts", **kw)
+
+
+@pytest.fixture
+def libs(tmp_path, monkeypatch):
+    for key, value in GIT_ENV.items():
+        if key.startswith("GIT_"):
+            monkeypatch.setenv(key, value)
+    return Libs(tmp_path)
+
+
+@needs_git
+def test_the_libs_are_downloaded_at_the_commits_the_project_records_so_the_build_needs_no_network(libs):
+    ft, mlx = libs.lib("libft"), libs.lib("mlx")
+    copy = libs.project(libft="libs/libft", mlx="libs/mlx")
+    libs.advance("libft")                                                   # GitHub has moved on since the project recorded its commit
+    assert not any((copy / "libs" / "libft").iterdir())
+    notes = libs.fetch(copy)
+    assert [(n.path, n.ok) for n in notes] == [("libs/libft", True), ("libs/mlx", True)] and notes[0].message == f"downloaded at {ft[:7]}"
+    assert git("rev-parse", "HEAD", cwd=copy / "libs" / "libft") == ft and (copy / "libs" / "libft" / "libft.h").is_file()
+    assert git("rev-parse", "HEAD", cwd=copy / "libs" / "mlx") == mlx and not (copy / "libs" / "libft" / "later.txt").exists()
+    shutil.rmtree(libs.base / "remotes")                                    # no 'GitHub' any more: what the Makefile's own rule would do now
+    done = subprocess.run(["git", "submodule", "update", "--init"], cwd=copy, env=GIT_ENV, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
+@needs_git
+def test_a_lib_with_a_lib_of_its_own_is_downloaded_too_but_not_forever(libs):
+    libs.lib("deepest")
+    libs.lib("deep", nested="deepest")
+    libs.lib("mid", nested="deep")
+    copy = libs.project(mid="libs/mid")
+    notes = libs.fetch(copy)
+    assert [(n.path, n.ok) for n in notes] == [("libs/mid", True), ("libs/mid/deps/deep", True)]           # two levels
+    assert (copy / "libs" / "mid" / "deps" / "deep" / "deep.h").is_file()
+    assert not any((copy / "libs" / "mid" / "deps" / "deep" / "deps" / "deepest").iterdir())               # the third is left to the build
+
+
+@needs_git
+def test_a_folder_that_already_has_content_is_left_alone(libs):
+    libs.lib("libft")
+    copy = libs.project(libft="libs/libft")
+    (copy / "libs" / "libft" / "mine.c").write_text("kept\n")
+    notes = libs.fetch(copy)
+    assert [(n.ok, n.message) for n in notes] == [(True, "already there")] and sorted(p.name for p in (copy / "libs" / "libft").iterdir()) == ["mine.c"]
+
+
+@needs_git
+def test_a_lib_that_cannot_be_downloaded_is_reported_and_leaves_its_folder_empty_and_the_others_are_still_done(libs):
+    libs.lib("libft"), libs.lib("mlx")
+    copy = libs.project(libft="libs/libft", mlx="libs/mlx")
+    shutil.rmtree(libs.base / "remotes" / "libft.git")
+    notes = libs.fetch(copy)
+    by_path = {n.path: n for n in notes}
+    assert not by_path["libs/libft"].ok and "libft.git" in by_path["libs/libft"].message and by_path["libs/mlx"].ok
+    assert list((copy / "libs" / "libft").iterdir()) == [] and (copy / "libs" / "mlx" / "mlx.h").is_file()
+
+
+@needs_git
+def test_a_commit_the_download_does_not_contain_is_reported(libs):
+    libs.lib("libft")
+    copy = libs.project(libft="libs/libft")
+    git("update-index", "--cacheinfo", "160000", "1" * 40, "libs/libft", cwd=copy)          # the project records a commit nobody ever pushed
+    notes = libs.fetch(copy)
+    assert not notes[0].ok and "1111111 the project records is not in it" in notes[0].message
+
+
+@needs_git
+def test_addresses_this_app_does_not_download_from_are_never_contacted(libs, tmp_path):
+    libs.lib("libft")
+    copy = libs.project(libft="libs/libft")
+    marker = tmp_path / "ran"
+    for url in (str(libs.base / "remotes" / "libft.git"), f"ext::sh -c 'touch {marker}'", "--upload-pack=touch x", "http://github.com/a/b.git",
+                "https://internal.example/a/b.git", "https://github.com.evil.example/a/b.git", "https://github.com/../b.git", ""):
+        git("config", "-f", ".gitmodules", "submodule.libs/libft.url", url, cwd=copy)
+        notes = repo.fetch_submodules(copy, libs.base / "ws" / "known_hosts")                 # the real rule, the real protocols
+        assert not notes[0].ok and ("not an address this app downloads from" in notes[0].message or "gives no address" in notes[0].message), url
+        assert list((copy / "libs" / "libft").iterdir()) == [] and not marker.exists()
+
+
+@needs_git
+def test_folder_names_this_app_will_not_write_to_and_links_are_refused(libs, tmp_path):
+    libs.lib("libft"), libs.lib("mlx")
+    copy = libs.project(libft="my libs/libft", mlx="libs/mlx")
+    spaced = {n.path: n for n in libs.fetch(copy)}["my libs/libft"]
+    assert not spaced.ok and "folder name is not one this app will write to" in spaced.message
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    shutil.rmtree(copy / "libs" / "mlx")
+    (copy / "libs" / "mlx").symlink_to(outside)
+    notes = {n.path: n for n in libs.fetch(copy)}
+    assert not notes["libs/mlx"].ok and "link" in notes["libs/mlx"].message and list(outside.iterdir()) == []
+
+
+@needs_git
+def test_no_more_than_ten_and_no_more_time_than_the_budget(libs):
+    for i in range(12):
+        libs.lib(f"lib{i:02d}")
+    copy = libs.project(**{f"lib{i:02d}": f"libs/lib{i:02d}" for i in range(12)})
+    notes = libs.fetch(copy)
+    assert sum(n.ok for n in notes) == repo.MAX_SUBMODULES and all("more than 10 submodules" in n.message for n in notes if not n.ok) and len(notes) == 12
+    for i in range(12):                                                     # (the copy above is reused: empty it again)
+        shutil.rmtree(copy / "libs" / f"lib{i:02d}")
+        (copy / "libs" / f"lib{i:02d}").mkdir()
+    ticks = iter([0.0] + [1000.0] * 100)
+    late = libs.fetch(copy, _clock=lambda: next(ticks))
+    assert not any(n.ok for n in late) and sum("ran out of time" in n.message for n in late) == repo.MAX_SUBMODULES
+
+
+def test_the_hosts_a_submodule_may_come_from():
+    ok = {"https://github.com/Rodolfo9898/libft.git": "https", "https://gitlab.com/a/b": "https", "git@github.com:Rodolfo9898/libft.git": "ssh",
+          "ssh://git@bitbucket.org/a/b.git": "ssh", "https://codeberg.org/a/b": "https", "git@vogsphere.42lisboa.com:vogsphere/x": None,
+          "https://GitHub.com/a/b.git": "https"}
+    for url, expected in ok.items():
+        assert repo.submodule_source(url) == expected, url
+    assert repo.submodule_source("git@vogsphere.42lisboa.com:vogsphere/x", {"vogsphere.42lisboa.com"}) == "ssh"       # the project's own host
+    for bad in ("http://github.com/a/b", "file:///etc", "/etc/passwd", "../x", "ext::sh -c x", "-oProxyCommand=x", "https://github.com:8080/a/b",
+                "https://github.com@evil.example/a/b", "https://evil.example/github.com/a/b", "git@github.com:a/../b", "github.com/a/b"):
+        assert repo.submodule_source(bad) is None, bad
+
+
+def test_a_private_github_lib_is_retried_through_the_agent_and_only_there(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "clone" in cmd and cmd[cmd.index("--") + 1].startswith("https://"):
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(repo.subprocess, "run", fake_run)
+    root = tmp_path / "p"
+    (root / "libs" / "libft").mkdir(parents=True)
+    env = {"PATH": "/usr/bin", "SSH_AUTH_SOCK": "/run/agent.sock"}
+    args = (root, "libs/libft", "a" * 40, "https://github.com/Rodolfo9898/libft.git", "libs/libft", env, frozenset(), ("https", "ssh"), repo.submodule_source, 10**9, lambda: 0.0)
+    note = repo._fetch_one(*args)
+    clones = [c[c.index("--") + 1] for c in calls if "clone" in c]
+    assert note.ok and clones == ["https://github.com/Rodolfo9898/libft.git", "git@github.com:Rodolfo9898/libft.git"]
+    calls.clear()
+    other = ("https://gitlab.com/a/b.git",)
+    note = repo._fetch_one(root, "libs/libft", "a" * 40, other[0], "libs/libft", env, frozenset(), ("https", "ssh"), repo.submodule_source, 10**9, lambda: 0.0)
+    assert [c[c.index("--") + 1] for c in calls if "clone" in c] == ["https://gitlab.com/a/b.git"]                    # only github.com gets the second try
+    calls.clear()
+    note = repo._fetch_one(root, "libs/libft", "a" * 40, "https://github.com/a/b.git", "libs/libft", {"PATH": "/usr/bin"}, frozenset(), ("https", "ssh"), repo.submodule_source, 10**9, lambda: 0.0)
+    assert not note.ok and [c[c.index("--") + 1] for c in calls if "clone" in c] == ["https://github.com/a/b.git"]  # no agent, no second try
+    cmd = next(c for c in calls if "clone" in c)
+    assert "credential.helper=" in cmd and "protocol.allow=never" in cmd and "core.hooksPath=/dev/null" in cmd
+
+
+def test_submodule_folders_are_read_as_text_and_empty_ones_are_found(tmp_path):
+    (tmp_path / ".gitmodules").write_text('[submodule "a"]\n\tpath = libs/a\n\turl = x\n[submodule "b"]\n\tpath = libs/b\n[submodule "c"]\n\tpath = ../escape\n[submodule "d"]\n\tpath = has space/d\n')
+    (tmp_path / "libs" / "a").mkdir(parents=True)
+    (tmp_path / "libs" / "b").mkdir()
+    (tmp_path / "libs" / "b" / "full.c").write_text("x")
+    assert repo.submodule_paths(tmp_path) == ["libs/a", "libs/b"]
+    assert repo.empty_submodules(tmp_path) == ["libs/a"]
+    assert repo.submodule_paths(tmp_path / "nowhere") == [] and repo.empty_submodules(tmp_path / "nowhere") == []
+
+
+def test_a_ssh_address_needs_the_agent_and_is_not_even_tried_without_it(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(repo.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    root = tmp_path / "p"
+    (root / "libs" / "libft").mkdir(parents=True)
+    note = repo._fetch_one(root, "libs/libft", "a" * 40, "git@github.com:Rodolfo9898/libft.git", "libs/libft", {"PATH": "/usr/bin"}, frozenset(),
+                           ("https", "ssh"), repo.submodule_source, 10**9, lambda: 0.0)
+    assert not note.ok and "needs your ssh-agent" in note.message and calls == []
