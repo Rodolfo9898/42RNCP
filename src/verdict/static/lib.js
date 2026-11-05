@@ -351,16 +351,26 @@ function matchesKey(ev, binding, isMac) {
   for (const part of parts) want[part === "mod" ? (isMac ? "meta" : "ctrl") : part] = true;
   if (!!ev.ctrlKey !== want.ctrl || !!ev.metaKey !== want.meta || !!ev.altKey !== want.alt || !!ev.shiftKey !== want.shift) return false;
   const typed = String(ev.key || "").toLowerCase(), code = String(ev.code || "");
-  if (key === "`") return typed === "`" || code === "Backquote";
+  if (KEY_PUNCTUATION[key]) return typed === key || code === KEY_PUNCTUATION[key];
   if (/^[a-z]$/.test(key)) return typed === key || code === `Key${key.toUpperCase()}`;
-  return typed === key || code.toLowerCase() === key;
+  if (/^\d$/.test(key)) return typed === key || code === `Digit${key}`;
+  const name = KEY_NAMES[key] ?? key;
+  return typed === name || code.toLowerCase() === name;
 }
+
+// Keys written by their name in a binding, and the keys that are punctuation (matched by their place on the keyboard too).
+const KEY_NAMES = { left: "arrowleft", right: "arrowright", up: "arrowup", down: "arrowdown", esc: "escape" };
+const KEY_PUNCTUATION = { "`": "Backquote", "-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight", "\\": "Backslash", ";": "Semicolon", "'": "Quote", ",": "Comma", ".": "Period", "/": "Slash" };
+const KEY_SHOWN = {
+  mac: { left: "←", right: "→", up: "↑", down: "↓", enter: "↩", escape: "⎋", backspace: "⌫", delete: "⌦", tab: "⇥", space: "Space", pageup: "⇞", pagedown: "⇟", home: "↖", end: "↘" },
+  other: { left: "LeftArrow", right: "RightArrow", up: "UpArrow", down: "DownArrow", enter: "Enter", escape: "Escape", backspace: "Backspace", delete: "Delete", tab: "Tab", space: "Space", pageup: "PageUp", pagedown: "PageDown", home: "Home", end: "End" },
+};
 
 // How a binding is shown: "⇧⌘P" on a Mac, "Ctrl+Shift+P" elsewhere.
 function showKey(binding, isMac) {
   const parts = binding.split("+");
   const key = parts.pop();
-  const label = key.length === 1 ? key.toUpperCase() : key[0].toUpperCase() + key.slice(1);
+  const label = KEY_SHOWN[isMac ? "mac" : "other"][key] ?? (key.length === 1 ? key.toUpperCase() : key[0].toUpperCase() + key.slice(1));
   const names = { mod: isMac ? "⌘" : "Ctrl", ctrl: isMac ? "⌃" : "Ctrl", alt: isMac ? "⌥" : "Alt", shift: isMac ? "⇧" : "Shift", meta: isMac ? "⌘" : "Meta" };
   const order = isMac ? ["ctrl", "alt", "shift", "mod", "meta"] : ["ctrl", "mod", "meta", "alt", "shift"];     // (the order each platform writes them in)
   const shown = order.filter((name) => parts.map((p) => p.toLowerCase()).includes(name)).map((name) => names[name]);
@@ -375,26 +385,18 @@ function tabsToClose(entries, mode, key) {
     && (mode === "all" || (mode === "others" && e.key !== key) || (mode === "right" && i > at))).map((e) => e.key);
 }
 
-// The order of the tabs after dragging `from` onto `to` (dropped on its left half, or its right half when `after`).
-function moveKey(keys, from, to, after = false) {
-  if (from === to || !keys.includes(from) || !keys.includes(to)) return keys.slice();
-  const rest = keys.filter((k) => k !== from);
-  rest.splice(rest.indexOf(to) + (after ? 1 : 0), 0, from);
-  return rest;
-}
-
 // Who decided the overall result: once claude's review is merged, claude has the final say, and the lists of verdict.md may differ.
 function decidedNote(summary) {
   if (!summary || summary.decided_by !== "claude") return "";
   return summary.lists === summary.overall ? "Decided by Claude." : `Decided by Claude. The lists alone say ${summary.lists}.`;
 }
 
-// What a terminal tab says about git over ssh: a clone or a push only signs in when the terminal container was given your ssh-agent.
+// What a terminal says about git over ssh: a clone or a push only signs in when the terminal container was given your ssh-agent.
 function sshNote(shared) {
   return shared ? "git over ssh works here: your ssh-agent is shared with this tab."
     : "git over ssh is off here, so git clone and git push cannot sign in: put TERMINAL_SSH=1 in .env and run make run.";
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { decidedNote, sshNote, fuzzyMatch, matchesKey, showKey, tabsToClose, moveKey, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
+  module.exports = { decidedNote, sshNote, fuzzyMatch, matchesKey, showKey, tabsToClose, h, appendNodes, inlineMarkdown, renderMarkdown, renderBlocks, parseLink, defaultViewMode, isMarkdownPath, rainbow, rainbowEnabled, RAINBOW_LEVELS };
 }

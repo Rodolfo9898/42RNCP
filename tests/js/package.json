@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Only for tests/test_ui.py: jsdom runs the real page without a browser. `npm install` here, or set JSDOM_PATH to an installed jsdom.",
+  "devDependencies": { "jsdom": "^20.0.3" }
+}

@@ -207,21 +207,19 @@ def test_appending_nothing_adds_nothing():
     assert "null" not in html and "false" not in html
 
 
+STATIC = Path(__file__).resolve().parent.parent / "src/verdict/static"
+
+
+def static(name):
+    return (STATIC / name).read_text()
+
+
 def test_the_file_view_code_never_hands_a_possibly_missing_node_to_append():
     """The bug that put the word 'null' on every file: view.append(notice) with notice === null."""
-    source = (Path(__file__).resolve().parent.parent / "src/verdict/static/app.js").read_text()
-    body = source[source.index("async function openFile"):source.index("async function loadTree")]
+    source = static("fileview.js")
+    body = source[source.index("function buildFileView"):source.index("async function openFile")]
     assert "view.append(" not in body.replace('view.append(h("div", { class: "notice" }, `${path} is a binary', "")
     assert body.count("appendNodes(view") == 2
-
-
-def test_the_page_loads_the_shared_helpers_before_the_app():
-    html = (Path(__file__).resolve().parent.parent / "src/verdict/static/index.html").read_text()
-    scripts = re.findall(r'<script src="([^"]+)"', html)
-    assert scripts.index("lib.js") < scripts.index("app.js") < scripts.index("workbench.js")
-    app = (Path(__file__).resolve().parent.parent / "src/verdict/static/app.js").read_text()
-    for moved in ("function h(", "function inlineMarkdown(", "function renderMarkdown("):
-        assert moved not in app, f"{moved} now lives in lib.js; a second copy would silently win"
 
 
 # ---------------------------------------------------------------- workbench helpers: fuzzy search, keyboard shortcuts, tab order
@@ -321,60 +319,63 @@ def test_dragging_a_tab_puts_it_before_or_after_the_one_it_is_dropped_on():
     assert moved(order, "x", "b") == order and moved(order, "a", "x") == order            # unknown tabs change nothing
 
 
-# ---------------------------------------------------------------- workbench.js: how it is wired to the page and to app.js
-# (what the buttons, tabs and keys do is tried with a DOM; these keep the three files from drifting apart unnoticed)
+# ---------------------------------------------------------------- how the scripts are wired to the page and to each other
+# (what the parts do is tried in a DOM by test_ui.py; these keep the files from drifting apart unnoticed)
 
-STATIC = Path(__file__).resolve().parent.parent / "src/verdict/static"
-
-
-def static(name):
-    return (STATIC / name).read_text()
+ORDER = ["lib.js", "model.js", "core.js", "commands.js", "fileicons.js", "layout.js", "menus.js", "editors.js", "fileview.js", "minimap.js", "terminals.js",
+         "views.js", "scm.js", "quickinput.js", "statusbar.js", "settings-ui.js", "app.js", "workbench-commands.js", "boot.js"]
 
 
-def test_the_workbench_is_loaded_last_after_the_app_it_builds_on():
+def test_the_page_loads_every_script_once_in_an_order_that_works_and_starts_last():
     scripts = re.findall(r'<script src="([^"]+)"', static("index.html"))
-    assert scripts[-2:] == ["app.js", "workbench.js"] and (STATIC / "workbench.js").is_file()
+    assert scripts[:2] == ["vendor/xterm.js", "vendor/addon-fit.js"] and scripts[2:] == ORDER
+    assert all((STATIC / name).is_file() for name in scripts)
+    assert not {p.name for p in STATIC.glob("*.js")} - set(scripts), "a script of the folder that the page never loads"
+    app = static("app.js")
+    for moved in ("function h(", "function inlineMarkdown(", "function renderMarkdown(", "const tabs = ", "function showTab(", "function openFile("):
+        assert moved not in app, f"{moved} lives in another file; a second copy would silently win"
 
 
-def test_every_button_a_command_presses_and_every_element_the_workbench_looks_up_is_in_the_page():
-    html, workbench = static("index.html"), static("workbench.js")
-    ids = set(re.findall(r'id="([^"]+)"', html))
-    wanted = set(re.findall(r'press\("([\w-]+)"\)', workbench)) | set(re.findall(r'\$\("#([\w-]+)"\)', workbench))
-    assert wanted and wanted <= ids, wanted - ids
-    for tab in re.findall(r'showPanelTab\("(\w+)"\)', workbench):
-        assert f'data-tab="{tab}"' in html, tab
+def test_no_script_declares_a_global_another_one_declares_too():
+    """Scripts share one global scope: a second `const x` is a SyntaxError that stops the whole file, a second `function x` silently wins."""
+    seen = {}
+    for name in ORDER:
+        for declared in re.findall(r"^(?:const|let|var|function\*?|async function|class)\s+([A-Za-z_$][\w$]*)", static(name), re.MULTILINE):
+            assert declared not in seen, f"{declared} is declared in {seen[declared]} and in {name}"
+            seen[declared] = name
 
 
-def test_what_the_workbench_takes_from_the_app_is_still_defined_there_and_the_hooks_the_app_calls_exist_here():
-    app, workbench = static("app.js"), static("workbench.js")
-    for name in ("showTab", "closeTab", "pinTab", "openFile", "openSubject", "selectRow", "toggleSidebar", "togglePanel", "resetLayout", "loadTree"):
-        assert re.search(rf"function {name}\(", app), name
-    for name in ("tabs", "tabHistory", "layout", "appReady"):
-        assert re.search(rf"^(const|let) {name}\b", app, re.MULTILINE), name
-    for hook in ("tabMenu", "saveTabs"):                              # app.js calls these when they exist; here they must be defined
-        assert re.search(rf"typeof {hook}\b", app) and re.search(rf"^function {hook}\(", workbench, re.MULTILINE), hook
+def test_every_element_the_scripts_look_up_by_id_is_in_the_page_or_made_by_them():
+    ids = set(re.findall(r'id="([^"]+)"', static("index.html")))
+    made, wanted = set(), set()
+    for name in ORDER:
+        made |= set(re.findall(r'\bid: "([\w-]+)"', static(name)))
+        wanted |= set(re.findall(r'\$\("#([\w-]+)', static(name)))
+    assert wanted and wanted <= ids | made, wanted - ids - made
 
 
-def test_no_shortcut_is_one_the_browser_keeps_and_none_is_given_twice():
-    bindings = re.findall(r'keys: "([^"]+)"', static("workbench.js")) + re.findall(r'also: \["([^"]+)"\]', static("workbench.js"))
-    assert len(bindings) == len(set(bindings)) and "mod+shift+p" in bindings and "mod+p" in bindings
-    for reserved in ("mod+w", "mod+t", "mod+n", "mod+shift+t", "mod+shift+n", "ctrl+tab", "ctrl+shift+tab", "mod+l", "mod+q"):
-        assert reserved not in bindings, f"{reserved} cannot be captured by a web page"
+def test_every_command_a_menu_or_the_status_bar_runs_is_registered():
+    registered = set(re.findall(r'\bid: "([\w.-]+)", title:', static("workbench-commands.js")))
+    used = set()
+    for name in ("menus.js", "statusbar.js", "views.js", "layout.js", "terminals.js", "editors.js", "fileview.js", "scm.js", "app.js", "settings-ui.js"):
+        used |= set(re.findall(r'(?:command: |runCommand\()"([\w-]+(?:\.[\w-]+)+)"', static(name)))
+    assert used and used <= registered, used - registered
 
 
-def test_nothing_in_the_workbench_hands_text_from_a_repository_to_innerhtml():
-    for name in ("workbench.js", "app.js", "lib.js"):
-        assert not re.search(r"\.(innerHTML|outerHTML)\b|insertAdjacentHTML\(|document\.write\(", static(name)), name
+def test_nothing_hands_text_from_a_repository_to_innerhtml():
+    for name in ORDER:
+        assert not re.search(r"\.(innerHTML|outerHTML)\b|insertAdjacentHTML\(|document\.write\(|new Function\(|\beval\(", static(name)), name
 
 
 def test_the_terminal_tab_says_whether_git_over_ssh_works_there():
     on, off = json.loads(run_js("sshnote", json.dumps([True, False])))
     assert on == "git over ssh works here: your ssh-agent is shared with this tab."
     assert "git over ssh is off here" in off and "git clone and git push cannot sign in" in off and "TERMINAL_SSH=1" in off and "make run" in off
-    app = static("app.js")
-    body = app[app.index("async function openTerminal"):app.index("addTab(key, `⌨ ${name}`")]
+    terminals = static("terminals.js")
+    body = terminals[terminals.index("async function openTerminal"):terminals.index('addTab("terminal"')]
     assert "sshNote(status.ssh === true)" in body                                                    # only a clear yes counts as on
-    assert "gitNote" in body.split('class: "term-bar"')[1]                                           # it is in the bar, for the shell and for claude
+    assert "gitNote" in body.split('class: "term-bar"')[1]                                           # it is in the bar of claude's tab
+    assert "sshNote(sess.status?.ssh === true)" in terminals                                          # and of a shell moved into the editor area
 
 
 def test_the_verdict_window_says_when_claude_decided_and_what_the_lists_alone_say():
@@ -389,5 +390,7 @@ def test_a_run_clears_claudes_tab_the_verdict_and_the_open_files_and_does_not_co
     assert 'claude.discard = true; closeTab("terminal")' in clear and 'closeTab("verdict.md")' in clear and "tab.repoFile" in clear
     body = app[app.index("async function run()"):app.index("async function poll()")]
     assert body.index("post(`sessions/${sid}/run`)") < body.index("clearForNewRun()") < body.index("poll()")          # (nothing is closed if the server refuses)
-    terminal = app[app.index("tabs.get(key).onClose"):app.index("showTab(key);\n\n  const term")]
-    assert "!tabs.get(key)?.discard" in terminal and "if (shell || discard) return;" in terminal                  # (no /end call, no collecting timer)
+    terminals = static("terminals.js")
+    opened = terminals.index("tab.onClose = () => {")
+    close = terminals[opened:terminals.index('showTab("terminal");', opened)]
+    assert "claude.discard = !!tab.discard" in close and "if (tab.discard) return;" in close                       # (no /end call, no collecting timer)

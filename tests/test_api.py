@@ -221,20 +221,11 @@ def test_an_existing_folder_can_be_used_instead_of_cloning(client, monkeypatch):
     assert (main.PROJECTS / "42" / "libft" / "ft_a.c").read_text() == "int a;\n"
 
 
-def test_pull_updates_the_commit_shown_and_refuses_without_a_repository(client, monkeypatch):
+def test_there_is_no_pull_endpoint_any_more_because_every_run_pulls(client):
     c, main = client
     sid = c.post("/api/sessions").json()["id"]
-    assert c.post(f"/api/sessions/{sid}/repo/pull").status_code == 404
-    (main.PROJECTS / "libft").mkdir()
-    c.post(f"/api/sessions/{sid}/repo/existing", json={"path": "libft"})
-    monkeypatch.setattr(main.repo_mod, "pull", lambda path, kh: (main.repo_mod.RepoInfo("git@github.com:me/libft.git", "b2", "second", "Me"), "1 file changed"))
-    r = c.post(f"/api/sessions/{sid}/repo/pull")
-    assert r.status_code == 200
-    assert (r.json()["repo"]["commit"], r.json()["repo"]["path"], r.json()["pull"]) == ("b2", "libft", {"changed": True, "summary": "1 file changed"})
-    def refuse(path, kh):
-        raise main.repo_mod.RepoError("git pull failed: diverged")
-    monkeypatch.setattr(main.repo_mod, "pull", refuse)
-    assert c.post(f"/api/sessions/{sid}/repo/pull").json()["detail"] == "git pull failed: diverged"
+    assert c.post(f"/api/sessions/{sid}/repo/pull").status_code in (404, 405)
+    assert not hasattr(main, "pull_repo") and callable(main.pull_before_run)
 
 
 @pytest.mark.parametrize("path", ["../x", "/etc", "nope", ""])
@@ -2162,3 +2153,83 @@ def test_a_download_that_goes_wrong_never_stops_the_checks(client, monkeypatch):
     monkeypatch.setattr(main.repo_mod, "fetch_submodules", broken)
     done = run_to_completion(c, sid)
     assert done["state"] == "done" and done["results"] and "downloaded" not in done["message"]
+
+
+# ---------------------------------------------------------------- split terminals: the web app forwards the pane and lists the running shells
+
+
+def test_the_shell_websocket_forwards_the_pane_to_the_terminal_service(client, monkeypatch):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    attach_repo(main, sid, "pn1")
+    seen = []
+
+    async def fake_open(url, token):
+        seen.append(url)
+        raise OSError("not needed")
+
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(main, "open_upstream", fake_open)
+    monkeypatch.setattr(main, "push_subjects", lambda session: None)
+    origin = {"origin": "http://testserver"}
+    for query, expected in (("kind=shell&pane=t3", "&pane=t3&sid="), ("kind=shell", "&sid="), ("kind=shell&pane=../x", "&sid="), ("kind=shell&pane=T1", "&sid="), ("pane=t2", "&sid=")):
+        with c.websocket_connect(f"/api/sessions/{sid}/terminal?{query}", headers=origin) as ws:
+            ws.receive_bytes()
+        assert expected in seen[-1], (query, seen[-1])
+    assert "pane=" not in seen[-1] and "pane=" not in seen[-3] and "pane=" not in seen[-2]
+
+
+def test_ending_a_shell_names_its_pane_and_rejects_nonsense(client, monkeypatch):
+    import httpx
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    calls = []
+
+    def handler(request):
+        calls.append(dict(request.url.params))
+        return httpx.Response(200, json={"ended": True})
+
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(handler)))
+    assert c.post(f"/api/sessions/{sid}/shell/end", params={"pane": "t2"}).json() == {"ended": True}
+    assert c.post(f"/api/sessions/{sid}/shell/end").json() == {"ended": True}
+    assert calls == [{"sid": sid, "kind": "shell", "pane": "t2"}, {"sid": sid, "kind": "shell"}]
+    assert c.post(f"/api/sessions/{sid}/shell/end", params={"pane": "../x"}).status_code == 400 and len(calls) == 2
+
+
+def test_the_running_shells_are_listed_for_a_reloaded_page(client, monkeypatch):
+    import httpx
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    assert c.get(f"/api/sessions/{sid}/shells").json() == {"panes": [], "claude": False}                  # no terminal service configured
+    monkeypatch.setattr(main, "TERMINAL_URL", "http://terminal:8002")
+    monkeypatch.setattr(main, "TERMINAL_TOKEN", "tok")
+    answer = {"panes": ["t1", "", "../etc", 7, "T2", "t3"], "claude": True}
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=answer))))
+    assert c.get(f"/api/sessions/{sid}/shells").json() == {"panes": ["t1", "", "t3"], "claude": True}        # only well-formed names get through
+    answer["claude"] = "yes"
+    assert c.get(f"/api/sessions/{sid}/shells").json()["claude"] is False
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ConnectError("down")))))
+    assert c.get(f"/api/sessions/{sid}/shells").json() == {"panes": [], "claude": False}
+    assert c.get("/api/sessions/nope/shells").status_code == 404
+
+
+def test_the_page_and_every_script_stylesheet_and_icon_file_it_needs_are_served(client):
+    import re
+
+    c, _ = client
+    page = c.get("/")
+    assert page.status_code == 200 and "<title>verdict</title>" in page.text
+    csp = page.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "style-src 'self' 'unsafe-inline'" in csp and "connect-src 'self' ws: wss:" in csp
+    needed = [p for p in re.findall(r'(?:src|href)="([^"#]+)"', page.text) if not p.startswith("data:")]        # (the favicon is inline)
+    assert len(needed) >= 22 and "boot.js" in needed and "style.css" in needed
+    for path in needed:
+        answer = c.get(f"/{path}")
+        assert answer.status_code == 200, path
+        assert (answer.headers["content-type"].startswith("text/css") if path.endswith(".css") else "javascript" in answer.headers["content-type"]), path
+    # the icon theme the explorer reads and one icon it points to
+    theme = c.get("/vendor/great-icons/icons.json")
+    assert theme.status_code == 200 and "iconDefinitions" in theme.json()

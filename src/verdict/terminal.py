@@ -51,7 +51,9 @@ CLAUDE = os.environ.get("CLAUDE_BIN", "claude")
 HOME = os.environ.get("TERMINAL_HOME", "/home/term")
 SHELL = os.environ.get("TERMINAL_SHELL", "bash")
 
-MAX_TERMINALS = 4                                                        # a claude and a shell for each of two reviews
+MAX_TERMINALS = 16                                                       # claude and shells of all the reviews open at once
+MAX_SHELLS = 8                                                           # shells (split panes and terminal tabs) of one review
+PANE = re.compile(r"[a-z0-9]{1,12}")                                     # the name the page gives a shell: t1, t2... (empty: the first, as before)
 # Where claude and the shell work. "live" (the default): in the project folder itself, which is your own folder on your machine,
 # so every change they make is there at once. "copy" (or anything else, as the safe fallback): in a throw-away copy made for each
 # tab, a scratch space for code you do not trust: nothing done there goes back to the project. The checks never work in place in
@@ -694,6 +696,25 @@ def alive(live: Live | None) -> bool:
     return live is not None and not live.ended and live.process.poll() is None
 
 
+def shell_key(session_id: str, pane: str = "") -> str:
+    """Where a review's shell is kept. The first one has no name (as before the terminal could be split): `sid:shell`."""
+    return f"{session_id}:shell" + (f":{pane}" if pane else "")
+
+
+def shell_panes(session_id: str) -> list[str]:
+    """The names of the review's running shells ("" for the one that has none), in the order they were started."""
+    prefix = f"{session_id}:shell"
+    found = [(live.started, key[len(prefix) + 1:]) for key, live in list(_live.items())
+             if (key == prefix or key.startswith(prefix + ":")) and alive(live)]
+    return [pane for _, pane in sorted(found)]
+
+
+def shared_copy(session_id: str) -> Live | None:
+    """A running claude or shell of this review that works in a scratch copy: a new shell works in the same copy instead of making one."""
+    candidates = [_live.get(session_id)] + [_live.get(shell_key(session_id, pane)) for pane in shell_panes(session_id)]
+    return next((live for live in candidates if alive(live) and not live.in_place), None)
+
+
 @app.websocket("/pty")
 async def pty_socket(ws: WebSocket) -> None:
     global _open_terminals
@@ -707,7 +728,10 @@ async def pty_socket(ws: WebSocket) -> None:
         kind = ws.query_params.get("kind", "claude")
         if kind not in ("claude", "shell") or (kind == "shell" and not session_id):
             raise ValueError("unknown kind of terminal")
-        key = session_id if kind == "claude" else f"{session_id}:shell"
+        pane = ws.query_params.get("pane", "")
+        if pane and not PANE.fullmatch(pane):
+            raise ValueError("unknown terminal pane")
+        key = session_id if kind == "claude" else shell_key(session_id, pane)
         requested = ws.query_params.get("prompt") if kind == "claude" else None
         live = _live.get(key) if session_id else None
         if live is not None and (requested or not alive(live)):
@@ -717,15 +741,15 @@ async def pty_socket(ws: WebSocket) -> None:
         borrowed = False             # a shell next to a running claude works in claude's own copy
         placed = False               # working in the project folder itself (live mode): nothing is copied and nothing is ever deleted
         if live is None:
-            if _open_terminals >= MAX_TERMINALS:
+            if _open_terminals >= MAX_TERMINALS or (kind == "shell" and len(shell_panes(session_id)) >= MAX_SHELLS):
                 await ws.close(code=4429)
                 return
             if in_place():
                 workdir, placed = resolve_repo(ws.query_params.get("repo", "")), True
             else:
-                claude = _live.get(session_id) if kind == "shell" else None
-                borrowed = alive(claude)
-                workdir = claude.workdir if borrowed else sanitized_copy(resolve_repo(ws.query_params.get("repo", "")))
+                neighbour = shared_copy(session_id) if kind == "shell" else None            # claude's copy, or the copy another shell already works in
+                borrowed = neighbour is not None
+                workdir = neighbour.workdir if borrowed else sanitized_copy(resolve_repo(ws.query_params.get("repo", "")))
     except (ValueError, OSError) as exc:
         await ws.accept()
         await ws.send_bytes(f"\r\n[terminal] {exc}\r\n".encode())
@@ -763,7 +787,8 @@ async def pty_socket(ws: WebSocket) -> None:
             _baselines[session_id] = {p.name for p in workdir.iterdir()}
         if kind == "shell":
             where = ("your project folder, live: every change is on your machine at once" if placed
-                     else "claude's working copy" if borrowed else "its own throw-away copy (claude is not running)")
+                     else (f"{'claude' if neighbour.kind == 'claude' else 'the other shell'}'s working copy" if borrowed
+                           else "its own throw-away copy (claude is not running)"))
             with live.lock:
                 live.backlog += f"\x1b[2m[shell in {where}: {workdir}]\r\n[subject PDFs of this review: $SUBJECTS_DIR = {SUBJECTS_ROOT / session_id}]\x1b[0m\r\n".encode()
         _start_reaper()
@@ -846,12 +871,22 @@ async def pty_socket(ws: WebSocket) -> None:
 
 
 @app.post("/pty/end")
-def end_session(request: Request, sid: str = "", kind: str = "claude") -> dict:
-    """The user closed the claude tab (or the shell tab) on purpose: stop it. The working copy goes with the last session using it."""
+def end_session(request: Request, sid: str = "", kind: str = "claude", pane: str = "") -> dict:
+    """The user closed the claude tab (or a shell terminal) on purpose: stop it. The working copy goes with the last session using it."""
     if not authorised(request.headers.get("x-terminal-token")):
         raise HTTPException(401, "bad token")
-    live = _live.get(sid if kind == "claude" else f"{sid}:shell")
+    if pane and not PANE.fullmatch(pane):
+        raise HTTPException(400, "unknown terminal pane")
+    live = _live.get(sid if kind == "claude" else shell_key(sid, pane))
     return {"ended": bool(live and finish(live))}
+
+
+@app.get("/shells")
+def shells(request: Request, sid: str = "") -> dict:
+    """The shells of a review that are still running (their page may have been reloaded): the names the page gave them."""
+    if not authorised(request.headers.get("x-terminal-token")):
+        raise HTTPException(401, "bad token")
+    return {"panes": shell_panes(sid) if SESSION_ID.fullmatch(sid) else [], "claude": alive(_live.get(sid))}
 
 
 @app.post("/review")

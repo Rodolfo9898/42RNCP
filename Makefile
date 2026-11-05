@@ -103,4 +103,10 @@ cursus-update:
 cursus-push:
 	@sh scripts/cursus.sh push $(ONLY)
 
-.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort cursus-update cursus-push
+# The page itself (every script, with a fake server) is run in jsdom by tests/test_ui.py: no browser needed. This installs jsdom once, next
+# to the tests (tests/js/node_modules), and runs them. Without jsdom `uv run pytest` skips them.
+test-ui:
+	@cd tests/js && npm install --no-audit --no-fund --silent
+	@uv run pytest tests/test_ui.py -q
+
+.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort cursus-update cursus-push test-ui

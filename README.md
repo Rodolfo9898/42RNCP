@@ -25,8 +25,8 @@ samples/
   rncp/
 ```
 
-Click a subject in the sidebar (or a "From libft.pdf p.4" reference under a result) to read the PDF in a tab, like a
-file. Pick subjects from **Library…** (grouped by track), or use **Upload PDFs** (or drop PDFs on the sidebar): you choose
+Click a subject in the **Subjects** view (or a "From libft.pdf p.4" reference under a result) to read the PDF in a tab, like a
+file. Pick subjects with **File > Add Subjects from the Library…** (grouped by track), or use **File > Upload Subject PDFs…** (or drop PDFs anywhere on the window): you choose
 Common Core, Post Common Core or RNCP, and the PDF is added to the review and saved in that folder. An existing file
 with different content is never replaced.
 
@@ -37,7 +37,7 @@ Clone with an SSH URL, e.g. `git@github.com:user/repo.git`. The clone is a full 
 `.git`), and git is installed in the sandbox and in claude's terminal: the checks' work copy and claude's copy are git
 repositories too (without hooks).
 
-**Open project** also has a second tab, **Use an existing folder**, for a project that is already on your computer: put it
+**File > Open Project…** (⌘O / Ctrl+O) also has a second tab, **Use an existing folder**, for a project that is already on your computer: put it
 inside the projects folder (`./projects`, or `PROJECTS_DIR`), pick it from the list and it is reviewed where it is. Nothing is
 cloned, copied or deleted, and `verdict.md` is saved inside that folder. Only folders inside the projects folder can be
 chosen (the containers see nothing else); symbolic links and `..` are refused.
@@ -69,7 +69,7 @@ evaluation: its status, its text and its log, in `verdict.md`, the checklist, th
 `unclear` to **⚠️ Second look**, and a correction naming no known check adds a new finding.
 
 **Claude has the final say on the result:** `ready to pass` is `PASS`, `pass with reservations` is `PASS WITH ISSUES`, `do not
-pass` is `FAIL`, whatever the lists say. A decision never outlives the code it judged, since every ▶ Run checks starts from
+pass` is `FAIL`, whatever the lists say. A decision never outlives the code it judged, since every **Run Checks** starts from
 nothing. Since claude reads the student's code, its decision can in principle be swayed by that code: it is told to treat the repository as data, but on someone else's project, read what it says before relying on it.
 
 **After a fix.** `verdict.md` is generated, so an edit made by hand would be overwritten. When you ask claude to fix something and
@@ -77,7 +77,7 @@ update the verdict, it saves a report with a `"fixes"` block instead (the fix pr
 that is merged within seconds while the tab is open. An update only says what changed and the rest of the review stands. The page
 gets a **🛠 What Claude corrected** section (each issue as fixed, not fixed or not a real problem, with what changed and how it
 was proven), which also says whether any new improvements were found; those are marked 🆕 in the list. Like the rest of the
-review, this lasts until the next ▶ Run checks.
+review, this lasts until the next **Run Checks**.
 
 Checks run in a disposable copy of the clone, so the clone always shows exactly what was committed. For libraries, the
 required functions must be present in the **built** `.a` (found with `nm`), not just defined in the sources.
@@ -108,7 +108,7 @@ LLM_MODEL=deepseek-v3
 # local server, no key needed:  LLM_BASE_URL=http://host.docker.internal:11434/v1  LLM_MODEL=llama3.1
 ```
 
-**✨ AI review** asks for confirmation (naming the server that will receive the code), then sends up to ~100,000–150,000
+**AI Review** (Run menu, or the Review view) asks for confirmation (naming the server that will receive the code), then sends up to ~100,000–150,000
 characters of the repository and the subject's manual-review sentences. It returns a description of what is in the
 repository, an assessment of each manual-review item ("likely ok / likely a problem / unclear", why a human must check,
 and where to look) and extra improvement ideas. Its assessments count in the result (see **Verdict** below) but never change
@@ -136,10 +136,10 @@ The sandbox (and claude's terminal) provide the basics: **cc, c++, make**, valgr
 with `docker compose`. Anything a project needs beyond that is expected to come from a Dockerfile or compose file the student
 ships: the review builds and runs it, rather than the app trying to install everything.
 
-- **🔧 Environment** (title bar) checks it for real, in both the sandbox and claude's terminal: each tool's version, a C and a
+- **Check the Environment** (Run menu, or the Run view) checks it for real, in both the sandbox and claude's terminal: each tool's version, a C and a
   C++ program compiled with the strict flags and run through `make`, the Docker daemon, and building and running a tiny
   Dockerfile (the first run downloads a base image, so it needs internet). Only ✖ items make it "not ready"; it also
-  appears as one line in the ✨ AI review dialog, so a problem is visible *before* claude starts.
+  appears as one line in the AI Review dialog, so a problem is visible *before* claude starts.
 - **claude** is told to confirm the environment first (`cc --version`, `c++ --version`, `make --version`, `docker info`), then to
   look for the student's Dockerfile or compose file and build and run the project with it, telling you each command first.
 - **A virtual display for programs with a window.** MiniLibX programs (fract-ol, so_long, cub3D…) connect to an X server, and a
@@ -147,7 +147,7 @@ ships: the review builds and runs it, rather than the app trying to install ever
   and the program stops with an error of its own ("mlx_init failed (no display available?)"). Both images now carry **Xvfb**: the
   sandbox's runner and the terminal service start one virtual server (`DISPLAY=:99`, no network listener) and give it to every
   command, claude and the shell, restarting it if it dies. Nobody sees the windows; the program draws into memory, so it starts,
-  can be crash-tested and run under valgrind. The 🔧 Environment check lists it ("virtual display"); it is optional, so an image
+  can be crash-tested and run under valgrind. The environment check lists it ("virtual display"); it is optional, so an image
   without it is still "ready". A program that opens a window and waits for input never exits by itself: the smoke runs
   (no argument, bad arguments, a few numbers) do not reach that point for a program that validates its arguments, and a run that
   is still going at its time limit is killed and not counted as a crash.
@@ -166,13 +166,13 @@ ships: the review builds and runs it, rather than the app trying to install ever
 Three containers run: `web` (the app), `sandbox` (builds and runs student code, no network) and `terminal` (the
 `claude` command, with internet but none of the app's secrets).
 
-- **⌨ Claude** opens a real terminal tab on the cloned repository. The first time, type `/login` inside claude and
+- **Open Claude** (Run menu, or the Review view) opens a real terminal tab on the cloned repository. The first time, type `/login` inside claude and
   sign in with your Claude account; the login is kept in the `claude-home` Docker volume (`make fclean` deletes it).
   claude keeps running when the page is reloaded, the connection drops or the laptop sleeps: the tab reconnects by itself
-  (or, after a reload, **⌨ Claude** picks the same session up and shows the screen again). Closing the tab ends it. There is no idle
+  (or, after a reload, **Open Claude** picks the same session up and shows the screen again). Closing the tab ends it. There is no idle
   time limit; a session nobody came back to is ended after 12 hours (`TERMINAL_DETACHED_SECONDS`), and `TERMINAL_IDLE_SECONDS` /
   `TERMINAL_MAX_SECONDS` can set optional limits (0 = none).
-- **✨ AI review** (with `LLM_PROVIDER=claude-cli` in `.env`; `CLAUDE_MODEL` optionally names a claude model, and no other `LLM_*`
+- **AI Review** (with `LLM_PROVIDER=claude-cli` in `.env`; `CLAUDE_MODEL` optionally names a claude model, and no other `LLM_*`
   setting is read) runs the review in the terminal, using your Claude login. **Run** opens the Claude tab and claude starts
   with a prompt built from this run. It lists what the scripts verified (so claude does not redo it) and asks claude to judge
   what they could not: the subject requirements that need a human, plus correctness on edge cases, error handling, memory,
@@ -199,14 +199,21 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 - The terminal websocket only accepts pages served by this app (Origin check) and the two containers share a random
   `TERMINAL_TOKEN`, created in `.env` by `make`.
 
-## Shell, to try things by hand
+## Terminals, to try things by hand
 
-**⌨ Shell** (title bar, with a repository open) opens a plain `bash` tab next to **⌨ Claude**. It runs in the same container
-and in the **same place** as claude: by default your project folder itself (`./projects/<name>`, see *Your project, live*), or
-with `TERMINAL_WORKDIR=copy` the same throw-away copy that claude is working in. So you can watch what claude changed, run
-`make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it. In copy
-mode, without a claude running it gets a copy of its own, a copy is deleted when the last tab using it closes, and nothing done
-in it goes back to the original repository. Like claude's tab, the shell survives a reload or a dropped connection, and closing the tab ends it.
+The **Terminal** tab of the panel (**Terminal > New Terminal**, Ctrl+\`, with a repository open) opens a plain `bash`. It runs in the
+same container and in the **same place** as claude: by default your project folder itself (`./projects/<name>`, see *Your project,
+live*), or with `TERMINAL_WORKDIR=copy` the same throw-away copy that claude is working in. So you can watch what claude changed, run
+`make`, valgrind or norminette yourself, and answer "what does this project need to run in Docker?" by trying it.
+
+You can have several, and split them like tmux or iTerm: **Split Terminal** (⌘\ with the terminal focused on a Mac, Ctrl+Shift+5
+elsewhere; the split button of the panel; Alt-click for a split downwards) puts a second shell beside the first, **Split Terminal Down**
+under it, and every pane is a shell of its own. **New Terminal** (Ctrl+Shift+\`) makes another group, listed on the right of the panel
+(rename it with a double click, **Kill Terminal** from the list or its menu ends that shell only). Alt+arrows (⌃⌥ on a Mac) move between the
+panes. **Move Terminal into Editor Area** turns a shell into a tab next to your files, and back. At most 8 shells per review. Like claude, every
+shell survives a reload or a dropped connection (the page shows the ones the server still runs), and closing one ends it. In copy mode,
+without a claude running a shell gets a copy of its own, a copy is deleted when the last shell using it ends, and nothing done in it goes
+back to the original repository.
 
 It is the terminal container, not the sandbox: same toolchain (cc, c++, make, valgrind, gdb, norminette, the readline and X11
 headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
@@ -226,10 +233,10 @@ Both places can read the PDFs of the review you are doing: the subjects you chos
 follow the review: add or remove a subject and the folder changes the next time the checks run or a terminal tab opens.
 The folder is named by the **`$SUBJECTS_DIR`** environment variable:
 
-- **The checks (▶ Run checks).** Every command the checks run in the sandbox sees `SUBJECTS_DIR=/workspace/<session>/subjects`
+- **The checks (Run Checks).** Every command the checks run in the sandbox sees `SUBJECTS_DIR=/workspace/<session>/subjects`
   (the runner accepts that one variable and only for an existing folder inside its allowed roots, so a request cannot
   set `PATH`, `LD_PRELOAD` or anything else). A script or tester that needs the subject can open `"$SUBJECTS_DIR/libft.pdf"`.
-- **claude and the ⌨ Shell tab.** `SUBJECTS_DIR=/scratch/subjects/<session>`; the shell's first line prints it, and the review
+- **claude and the terminals.** `SUBJECTS_DIR=/scratch/subjects/<session>`; the shell's first line prints it, and the review
   prompt tells claude where the PDFs are so it can read the pages the requirements cite ("libft.pdf p.4") instead of guessing.
   The terminal container still mounts neither the workspace nor `samples/`: the web app hands it exactly this review's PDFs
   over the same token-protected channel as everything else (only what is missing or different is sent), the files are
@@ -245,7 +252,7 @@ your Claude login).
 
 ### Your project, live: the tunnel to your machine
 
-By default **⌨ Claude and ⌨ Shell work directly in your project folder**: the terminal container mounts `./projects` read-write,
+By default **Claude and the terminals work directly in your project folder**: the terminal container mounts `./projects` read-write,
 and its tabs start in `/projects/<name>`, which *is* `./projects/<name>` on your machine. Nothing is copied and nothing is sent
 back later: a file claude edits, creates or deletes, or that you change in the Shell, is changed on your machine at that moment,
 and your editor sees it as it happens (the app's file tree refreshes every few seconds while a terminal tab is open). The
@@ -255,7 +262,7 @@ What stays isolated is where things **run**, not where files **live**: claude, t
 (`make`, your programs, `docker build`) execute inside the containers, with their own toolchain and no access to the rest of your
 machine, so "does it build and run with only what is installed there?" is answered honestly. Only the project folder is shared.
 
-- **▶ Run checks still uses a disposable copy.** The checks run `make clean`, `make fclean`, `make re` and the project's own
+- **Run Checks still uses a disposable copy.** The checks run `make clean`, `make fclean`, `make re` and the project's own
   Makefile rules, and building leaves objects and binaries behind. Doing that in your real folder could delete or clutter your
   files, so each run copies the folder (as it is at that moment, with everything claude has just changed) into the sandbox and
   works there. Run the checks again after claude edits something to see the new result.
@@ -277,7 +284,7 @@ machine, so "does it build and run with only what is installed there?" is answer
 
 ### The projects folder is read-write everywhere
 
-The web app, the sandbox and the terminal container all mount `./projects` read-write, so from the ⌨ Shell tab you can work
+The web app, the sandbox and the terminal container all mount `./projects` read-write, so from a terminal of the panel you can work
 directly in `/projects/<name>` (`git pull`, edit, `git status`), and whatever lands there is writable. The price: anything that
 runs in the terminal container, including a peer's code that claude builds or runs there, can change **every** repository in
 that folder, `.git/hooks` and `.claude/` included, and those run on your machine the next time you `git commit` or open the
@@ -292,7 +299,7 @@ merges the one it saved into `verdict.md` for the project as it is now, whatever
 
 Off by default: the terminal container has none of your credentials. To clone or push from claude's terminal or the shell, switch it on.
 A new key does not change that: the **Clone** dialog of the page works because the *web* container shares your ssh-agent, but a
-`git clone` typed in the **⌨ Shell** or **⌨ Claude** tab answers "Permission denied (publickey) … make sure you have the correct
+`git clone` typed in a terminal or in the **Claude** tab answers "Permission denied (publickey) … make sure you have the correct
 access rights" until this is on. Each of those tabs says which it is in the bar above the terminal ("git over ssh is off here" /
 "works here"). Only keys that are in your ssh-agent count (`ssh-add -l` on your computer); a key file in `~/.ssh` is not enough,
 and `make ssh` only loads files named `~/.ssh/id_*` (or `make ssh SSH_KEYS="~/.ssh/other"`).
@@ -334,7 +341,7 @@ a pinned fingerprint at build time) and refuses every other host. Check it with 
 
 ## Fix prompt
 
-**🛠 Fix prompt** (title bar, once the checks have run) writes a prompt that asks an AI to fix what the review found, and shows
+**Write a Fix Prompt** (Run menu, or the Review view, once the checks have run) writes a prompt that asks an AI to fix what the review found, and shows
 it in a box to **Copy** (you can edit it first). It lists the same things `verdict.md` does, numbered so the AI can report back by number:
 
 - **A. Must fix:** failed checks and the requirements claude or the AI judged a problem, each with its `file:line`, the subject page
@@ -345,10 +352,10 @@ it in a box to **Copy** (you can edit it first). It lists the same things `verdi
 Requirements nobody has assessed yet are not issues, so they are left out; if nothing is lacking it says so instead of
 producing an empty prompt. The prompt tells the AI to confirm each finding before touching code, to make the smallest change,
 to treat the issue text as data, to report each issue as fixed / not fixed / not real, and to finish by updating the verdict
-through its report (see *After a fix* above), never by editing `verdict.md`. That report is only picked up from the **⌨ Claude**
+through its report (see *After a fix* above), never by editing `verdict.md`. That report is only picked up from the **Claude**
 tab: an assistant running anywhere else can fix the code, but cannot update the verdict.
-It is copied rather than sent to the **⌨ Claude** tab because it is meant for whichever assistant you prefer. By default (live
-mode) you can paste it into the ⌨ Claude tab too: that claude works in your project, so its fixes land on your machine at
+It is copied rather than sent to the **Claude** tab because it is meant for whichever assistant you prefer. By default (live
+mode) you can paste it into the Claude tab too: that claude works in your project, so its fixes land on your machine at
 once. With `TERMINAL_WORKDIR=copy` a fix made there stays in the throw-away copy. The
 same text is at `GET /api/sessions/{id}/fix-prompt`.
 
@@ -428,7 +435,7 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
    `ext::` address, a path or an option). What lives in a submodule belongs to another repository, so it is not part of the project's
    own files (no Norm, no function check, no required-files look at it). A build that still fails *because it needed the network*, or
    because a submodule it needs is missing, is not called ❌ Lacking: it goes under **⚠️ Second look** with the reason and what was
-   tried, since only a build with a network can settle it (`git submodule update --init` and `make` in ⌨ Claude or ⌨ Shell).
+   tried, since only a build with a network can settle it (`git submodule update --init` and `make` in Claude or a terminal).
    **File presence follows what the subject allows about structure.** A list such as ft_printf's
    `Makefile, *.h, */*.h, *.c, */*.c` means "at the root *or* in a subfolder", so `*.c` and `*/*.c` are one requirement and
    either place satisfies it (a project that keeps everything at the root is fine). A required file that exists but not where the
@@ -449,7 +456,7 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
    On the library this gives 20 subjects a check they never had (for example `ft_ping`, `ft_nmap`, `strace`, `nm`, `h42n42`,
    `born2beroot`'s and `leaffliction`'s `signature.txt`, `ft_select`'s `author`, `libftpp`'s headers); a test pins the exact
    result for every subject, so a parser change that adds or drops one shows up for review. Since the rules are read again from
-   the PDFs at every ▶ Run checks, an existing review gets them without adding the subject again.
+   the PDFs at every **Run Checks**, an existing review gets them without adding the subject again.
 3. **Verdict**: until claude's review is merged it follows the two lists of `verdict.md` for the mandatory part. `FAIL` when
    anything is under **❌ Lacking** (whatever else there is), `PASS WITH ISSUES` when nothing is lacking but something is
    under **⚠️ Second look** (warnings, requirements nobody or claude could not settle),
@@ -458,13 +465,14 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
    reservations` is `PASS WITH ISSUES`, `do not pass` is `FAIL`), even when the lists alone would say something else. The Verdict
    window and `verdict.md` then read "decided by Claude", give its reason and say what the lists alone would have said, so you
    can see the disagreement. A report without a verdict in it decides nothing: the lists do.
-4. **Every ▶ Run checks starts from nothing.** The server first ends claude's session (its report is thrown away, not
+4. **Every Run Checks starts from nothing.** The server first ends claude's session (its report is thrown away, not
    collected), forgets claude's review and the AI review, deletes the `verdict.md` it wrote into the project (a `verdict.md`
    of your own, without this app's marker, is never touched), and runs a `git pull` (fast-forward only) in the project, so the
    checks look at what is on GitHub now. A pull that cannot be done (no remote, no network, local changes in the way) is
-   reported in the status bar (`git pull skipped: …`) and the checks run anyway. In the page, claude's tab, the verdict window
-   and the open files are closed and the explorer is read again; the subject PDFs and the shell tab stay. A terminal opened
-   before the run can never bring its old report back. Close and reopen ⌨ Claude after the run to review the new state.
+   reported in the status bar (`git pull skipped: …`) and the checks run anyway. In the page, claude's tab, the verdict window,
+   the open files and diffs are closed, the search is cleared, and the explorer and Source Control are read again; the subject PDFs
+   and the terminals stay. A terminal opened
+   before the run can never bring its old report back. Close and reopen Claude after the run to review the new state.
 
 ## Limits
 
@@ -475,36 +483,72 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
 
 ## Interface
 
-Laid out and driven like VS Code. Where the browser allows it, the keys are VS Code's (⌘ on a Mac, Ctrl elsewhere):
+The page is laid out and driven like VS Code: title bar with a menu bar, a command center and layout toggles; the activity bar; a primary
+side bar, a secondary side bar and a panel; editor groups; a status bar. Everything is a command with a VS Code id
+(`workbench.action.togglePanel`, ...): the menus, the command palette, the status bar and the keys all run the same ones.
+
+**The old title-bar buttons are views now**, and every view can be moved, as in VS Code:
+
+| View | Where it is | What it holds |
+|---|---|---|
+| Explorer | activity bar | Open Editors, the repository, Outline |
+| Search | activity bar | find in all the files (case, whole word, regex, files to include / exclude) |
+| Source Control | activity bar | what changed since the last commit, with a diff editor (read-only) |
+| Subjects | activity bar | the subject PDFs of this review (Add from the Library / Upload in its header) |
+| Run | activity bar | **Run Checks**, the state of the run, Open Project…, Check the Environment |
+| Review | activity bar | Open Claude, AI Review, Write a Fix Prompt |
+| Problems, Output, Terminal, Improvements, Subject Rules | panel | the checklist, what the run logged, the shells, the suggestions, the rules read from the subjects |
+
+- **Move anything**: drag an activity-bar icon onto the panel or the secondary side bar (and a panel tab back onto the activity bar); drag
+  a view's header (Outline, Open Editors, ...) out of its container to give it an icon of its own, or into another container. Right click an
+  icon, a panel tab or a view header for **Move to ...**; **Reset View Locations** puts everything back. Move the side bar to the right,
+  the panel to the left / right / bottom, maximize the panel (View > Appearance), hide the activity bar or the status bar, Zen Mode
+  (⌘K Z; Esc Esc leaves it). Sizes (drag a divider; double click resets it; the arrow keys move a focused one) and places are
+  remembered in your browser.
+- **Editors**: tabs and breadcrumbs (a click on a folder of the path lists what is in it), a minimap, line numbers, bracket pair
+  colours, Find (⌘F: case, whole word, regex), Go to Line (Ctrl+G), Go to Symbol (⇧⌘O), Ln/Col in the status bar. A single click on a file
+  previews it (a tab in *italics*, replaced by the next one), a double click keeps it. **Split Editor** (⌘\) or drag a tab to the edge of a
+  group to put it beside or below another; drag it between groups; View > Editor Layout gives single / two columns / two rows / a grid.
+  Back / Forward (Ctrl+- on a Mac, Alt+←/→ elsewhere) walk through the places you were at.
+- **Source Control** lists the staged and unstaged changes and the untracked files (a letter and the colour of the change, also in
+  the Explorer, with a dot on the folders that hold one). A click opens the change in a side by side diff (F7 / ⇧F7 next / previous
+  difference, a button for the inline view, unchanged stretches are folded). *Select for Compare* / *Compare with Selected* in the
+  Explorer compare two files. It is read-only: stage and commit in a terminal. The server runs git with the repository's own settings
+  switched off and only when every setting in `.git/config` is a harmless one, so a hostile repository cannot make it run anything.
+- **Quick Open** (⌘P): files and subject PDFs by fuzzy name, `file:line` goes to the line, and `>` runs commands, `@` symbols, `:` a line,
+  `%` searches the text. **Settings** (⌘,) and **Keyboard Shortcuts** (⌘K ⌘S) are editors: change a setting, or double click a command to
+  record another key or chord (stored in your browser as VS Code's `keybindings.json` entries, a `when` clause and `-command` to take a key away).
+  **Color Theme** (⌘K ⌘T): Dark Modern, Dark+, Light+, Solarized Dark, High Contrast, previewed as you move through the list. The bell of
+  the status bar keeps the notifications (Do Not Disturb silences the toasts).
+
+The keys are VS Code's (⌘ on a Mac, Ctrl elsewhere) except where the browser keeps a key for itself and no page can take it: ⌘W /
+Ctrl+W, T, N, Ctrl+Tab and Ctrl+PageUp/PageDown. So **Close Editor is Alt+W**, Next / Previous Editor are Alt+PageDown / PageUp, and
+**Run Checks is ⇧⌘B**. The main ones:
 
 | | Mac | Windows / Linux |
 |---|---|---|
-| Go to File (quick open: files of the project, and the subject PDFs) | ⌘P | Ctrl+P |
-| Command palette (every action of the page; or type `>` in quick open) | ⇧⌘P, F1 | Ctrl+Shift+P, F1 |
-| Show / hide the sidebar | ⌘B | Ctrl+B |
-| Show / hide the bottom panel | ⌘J | Ctrl+J |
-| Focus the Explorer | ⇧⌘E | Ctrl+Shift+E |
-| Open a shell | ⌃\` | Ctrl+\` |
-| Close the tab in front | ⌥W | Alt+W |
+| Go to File / Show All Commands | ⌘P / ⇧⌘P, F1 | Ctrl+P / Ctrl+Shift+P, F1 |
+| Primary side bar / panel / secondary side bar | ⌘B / ⌘J / ⌥⌘B | Ctrl+B / Ctrl+J / Ctrl+Alt+B |
+| Explorer / Find in Files / Source Control / Run | ⇧⌘E / ⇧⌘F / ⌃⇧G / ⇧⌘D | Ctrl+Shift+E / F / G / D |
+| Problems / Output | ⇧⌘M / ⇧⌘U | Ctrl+Shift+M / U |
+| Toggle Terminal / New Terminal | ⌃\` / ⌃⇧\` | Ctrl+\` / Ctrl+Shift+\` |
+| Split Editor / Split Terminal (in a terminal) | ⌘\ / ⌘\ | Ctrl+\ / Ctrl+Shift+5 |
+| Open Project / Settings / Keyboard Shortcuts | ⌘O / ⌘, / ⌘K ⌘S | Ctrl+O / Ctrl+, / Ctrl+K Ctrl+S |
+| Focus editor group 1 / 2 / 3 | ⌘1 / ⌘2 / ⌘3 | Ctrl+1 / 2 / 3 |
+| Zen Mode / Close Editor / Run Checks | ⌘K Z / ⌥W / ⇧⌘B | Ctrl+K Z / Alt+W / Ctrl+Shift+B |
 
-Browsers keep ⌘W / Ctrl+W, ⌘T, ⌘N and Ctrl+Tab for themselves, and no page can take them: that is why closing a tab is
-Alt+W here. In the terminal on Windows and Linux, Ctrl+B / J / P / E stay the shell's own (only the palette, the shell
-shortcut and Alt+W are taken there); nothing is taken while you type in a text field or while a dialog is open.
+In a terminal on Windows and Linux Ctrl keys are the shell's own (Ctrl+K, Ctrl+B in tmux, ...) except the few VS Code also lets through
+(Quick Open, the palette, the side bar and panel toggles, the terminal keys); on a Mac ⌘ is never the shell's. Nothing is taken while you
+type in a text field or while a dialog is open.
 
-- **Explorer**: click a file to preview it (a tab in *italics*, replaced by the next click); a double click (on the file
-  or its tab) or Enter keeps it. Arrow keys move, → opens a folder or steps into it, ← closes it or goes to its parent, Home / End
-  jump; the open folders are remembered for each project; ⟳ refreshes and ⊟ collapses everything (shown when the
-  pointer is over the Explorer). Right click: Open, Expand / Collapse, Copy Relative Path.
-- **Tabs**: middle click closes, right click gives Close / Close Others / Close to the Right / Close All / Keep Open /
-  Copy Path, tabs can be dragged into another order, and closing one goes back to the tab you had before it.
-  Close Others / Right / All never end claude or the shell. The tabs that were open (files and subject PDFs) come back
-  when you reload the page.
-- **Layout**: drag the sidebar's right edge or the panel's top edge to resize them; double click an edge to get the
-  default size back (*View: Reset Layout* does both). Sizes are remembered in your browser; the ⌄ button hides the panel.
-- The checklist follows `verdict.md`: a requirement claude has judged moves to where `verdict.md` lists it. File and folder
-  icons are the [VS Code Great Icons](https://github.com/EmmanuelBeziat/vscode-great-icons) (MIT), bundled in
-  `src/verdict/static/vendor/great-icons/` with their license and source commit; the terminal is
-  [xterm.js](https://xtermjs.org) (MIT, `vendor/LICENSE-xterm`). Nothing is fetched from the internet at runtime.
+The checklist follows `verdict.md`: a requirement claude has judged moves to where `verdict.md` lists it. File and folder icons are the
+[VS Code Great Icons](https://github.com/EmmanuelBeziat/vscode-great-icons) (MIT), bundled in `src/verdict/static/vendor/great-icons/` with their
+license and source commit; the terminal is [xterm.js](https://xtermjs.org) (MIT, `vendor/LICENSE-xterm`). Nothing is fetched from the
+internet at runtime.
 
-Not like VS Code: no breadcrumbs, no split editors, no editing (the files are shown read-only; edit them in claude or the
-shell, or in your own editor: in live mode the project folder is yours).
+**Not like VS Code**, because it is a web page: no editing (files are shown read-only; edit them in claude, a terminal or your own editor:
+in live mode the project folder is yours), no extensions, no debugger (the Run view is this app's checks), no multi-root workspaces, one
+instance of a file at a time (Split Editor moves the tab instead of showing it twice), the diff has no syntax colours, and the menus are
+the page's own, not the system's. The keys the browser keeps are listed above; ⌘1/2/3 and a few others may also be taken by some browsers
+(rebind them in the Keyboard Shortcuts editor). Dev tests: the page itself is run in jsdom by `tests/test_ui.py` (`make test-ui` installs jsdom
+once and runs them, or set `JSDOM_PATH`); there is no layout engine there, so how it looks is only checked by eye.

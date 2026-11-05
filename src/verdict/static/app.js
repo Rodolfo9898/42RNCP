@@ -1,9 +1,9 @@
 "use strict";
 
-// Everything shown comes from untrusted input (PDFs, repositories): build DOM with
-// textContent only, never innerHTML. Shared helpers (h, markdown, rainbow brackets) are in lib.js.
-
-const $ = (sel, root = document) => root.querySelector(sel);
+// The review itself: the session on the server, the Verdict tab, the lists of the panel, the dialogs (open a project, upload, library,
+// environment, AI review, fix prompt) and the run. The workbench around it (layout, editors, terminals, menus, keys, status bar) is in the
+// other files. Everything shown comes from untrusted input (PDFs, repositories): build DOM with textContent only, never innerHTML.
+// Shared helpers (h, markdown, rainbow brackets) are in lib.js; the small things everything stands on (api, toast, dialog) in core.js.
 
 const ICON = { fail: "✖", warn: "!", manual: "?", skipped: "–", na: "∅", pass: "✔" };
 const ORDER = ["fail", "warn", "manual", "skipped", "na", "pass"];
@@ -15,60 +15,38 @@ let session = null;
 let sandboxUp = false;
 let llm = { configured: false, model: "" };
 let ssh = null;
-let panelTab = "checks";
-let activeTab = "overview";
-const tabs = new Map(); // key -> { title, view, closable }
 const shown = new Set(ORDER);
 let polling = false;
-let pulling = false;
-
-async function api(path, options = {}) {
-  const res = await fetch(`/api/${path}`, options);
-  if (!res.ok) {
-    let message = res.statusText;
-    try { message = (await res.json()).detail || message; } catch { /* not JSON */ }
-    throw new Error(message);
-  }
-  return res.json();
-}
-const post = (path, body) => api(path, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}),
-});
-
-function toast(message, ok = false) {
-  const el = $("#toast");
-  el.classList.toggle("ok", ok);
-  el.textContent = message;
-  el.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, 6000);
-}
-
-async function guarded(fn) {
-  try { return await fn(); } catch (err) { toast(err.message); }
-}
 
 // ------------------------------------------------------------------ session
 
 async function init() {
-  sid = new URLSearchParams(location.search).get("session") || localStorage.getItem("verdict.session");
+  applyTheme();
+  applyEditorSettings();
+  loadBindings();
+  buildTitleBar();
+  try { sid = new URLSearchParams(location.search).get("session") || localStorage.getItem("verdict.session"); } catch { sid = null; }
   if (sid) {
     try { session = await api(`sessions/${sid}`); } catch { sid = null; }
   }
   if (!sid) {
     session = await post("sessions");
     sid = session.id;
-    localStorage.setItem("verdict.session", sid);
+    try { localStorage.setItem("verdict.session", sid); } catch { /* storage unavailable: a new session after a reload */ }
   }
   const health = await api("health").catch(() => ({}));
   sandboxUp = health.sandbox === true;
   llm = health.llm || llm;
-  await loadIconTheme();   // before the first render, so the sidebar has its icons from the start
+  await loadIconTheme();   // before the first render, so the explorer has its icons from the start
   addTab("overview", "Verdict", h("div", { class: "view overview" }), false);
+  Object.assign(tabs.get("overview"), { kind: "overview", iconEl: () => icon("verdict", 14) });
   showTab("overview");
+  initLayout();            // the activity bar, the side bars, the panel and the views in them (they read the session)
+  buildStatusBar();
   render();
   refreshSsh();            // (after the Verdict tab exists: it renders into it)
-  loadTree();
+  loadTree();              // (the files are needed by Go to File even when the explorer is not on show)
+  await restoreTabs();     // the files that were open before a reload
   if (session.state === "running" || session.ai.state === "running") poll();
   else if (session.results.length) refreshVerdict(false).catch(() => {});
 }
@@ -87,81 +65,21 @@ function busy() { return session.state === "running" || session.state === "cloni
 
 // ------------------------------------------------------------------ rendering
 
-function render() {
-  renderSidebar();
+// New data from the server: every part of the page that shows it draws itself again. The page asks every second while a run goes on, and
+// most of the time nothing changed: then nothing is drawn (a selection, a scroll or a click in the middle of it would be lost).
+let rendered = "";
+
+function render(force = false) {
+  if (!session) return;
+  const stamp = JSON.stringify([session, sandboxUp, llm, ssh && [ssh.ok, ssh.keys, ssh.message], session.ai.state === "running" ? Math.floor(Date.now() / 1000) : 0]);
+  if (!force && stamp === rendered) return;
+  rendered = stamp;
   renderOverview();
-  renderPanel();
-  const repo = session.repo;
-  $("#st-repo").textContent = repo ? `${repo.path || repo.url} @ ${repo.commit}` : "no repository";
-  $("#st-ssh").textContent = ssh ? (ssh.ok ? `ssh: ${ssh.keys.length} key(s)` : "ssh: ⚠ not ready") : "";
-  $("#st-ssh").title = ssh ? ssh.message : "";
-  $("#st-sandbox").textContent = sandboxUp ? "sandbox: ready" : "sandbox: unavailable (static checks only)";
-  const label = session.ai.state === "running" ? `AI review: ${session.ai.step || "starting"}`
-    : { idle: "ready", cloning: "cloning…", running: "running checks…", done: "done", error: "error" }[session.state];
-  $("#st-state").textContent = session.message ? `${label}: ${session.message}` : label;
-  $("#statusbar").classList.toggle("busy", busy());
-  $("#btn-run").disabled = busy();
-  const ai = $("#btn-ai");
-  $("#btn-terminal").disabled = !session.repo;
-  $("#btn-shell").disabled = !session.repo;
-  ai.disabled = busy() || !session.results.length || !llm.configured;
-  ai.title = !llm.configured ? "Not configured: set ANTHROPIC_API_KEY, or LLM_BASE_URL + LLM_API_KEY + LLM_MODEL, in .env (see the README)"
-    : !session.results.length ? "Run the checks first"
-    : "Ask an AI model to describe the repository and weigh the manual-review items";
-  ai.textContent = session.ai.state === "running" ? "✨ AI working…" : "✨ AI review";
-  const fix = $("#btn-fix");
-  fix.disabled = busy() || !session.results.length;
-  fix.title = session.results.length ? "Write a prompt that asks an AI to fix everything the review found" : "Run the checks first";
-  $("#btn-clone").disabled = busy();
-  const pull = $("#btn-pull");
-  pull.disabled = !session.repo || !session.repo.url || busy() || pulling;
-  pull.title = !session.repo ? "Open a project first"
-    : !session.repo.url ? "This folder is not a git repository with a remote"
-    : "git pull the project being reviewed (fast-forward only, through your ssh-agent)";
-  pull.textContent = pulling ? "⟳ Pulling…" : "⟳ Pull";
-}
-
-async function pullRepo() {
-  pulling = true;
-  render();
-  try {
-    const next = await post(`sessions/${sid}/repo/pull`);
-    session = next;
-    await loadTree();
-    for (const [key, tab] of [...tabs]) if (tab.repoFile) closeTab(key);   // their contents are from before the pull
-    toast(next.pull.changed
-      ? `Pulled: now at ${next.repo.commit}. ${next.pull.summary} Run the checks again; an open ⌨ Claude or ⌨ Shell still has the old copy until you close and reopen it.`
-      : `Already up to date (${next.repo.commit}).`, true);
-  } finally {
-    pulling = false;
-    render();
-  }
-}
-
-const TRACK_LABEL = { "common-core": "Common Core", "post-common-core": "Post Common Core", rncp: "RNCP" };
-
-function renderSidebar() {
-  const list = $("#subjects");
-  // The whole row opens the PDF (icon, name and the grey details), not just the name text.
-  const open = (s) => () => guarded(() => openSubject(s.name));
-  list.replaceChildren(...session.subjects.map((s) => s.kind === "norm"
-    ? h("li", { class: "open", title: "Click to open the Norm. C code was detected: norminette runs, and the Norm rules it cannot check go to the manual review", onclick: open(s) },
-      fileIcon(iconFor(s.name)),
-      h("span", { class: "name link" }, s.name),
-      h("span", { class: "meta" }, `Norm · auto (C) · ${s.rules.length} rules`))
-    : h("li", { class: "open", title: `${s.rules.length} rules extracted. Click to open the PDF.`, onclick: open(s) },
-      fileIcon(iconFor(s.name)),
-      h("span", { class: "name link" }, s.name),
-      h("span", { class: "meta" }, [TRACK_LABEL[s.track], `${s.rules.length} rules`].filter(Boolean).join(" · ")),
-      h("button", { class: "x", title: "Remove", onclick: (ev) => {
-        ev.stopPropagation();                                   // removing a subject must not also open it
-        guarded(async () => {
-          setSession(await api(`sessions/${sid}/subjects/${encodeURIComponent(s.name)}`, { method: "DELETE" }));
-          if (tabs.has(`pdf:${s.name}`)) closeTab(`pdf:${s.name}`);
-        });
-      } }, "✕"))));
-  $("#subjects-count").textContent = session.subjects.length || "";
-  $("#subjects-hint").hidden = session.subjects.length > 0;
+  refreshViews();
+  trackOutput();
+  refreshStatusBar();
+  refreshTitle();
+  bus.emit("session", session);
 }
 
 function renderOverview() {
@@ -189,7 +107,6 @@ function renderOverview() {
         : "FAIL when anything is lacking, PASS WITH ISSUES when something still needs a second look, PASS when both lists in verdict.md are empty. Once claude's review is merged, its decision sets the result."),
   ].filter((node) => node != null && node !== false));   // optional parts are false/null when absent: never show them as text
 }
-
 
 function fmtDuration(ms) {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -254,7 +171,6 @@ function aiReviewNodes(r) {
   };
 }
 
-
 // Show a saved review everywhere: the tree, the verdict tab, a message.
 async function afterReviewSaved(result) {
   session = await api(`sessions/${sid}`);
@@ -272,18 +188,19 @@ async function afterReviewSaved(result) {
 }
 
 // Type the review request into a claude that is already running: as one bracketed paste, then Enter.
-function pasteIntoTerminal(tab, text) {
-  for (let i = 0; i < text.length; i += 8000) tab.send({ t: "i", d: (i === 0 ? "\x1b[200~" : "") + text.slice(i, i + 8000) + (i + 8000 >= text.length ? "\x1b[201~" : "") });
-  setTimeout(() => tab.send({ t: "i", d: "\r" }), 500);
+function pasteIntoTerminal(terminal, text) {
+  for (let i = 0; i < text.length; i += 8000) terminal.send({ t: "i", d: (i === 0 ? "\x1b[200~" : "") + text.slice(i, i + 8000) + (i + 8000 >= text.length ? "\x1b[201~" : "") });
+  setTimeout(() => terminal.send({ t: "i", d: "\r" }), 500);
 }
 
 async function reviewInTerminal() {
   closeDialog();
   const existing = tabs.get("terminal");
-  if (existing && existing.socket && existing.socket.readyState === WebSocket.OPEN) {
+  const live = existing?.session;
+  if (live && live.socket && live.socket.readyState === WebSocket.OPEN) {
     const { text } = await api(`sessions/${sid}/review-prompt`);
     showTab("terminal");
-    pasteIntoTerminal(existing, text);
+    pasteIntoTerminal(live, text);
     return;
   }
   if (existing) { existing.keep = true; closeTab("terminal"); }   // not connected: a fresh claude begins with the prompt (the server replaces the old one)
@@ -342,23 +259,7 @@ async function openFixPrompt() {
   ]);
 }
 
-// What claude or the shell changed in the terminal's throw-away copy. Nothing goes back by itself: the files are listed with
-// their differences, you tick the ones you want, and the app writes them into the project folder the repository was cloned into.
-function renderPanel() {
-  for (const b of document.querySelectorAll("#panel-tabs > button")) b.classList.toggle("active", b.dataset.tab === panelTab);
-  const counts = Object.fromEntries(ORDER.map((k) => [k, session.results.filter((r) => shownStatus(r) === k).length]));
-  $("#filters").replaceChildren(...ORDER.map((k) => h("button", {
-    class: `chip ${shown.has(k) ? "on" : ""}`, title: `Toggle ${TITLES[k].toLowerCase()}`,
-    onclick: () => { shown.has(k) ? shown.delete(k) : shown.add(k); renderPanel(); },
-  }, `${ICON[k]} ${counts[k]}`)));
-  $("#filters").hidden = panelTab !== "checks";
-  const imp = $('#panel-tabs [data-tab="improvements"]');
-  imp.textContent = session.improvements.length ? `Improvements (${session.improvements.length})` : "Improvements";
-  const body = $("#panel-body");
-  const keepScroll = body.scrollTop;
-  body.replaceChildren(panelTab === "checks" ? renderChecks() : panelTab === "improvements" ? renderImprovements() : renderRules());
-  body.scrollTop = keepScroll;
-}
+// ------------------------------------------------------------------ the lists of the panel: checklist, improvements, subject rules
 
 const expanded = new Set();
 
@@ -459,24 +360,25 @@ function renderRules() {
   return out;
 }
 
-
 async function refreshVerdict(show) {
   if (!session.results.length) return;
   const text = await (await fetch(`/api/sessions/${sid}/verdict.md`)).text();
   let tab = tabs.get("verdict.md");
+  const before = activeTab;
   if (!tab) {
     addTab("verdict.md", "verdict.md", h("div", { class: "view doc" }), false);
     tab = tabs.get("verdict.md");
+    Object.assign(tab, { kind: "markdown", language: "Markdown", iconEl: () => fileIcon(iconFor("verdict.md")) });
   }
   const where = session.repo && session.verdict_file ? `${session.repo.path}/${session.verdict_file}` : null;
   tab.view.replaceChildren(
     h("div", { class: "doc-bar" },
       where ? h("span", {}, "Saved in the repository as ", h("code", {}, where)) : h("span", {}, "Not saved into the repository"),
-      h("button", { onclick: () => { window.location.href = `/api/sessions/${sid}/verdict.md?download=true`; } }, "⬇ Download")),
+      h("button", { onclick: () => runCommand("verdict.downloadVerdict") }, "⬇ Download")),
     renderMarkdown(text));
-  if (show) showTab("verdict.md"); else showTab(activeTab);
+  if (show) showTab("verdict.md");
+  else if (before && before !== "verdict.md" && tabs.has(before)) showTab(before);        // (a tab added is shown: give the foreground back)
 }
-
 
 
 // ------------------------------------------------------------------ environment check (sandbox + claude's terminal)
@@ -532,413 +434,7 @@ async function environmentHint(line) {
   } catch { line.textContent = ""; }
 }
 
-// ------------------------------------------------------------------ claude terminal (xterm.js <-> PTY in the terminal container)
-
-// kind "claude": claude on a throw-away copy of the repository. kind "shell": a plain shell in that same copy (or in its own
-// when claude is not running), to build, run, use docker or git by hand and see what the project needs.
-async function openTerminal(promptId, kind = "claude") {
-  if (!session.repo) return toast("Clone a repository first.");
-  if (typeof Terminal === "undefined" || typeof FitAddon === "undefined") return toast("The terminal files failed to load.");
-  const shell = kind === "shell";
-  const key = shell ? "shell" : "terminal";
-  const name = shell ? "shell" : "claude";
-  const existing = tabs.get(key);
-  if (existing) return showTab(key);
-
-  const status = await api("terminal").catch(() => ({ configured: false }));
-  const live = status.workdir === "live";            // claude and the shell work in the project folder itself, not in a copy
-  const view = h("div", { class: "view term" });
-  const holder = h("div", { class: "term-holder" });
-  const project = `projects/${session.repo.path}`;
-  const gitNote = ` ${sshNote(status.ssh === true)}`;
-  view.append(h("div", { class: "term-bar" }, h("span", {}, (live
-    ? (shell
-      ? `A plain shell directly in your project (${project}): every change is on your machine at once, build output included (make fclean cleans it).`
-      : `claude works directly in your project (${project}): every change it makes is on your machine at once. Its report is merged into verdict.md automatically.`)
-    : (shell
-      ? "A plain shell in a throw-away copy of your project (the one claude works in, if it is running). Nothing done here goes back to your project, and the copy is deleted when the last tab using it closes."
-      : "claude works in a throw-away copy of your project: nothing it changes goes back to your project. Its report is merged into verdict.md automatically.")) + gitNote)), holder);
-  addTab(key, `⌨ ${name}`, view, true);
-  tabs.get(key).onClose = () => {
-    clearInterval(tabs.get(key)?.watcher);
-    clearInterval(tabs.get(key)?.treeWatcher);
-    clearTimeout(tabs.get(key)?.retry);
-    if (tabs.get(key)) tabs.get(key).closing = true;
-    tabs.get(key)?.socket?.close();
-    // Closing the tab ends claude (or the shell) on purpose. (A reload or a lost connection does not: the session keeps running.)
-    // (A new run closes claude's tab itself: the server has already ended it and dropped its report, so nothing is collected.)
-    if (!tabs.get(key)?.keep && !tabs.get(key)?.discard) fetch(`/api/sessions/${sid}/${shell ? "shell" : "terminal"}/end`, { method: "POST" }).catch(() => {});
-    const discard = !!tabs.get(key)?.discard;
-    tabs.get(key)?.term?.dispose();
-    if (shell || discard) return;
-    // The server collects the saved report as the terminal closes; show it once it has.
-    setTimeout(async () => { session = await api(`sessions/${sid}`); render(); loadTree(); refreshVerdict(false).catch(() => {}); }, 2000);
-  };
-  showTab(key);
-
-  const term = new Terminal({
-    cursorBlink: true, fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-    theme: { background: "#1e1e1e", foreground: "#cccccc", cursor: "#cccccc" }, scrollback: 5000, convertEol: false,
-  });
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
-  term.open(holder);
-  const tab = tabs.get(key);
-  tab.term = term;
-  fit.fit();
-
-  if (!status.configured || !status.reachable) {
-    term.writeln("\x1b[33mThe terminal service is not running.\x1b[0m Start everything with \x1b[1mmake run\x1b[0m, then reopen this tab.");
-    return;
-  }
-  if (!status.claude && !shell) term.writeln("\x1b[33mclaude is not installed in the terminal container.\x1b[0m Rebuild with \x1b[1mmake re\x1b[0m.");
-
-  const send = (event) => { if (tab.socket && tab.socket.readyState === WebSocket.OPEN) tab.socket.send(JSON.stringify(event)); };
-  tab.send = send;
-  const connect = () => {
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const withPrompt = promptId && !tab.promptUsed ? `&prompt=${encodeURIComponent(promptId)}` : "";   // only the first connection carries it
-    tab.promptUsed = true;
-    const socket = new WebSocket(`${scheme}://${location.host}/api/sessions/${sid}/terminal?cols=${term.cols}&rows=${term.rows}${shell ? "&kind=shell" : withPrompt}`);
-    socket.binaryType = "arraybuffer";
-    tab.socket = socket;
-    socket.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
-    socket.onopen = () => { tab.attempts = 0; };
-    socket.onclose = (ev) => {
-      if (tab.socket !== socket || tab.closing) return;
-      // 4410: claude itself ended. 4411: the session was opened in another tab. Anything else is a dropped connection:
-      // claude is still running on the server, so reconnect by itself and carry on where it was.
-      if (ev.code !== 4410 && ev.code !== 4411 && (tab.attempts = (tab.attempts || 0) + 1) <= 30) {
-        if (tab.attempts === 1) term.writeln("\r\n\x1b[2m[connection lost, reconnecting…]\x1b[0m");
-        tab.retry = setTimeout(() => { term.reset(); connect(); }, Math.min(1000 * tab.attempts, 5000));   // the server replays the screen
-        return;
-      }
-      const why = ev.code === 4410 ? `${name} ended` : ev.code === 4411 ? "opened in another tab" : "disconnected";
-      term.writeln(`\r\n\x1b[2m[${why} — press Enter to start again]\x1b[0m`);
-      tab.disconnected = true;
-    };
-  };
-  term.onData((data) => {
-    if (tab.disconnected) { tab.disconnected = false; term.clear(); connect(); return; }
-    send({ t: "i", d: data });
-  });
-  term.onResize(({ cols, rows }) => send({ t: "r", c: cols, r: rows }));
-  new ResizeObserver(() => { if (!view.hidden) { try { fit.fit(); } catch { /* not laid out yet */ } } }).observe(holder);
-  // Working in the project itself: files appear, change and disappear under the tree, so keep the tree up to date while this tab is open.
-  if (live) tab.treeWatcher = setInterval(() => { if (!document.hidden) loadTree().catch(() => {}); }, 5000);
-  if (shell) {
-    term.writeln(`\x1b[2m${live ? `You are in ${project}: what you change is on your machine at once. ` : ""}The tools claude has: cc, make, valgrind, norminette, vim, nano, and docker on the separate daemon. Try: make, docker build ., docker compose up.\r\nThe subject PDFs of this review (and the Norm) are in $SUBJECTS_DIR.\x1b[0m`);
-  } else {
-    let known = session.claude_review_at || "";
-    tab.watcher = setInterval(async () => {
-      try {
-        const latest = await api(`sessions/${sid}`);
-        if ((latest.claude_review_at || "") !== known) {
-          known = latest.claude_review_at || "";
-          await afterReviewSaved({ verdict_file: latest.verdict_file });
-        }
-      } catch { /* offline or restarting: try again next time */ }
-    }, 4000);
-    term.writeln("\x1b[2mFirst time? Type /login inside claude to sign in with your Claude account.\x1b[0m");
-  }
-  term.focus();
-  connect();
-}
-
-// ------------------------------------------------------------------ tabs & files
-
-function addTab(key, title, view, closable = true) {
-  tabs.set(key, { title, view, closable });
-  $("#views").append(view);
-}
-
-const tabHistory = [];           // the keys of the tabs in the order they were shown, the latest last: closing a tab goes back to the one before it
-let draggedTab = null;           // the key of the tab being dragged
-
-function showTab(key) {
-  activeTab = key;
-  const at = tabHistory.indexOf(key);
-  if (at >= 0) tabHistory.splice(at, 1);
-  tabHistory.push(key);
-  for (const [k, t] of tabs) t.view.hidden = k !== key;
-  $("#st-lang").textContent = tabs.get(key)?.language ?? "";
-  const isTerminal = key === "terminal" || key === "shell";
-  document.body.classList.toggle("term-focus", isTerminal);   // the terminal gets the full height
-  if (isTerminal) requestAnimationFrame(() => { tabs.get(key)?.term?.focus(); window.dispatchEvent(new Event("resize")); });
-  renderTabs();
-  document.querySelectorAll(".tree .row").forEach((row) => row.classList.toggle("active", row.dataset.path === key));
-}
-
-// The tab strip, like VS Code's: middle click closes, right click opens a menu, tabs can be dragged into another order, a preview tab
-// (a file opened with a single click from the explorer, shown in italics) is replaced by the next one until it is kept open.
-function renderTabs() {
-  const strip = $("#tabs");
-  strip.setAttribute("role", "tablist");
-  strip.replaceChildren(...[...tabs].map(([k, t]) => {
-    const el = h("div", {
-      class: `tab ${k === activeTab ? "active" : ""} ${t.preview ? "preview" : ""}`, role: "tab", "aria-selected": String(k === activeTab),
-      "data-key": k, title: t.tooltip || t.title, draggable: t.closable ? "true" : null,
-      onclick: () => showTab(k),
-      onmousedown: (ev) => { if (ev.button === 1) ev.preventDefault(); },                       // (no autoscroll cursor on a middle click)
-      onauxclick: (ev) => { if (ev.button === 1 && t.closable) { ev.preventDefault(); closeTab(k); } },
-      oncontextmenu: (ev) => { ev.preventDefault(); if (typeof tabMenu === "function") tabMenu(ev, k); },
-      ondblclick: () => pinTab(k),
-      ondragstart: (ev) => { draggedTab = k; ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", k); },
-      ondragover: (ev) => {
-        if (!draggedTab || draggedTab === k) return;
-        ev.preventDefault();
-        const box = el.getBoundingClientRect(), after = ev.clientX >= box.left + box.width / 2;
-        el.classList.toggle("drop-before", !after);
-        el.classList.toggle("drop-after", after);
-      },
-      ondragleave: () => el.classList.remove("drop-before", "drop-after"),
-      ondrop: (ev) => {
-        ev.preventDefault();
-        const box = el.getBoundingClientRect();
-        if (draggedTab) moveTab(draggedTab, k, ev.clientX >= box.left + box.width / 2);
-        draggedTab = null;
-      },
-      ondragend: () => { draggedTab = null; strip.querySelectorAll(".drop-before, .drop-after").forEach((n) => n.classList.remove("drop-before", "drop-after")); },
-    }, t.title, t.closable && h("span", { class: "close", title: "Close", onclick: (ev) => { ev.stopPropagation(); closeTab(k); } }, "×"));
-    return el;
-  }));
-  strip.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  if (typeof saveTabs === "function") saveTabs();
-}
-
-function moveTab(from, to, after) {
-  const order = moveKey([...tabs.keys()], from, to, after);
-  const entries = order.map((k) => [k, tabs.get(k)]);
-  tabs.clear();
-  for (const [k, t] of entries) tabs.set(k, t);
-  renderTabs();
-}
-
-function pinTab(key) {                       // double click (on the tab or in the explorer): keep it open
-  const tab = tabs.get(key);
-  if (tab && tab.preview) { tab.preview = false; renderTabs(); }
-}
-
-function closeTab(key) {
-  const tab = tabs.get(key);
-  if (!tab) return;
-  if (tab.onClose) tab.onClose();
-  tab.view.remove();
-  tabs.delete(key);
-  const at = tabHistory.indexOf(key);
-  if (at >= 0) tabHistory.splice(at, 1);
-  const back = tabHistory.filter((k) => tabs.has(k)).pop();      // the tab that was in front before this one, as in VS Code
-  showTab(activeTab === key ? (back ?? "overview") : activeTab);
-}
-
-// Highlighted files arrive as [class, text] pairs per line; build spans with textContent only.
-function sourceNodes(file, lines) {
-  if (!file.tokens || file.tokens.length !== lines.length) return [file.content];
-  const tokens = rainbowEnabled(file.language) ? rainbow(file.tokens) : file.tokens;      // brackets coloured by nesting depth
-  const nodes = [];
-  tokens.forEach((line, i) => {
-    for (const [cls, text, level] of line) {
-      const classes = [cls && `t-${cls}`, level !== undefined && `rb rb-${level < 0 ? "x" : level}`].filter(Boolean).join(" ");
-      nodes.push(classes ? h("span", { class: classes }, text) : text);
-    }
-    if (i < tokens.length - 1) nodes.push("\n");
-  });
-  return nodes;
-}
-
-async function openFile(path, line, { preview = false } = {}) {
-  let tab = tabs.get(path);
-  let file = null;
-  if (!tab) {
-    file = await api(`sessions/${sid}/file?path=${encodeURIComponent(path)}`);
-    tab = tabs.get(path);                                   // (a double click starts this twice: the second to arrive finds the tab the first made)
-  }
-  if (tab && !preview) pinTab(path);                       // opened on purpose (a reference, quick open, a double click): it stays
-  if (!tab) {
-    const view = h("div", { class: "view" });
-    let setMode = null;
-    if (file.binary) view.append(h("div", { class: "notice" }, `${path} is a binary file (${file.size} bytes).`));
-    else {
-      const lines = file.content.split("\n");
-      const notice = file.truncated ? h("div", { class: "notice" }, "File truncated to 1 MB.") : null;
-      const code = h("div", { class: "code" },
-        h("div", { class: "gutter" }, lines.map((_, i) => i + 1).join("\n")),
-        h("pre", { class: "src" }, ...sourceNodes(file, lines)));
-      if (isMarkdownPath(path)) {
-        const preview = h("div", { class: "md-preview" }, renderMarkdown(file.content));
-        const buttons = {
-          preview: h("button", { onclick: () => setMode("preview") }, "Preview"),
-          code: h("button", { onclick: () => setMode("code") }, "Code"),
-        };
-        setMode = (mode) => {
-          preview.hidden = mode !== "preview";
-          code.hidden = mode !== "code";
-          for (const [name, button] of Object.entries(buttons)) button.classList.toggle("active", name === mode);
-        };
-        appendNodes(view, h("div", { class: "md-bar" }, buttons.preview, buttons.code, h("span", {}, "Markdown")), notice, preview, code);
-      } else appendNodes(view, notice, code);
-    }
-    if (preview) for (const [k, t] of [...tabs]) if (t.preview) closeTab(k);          // a preview tab is replaced by the next one
-    addTab(path, path.split("/").pop(), view);
-    tab = tabs.get(path);
-    tab.preview = preview;
-    tab.tooltip = path;
-    tab.language = file.language || (file.binary ? "binary" : "plain text");
-    tab.setMode = setMode;
-    tab.repoFile = true;
-    if (setMode) setMode(defaultViewMode(path, line));       // README.md opens rendered; a file:line reference opens the source
-  }
-  showTab(path);
-  if (line && tab.setMode) tab.setMode("code");
-  tab.view.querySelectorAll(".hl").forEach((n) => n.remove());
-  const code = $(".code", tab.view);
-  if (line && code) {
-    code.append(h("div", { class: "hl at", style: `top:${4 + (line - 1) * 20}px` }));
-    tab.view.scrollTop = Math.max(0, (line - 1) * 20 - tab.view.clientHeight / 2);
-  }
-}
-
-// Subject PDFs open in a tab like a file: one image per page, rendered by the server.
-async function openSubject(name, page = 1) {
-  const key = `pdf:${name}`;
-  let tab = tabs.get(key);
-  if (!tab) {
-    const subject = session.subjects.find((s) => s.name === name);
-    if (!subject) return toast(`${name} is not loaded in this review.`);
-    const base = `/api/sessions/${sid}/subjects/${encodeURIComponent(name)}/pages`;
-    const view = h("div", { class: "view pdf" }, Array.from({ length: subject.pages }, (_, i) => h("figure", { "data-page": i + 1 },
-      h("img", { src: `${base}/${i + 1}.png`, alt: `${name}, page ${i + 1}`, loading: "lazy" }),
-      h("figcaption", {}, `page ${i + 1} of ${subject.pages}`))));
-    addTab(key, name, view);
-    tab = tabs.get(key);
-    tab.language = "PDF";
-  }
-  showTab(key);
-  $(`figure[data-page="${page}"]`, tab.view)?.scrollIntoView({ block: "start" });
-}
-
-const pageLink = (pdf, page) => h("a", { href: "#", class: "page-link", onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); guarded(() => openSubject(pdf, page)); } },
-  `${pdf} p.${page}`);
-
-// File and folder icons: VS Code Great Icons (vendor/great-icons, MIT), resolved the way VS Code resolves an icon theme:
-// exact file name, then the longest matching extension, then a few types the theme only knows by language.
-const ICON_BASE = "vendor/great-icons/";
-const ICON_LANGUAGE = { tpp: "cpp", ipp: "cpp", hh: "cpp", hxx: "cpp" };
-let iconTheme;   // undefined: not loaded yet; null: unavailable (rows simply have no icon)
-
-async function loadIconTheme() {
-  if (iconTheme !== undefined) return;
-  try { iconTheme = await (await fetch(`${ICON_BASE}icons.json`)).json(); } catch { iconTheme = null; }
-}
-
-function iconFor(name, type = "file", open = false) {
-  const t = iconTheme;
-  if (!t) return null;
-  const lower = name.toLowerCase();
-  let id;
-  if (type === "dir") {
-    id = (open ? t.folderNamesExpanded : t.folderNames)?.[lower] ?? (open ? t.folderExpanded : t.folder);
-  } else {
-    id = t.fileNames?.[lower];
-    const parts = lower.split(".");
-    for (let i = 1; !id && i < parts.length; i++) id = t.fileExtensions?.[parts.slice(i).join(".")];
-    if (!id && ICON_LANGUAGE[parts.at(-1)]) id = t.languageIds?.[ICON_LANGUAGE[parts.at(-1)]];
-    id ??= t.file;
-  }
-  const path = t.iconDefinitions?.[id]?.iconPath;
-  return path ? ICON_BASE + path.replace(/^\.\//, "") : null;
-}
-
-const fileIcon = (src) => src ? h("img", { class: "ficon", src, alt: "" }) : h("span", { class: "ficon" });
-
-// Which folders are open is remembered for each repository, like VS Code does for a workspace.
-const treeKey = () => `verdict.expanded:${session.repo?.path || ""}`;
-
-function readExpanded() {
-  try { const raw = localStorage.getItem(treeKey()); return raw ? new Set(JSON.parse(raw)) : null; } catch { return null; }
-}
-
-function writeExpanded() {
-  const open = [...document.querySelectorAll("#tree .row[data-dir]")].filter((r) => r.getAttribute("aria-expanded") === "true").map((r) => r.dataset.dir);
-  try { localStorage.setItem(treeKey(), JSON.stringify(open)); } catch { /* storage unavailable */ }
-}
-
-function selectRow(row) {                       // the row the keyboard is on (not the same thing as the file open in front, which is "active")
-  document.querySelectorAll("#tree .row.selected").forEach((r) => r.classList.remove("selected"));
-  row.classList.add("selected");
-  row.scrollIntoView({ block: "nearest" });
-}
-
-function collapseAll() {
-  document.querySelectorAll("#tree .row[data-dir]").forEach((row) => row.setOpen?.(false, false));
-  writeExpanded();
-}
-
-async function loadTree() {
-  await loadIconTheme();
-  const entries = await api(`sessions/${sid}/tree`).catch(() => []);
-  const root = $("#tree");
-  $("#tree-hint").hidden = entries.length > 0;
-  const remembered = readExpanded();             // null until a folder is opened or closed: then the top-level folders are open
-  const nodes = new Map([["", h("div", { class: "children" })]]);
-  const mk = (entry) => {
-    const name = entry.path.split("/").pop();
-    const depth = entry.path.split("/").length - 1;
-    const pad = `padding-left:${8 + depth * 12}px`;
-    if (entry.type === "dir") {
-      const open = remembered ? remembered.has(entry.path) : depth === 0;
-      const kids = h("div", { class: "children", role: "group", hidden: !open });
-      nodes.set(entry.path, kids);
-      const twisty = h("span", { class: "twisty" }, open ? "▾" : "▸");
-      const icon = fileIcon(iconFor(name, "dir", open));
-      const row = h("div", { class: "row", role: "treeitem", "aria-expanded": String(open), "data-dir": entry.path, style: pad });
-      row.setOpen = (value, save = true) => {
-        kids.hidden = !value;
-        twisty.textContent = value ? "▾" : "▸";
-        row.setAttribute("aria-expanded", String(value));
-        const src = iconFor(name, "dir", value);
-        if (src && icon.tagName === "IMG") icon.src = src;
-        if (save) writeExpanded();
-      };
-      row.addEventListener("click", () => { selectRow(row); row.setOpen(kids.hidden); });
-      row.append(twisty, icon, name);
-      return [h("div", {}, row, kids)];
-    }
-    const row = h("div", { class: "row", role: "treeitem", style: pad, "data-path": entry.path,
-      onclick: () => { selectRow(row); row.openFile(); }, ondblclick: () => guarded(() => openFile(entry.path)) },      // (not pinTab: the file may still be loading from the first click)
-    h("span", { class: "twisty" }, ""), fileIcon(iconFor(name)), name);
-    row.openFile = () => guarded(() => openFile(entry.path, undefined, { preview: true }));      // a single click shows it in a preview tab
-    return [h("div", {}, row)];
-  };
-  // Directories first within each folder, as in VS Code.
-  const sorted = [...entries].sort((a, b) => {
-    const pa = a.path.split("/"), pb = b.path.split("/");
-    for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
-      if (pa[i] !== pb[i]) {
-        const aDir = i < pa.length - 1 || a.type === "dir", bDir = i < pb.length - 1 || b.type === "dir";
-        if (aDir !== bDir) return aDir ? -1 : 1;
-        return pa[i].localeCompare(pb[i]);
-      }
-    }
-    return pa.length - pb.length;
-  });
-  for (const entry of sorted) {
-    const parent = entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "";
-    const [node] = mk(entry);
-    (nodes.get(parent) ?? nodes.get("")).append(node);
-  }
-  root.replaceChildren(nodes.get(""));
-  document.querySelectorAll(".tree .row").forEach((row) => row.classList.toggle("active", row.dataset.path === activeTab));
-}
-
-// ------------------------------------------------------------------ actions
-
-function dialog(title, body, buttons) {
-  const d = $("#dialog");
-  d.replaceChildren(h("h3", {}, title), body, h("div", { class: "buttons" }, buttons));
-  $("#modal").hidden = false;
-}
-const closeDialog = () => { $("#modal").hidden = true; };
+// ------------------------------------------------------------------ dialogs: upload, library, open a project
 
 const pdfsOf = (files) => [...files].filter((f) => f.name.toLowerCase().endsWith(".pdf"));
 let lastTrack = (() => { try { return localStorage.getItem("verdict.track") || ""; } catch { return ""; } })();
@@ -1038,7 +534,7 @@ async function openClone() {
     guarded(async () => {
       try {
         setSession(await post(`sessions/${sid}/${endpoint}`, payload));
-        for (const k of [...tabs.keys()]) if (k !== "overview") closeTab(k);
+        resetForNewProject();
         await loadTree();
       } catch (err) {
         session = await api(`sessions/${sid}`); render();
@@ -1096,13 +592,39 @@ async function openClone() {
   show(existing.folders.length && !session.repo?.url && session.repo ? "existing" : "clone");
 }
 
+// A different project: nothing of the old one stays on the page (its files, its changes, its search, its shells).
+function resetForNewProject() {
+  for (const key of [...tabs.keys()]) if (key !== "overview") closeTab(key);
+  killAllTerminals();
+  clearSearch();
+  scm.data = null;
+  scm.collapsed.clear();
+  expanded.clear();
+  render(true);
+}
+
+function clearSearch() {
+  searchState.results = null;
+  searchState.query = "";
+  searchState.error = "";
+  const spec = viewSpecs.get("search");
+  if (spec?.input) spec.input.value = "";
+  if (spec?.results) renderSearch();
+}
+
 // Every run starts from nothing. The server ends claude and drops its report and every review, removes the old verdict.md and pulls
-// the project before the checks begin; here go the windows that showed the old run: claude's tab, the verdict, the open files.
+// the project before the checks begin; here go the windows that showed the old run: claude's tab, the verdict, the open files and
+// changes, the search results, and the lists on the side are read again.
 function clearForNewRun() {
   const claude = tabs.get("terminal");
   if (claude) { claude.discard = true; closeTab("terminal"); }
   closeTab("verdict.md");
-  for (const [key, tab] of [...tabs]) if (tab.repoFile) closeTab(key);           // (their contents are from before the pull)
+  for (const [key, tab] of [...tabs]) if (tab.repoFile || tab.kind === "diff") closeTab(key);           // (their contents are from before the pull)
+  clearSearch();
+  expanded.clear();
+  shown.clear();
+  for (const k of ORDER) shown.add(k);
+  render(true);
 }
 
 async function run() {
@@ -1112,6 +634,8 @@ async function run() {
   clearForNewRun();
   showTab("overview");
   loadTree().catch(() => {});                                                    // (verdict.md is gone; the pull may bring more)
+  loadScm({ force: true });
+  logOutput("Checks", "— a new run starts from nothing —");
   poll();
 }
 
@@ -1130,91 +654,3 @@ async function poll() {
     renderOverview();
   } finally { polling = false; }
 }
-
-$("#btn-upload").onclick = () => guarded(() => openUpload());
-$("#file-input").onchange = (ev) => { const pdfs = pdfsOf(ev.target.files); guarded(() => uploadFiles(pdfs, pendingTrack)); ev.target.value = ""; };
-$("#btn-library").onclick = () => guarded(openLibrary);
-$("#btn-env").onclick = () => guarded(openEnvironment);
-$("#btn-clone").onclick = () => guarded(openClone);
-$("#btn-pull").onclick = () => guarded(pullRepo);
-$("#btn-run").onclick = () => guarded(run);
-$("#btn-ai").onclick = () => guarded(startAi);
-$("#btn-fix").onclick = () => guarded(openFixPrompt);
-$("#btn-terminal").onclick = () => guarded(() => openTerminal());
-$("#btn-shell").onclick = () => guarded(() => openTerminal(null, "shell"));
-$("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") closeDialog(); });
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeDialog(); });
-// ------------------------------------------------------------------ layout: resizable sidebar and bottom panel, like VS Code
-
-const layout = (() => { try { return JSON.parse(localStorage.getItem("verdict.layout")) || {}; } catch { return {}; } })();
-
-function applyLayout() {
-  const root = document.documentElement.style;
-  if (layout.side) root.setProperty("--side-w", `${layout.side}px`);
-  if (layout.panel) root.setProperty("--panel-h", `${layout.panel}px`);
-  document.body.classList.toggle("panel-min", !!layout.panelMin);
-  document.body.classList.toggle("side-hidden", !!layout.sideHidden);
-  $("#panel-toggle").textContent = layout.panelMin ? "⌃" : "⌄";
-  $("#panel-toggle").title = `${layout.panelMin ? "Show the panel" : "Hide the panel"} (${showKey("mod+j", IS_MAC)})`;
-}
-
-function refit() { window.dispatchEvent(new Event("resize")); }    // (the terminal re-fits itself)
-
-function toggleSidebar() { layout.sideHidden = !layout.sideHidden; applyLayout(); saveLayout(); refit(); }
-function togglePanel() { layout.panelMin = !layout.panelMin; applyLayout(); saveLayout(); refit(); }
-
-function resetLayout() {                         // the sizes VS Code gives back when a divider is double clicked
-  for (const key of ["side", "panel"]) delete layout[key];
-  layout.sideHidden = layout.panelMin = false;
-  document.documentElement.style.removeProperty("--side-w");
-  document.documentElement.style.removeProperty("--panel-h");
-  applyLayout(); saveLayout(); refit();
-}
-
-function saveLayout() {
-  try { localStorage.setItem("verdict.layout", JSON.stringify(layout)); } catch { /* storage unavailable: sizes last until reload */ }
-}
-
-function dragResize(handle, onMove) {
-  handle.addEventListener("pointerdown", (ev) => {
-    ev.preventDefault();
-    handle.setPointerCapture(ev.pointerId);
-    handle.classList.add("active");
-    document.body.classList.add("resizing");
-    const move = (e) => { onMove(e); applyLayout(); };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("lostpointercapture", () => {    // after pointerup, and also when the drag is cancelled
-      handle.removeEventListener("pointermove", move);
-      handle.classList.remove("active");
-      document.body.classList.remove("resizing");
-      saveLayout();
-      window.dispatchEvent(new Event("resize"));   // the terminal re-fits itself
-    }, { once: true });
-  });
-}
-
-const clamp = (value, low, high) => Math.round(Math.min(Math.max(value, low), high));
-dragResize($("#side-resizer"), (e) => { layout.side = clamp(e.clientX, 160, window.innerWidth * 0.6); });
-dragResize($("#panel-resizer"), (e) => { layout.panel = clamp(window.innerHeight - 24 - e.clientY, 80, window.innerHeight - 36 - 24 - 120); });
-$("#panel-toggle").onclick = togglePanel;
-$("#side-resizer").addEventListener("dblclick", () => { delete layout.side; document.documentElement.style.removeProperty("--side-w"); applyLayout(); saveLayout(); refit(); });
-$("#panel-resizer").addEventListener("dblclick", () => { delete layout.panel; document.documentElement.style.removeProperty("--panel-h"); applyLayout(); saveLayout(); refit(); });
-$("#tree-refresh").onclick = () => guarded(loadTree);
-$("#tree-collapse").onclick = collapseAll;
-applyLayout();
-
-for (const b of document.querySelectorAll("#panel-tabs > button[data-tab]")) b.onclick = () => {
-  panelTab = b.dataset.tab;
-  if (layout.panelMin) { layout.panelMin = false; applyLayout(); saveLayout(); }   // a tab click shows the panel again
-  renderPanel();
-};
-
-const side = $("#sidebar");
-side.addEventListener("dragover", (ev) => { ev.preventDefault(); side.classList.add("drag"); });
-side.addEventListener("dragleave", () => side.classList.remove("drag"));
-side.addEventListener("drop", (ev) => {
-  ev.preventDefault(); side.classList.remove("drag");
-  guarded(() => openUpload(ev.dataTransfer.files));
-});
-
-const appReady = init().catch((err) => toast(err.message));

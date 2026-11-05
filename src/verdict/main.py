@@ -23,6 +23,8 @@ from . import ai as ai_mod
 from . import highlight as highlight_mod
 from . import improve as improve_mod
 from . import repo as repo_mod
+from . import gitview as gitview_mod
+from . import search as search_mod
 from .digest import Digest, build_digest, line_index
 from .claude_report import parse_report
 from .prompts import build_fix_prompt, build_review_prompt, find_docker_files, manual_items
@@ -501,27 +503,6 @@ def use_existing_repo(session_id: str, req: ExistingRequest) -> dict:
     return view(session)
 
 
-@app.post("/api/sessions/{session_id}/repo/pull")
-def pull_repo(session_id: str) -> dict:
-    """git pull (fast-forward only) in the project being reviewed, through the ssh-agent, then show the new commit."""
-    session = session_or_404(session_id)
-    if session.state in ("cloning", "running"):
-        raise HTTPException(409, f"session is busy ({session.state})")
-    root = repo_dir(session)
-    if root is None or not root.is_dir():
-        raise HTTPException(404, "no repository to pull")
-    try:
-        info, summary = repo_mod.pull(root, WORKSPACE / "known_hosts")
-    except repo_mod.RepoError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    changed = info.commit != session.repo.commit
-    session.repo = RepoMeta(**info.__dict__, name=session.repo.name, path=session.repo.path)
-    if changed:
-        session.state, session.message = "idle", ""
-    refresh_context(session)
-    store.save(session)
-    return {**view(session), "pull": {"changed": changed, "summary": summary}}
-
 @app.post("/api/sessions/{session_id}/repo")
 def clone_repo(session_id: str, req: RepoRequest) -> dict:
     session = session_or_404(session_id)
@@ -554,6 +535,41 @@ def repo_tree(session_id: str) -> list[dict]:
 
 
 _highlight_cache: dict = {}
+
+
+@app.get("/api/sessions/{session_id}/search")
+def search_repo(session_id: str, q: str = "", case: bool = False, word: bool = False, regex: bool = False, include: str = "", exclude: str = "") -> dict:
+    """Find text in the files of the reviewed project, for the Search view. A regular expression runs in a process that is stopped
+    when it takes too long. Read-only."""
+    session = session_or_404(session_id)
+    root = repo_dir(session)
+    if root is None or not root.is_dir():
+        raise HTTPException(404, "no repository to search")
+    return search_mod.search_safely(root, q, case=case, word=word, regex=regex, include=include[:500], exclude=exclude[:500])
+
+
+@app.get("/api/sessions/{session_id}/git/status")
+def git_status(session_id: str) -> dict:
+    """What changed in the project since its last commit (the Source Control view). Read-only; git only runs when the settings of the
+    repository are known to be harmless."""
+    session = session_or_404(session_id)
+    root = repo_dir(session)
+    if root is None or not root.is_dir():
+        raise HTTPException(404, "no repository")
+    return gitview_mod.status(root)
+
+
+@app.get("/api/sessions/{session_id}/git/diff")
+def git_diff(session_id: str, path: str, staged: bool = False, old: str | None = None) -> dict:
+    """The two sides of a change to one file: the text before and the text after (see gitview.sides)."""
+    session = session_or_404(session_id)
+    root = repo_dir(session)
+    if root is None or not root.is_dir():
+        raise HTTPException(404, "no repository")
+    try:
+        return gitview_mod.sides(root, path, staged, old)
+    except gitview_mod.GitViewError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/sessions/{session_id}/file")
@@ -787,6 +803,9 @@ async def terminal_proxy(ws: WebSocket, session_id: str) -> None:
         return
     url = (TERMINAL_URL.replace("http", "ws", 1) + f"/pty?repo={quote(session.repo.path)}"
            f"&cols={int(ws.query_params.get('cols', 80))}&rows={int(ws.query_params.get('rows', 24))}")
+    pane = ws.query_params.get("pane", "")
+    if shell and re.fullmatch(r"[a-z0-9]{1,12}", pane):
+        url += f"&pane={pane}"                          # which of the review's shells this is (they can be split side by side)
     url += f"&sid={session_id}" + ("&kind=shell" if shell else "")
     prompt_id = ws.query_params.get("prompt", "")
     if not shell and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", prompt_id):
@@ -867,19 +886,40 @@ def end_terminal(session_id: str) -> dict:
 
 
 @app.post("/api/sessions/{session_id}/shell/end")
-def end_shell(session_id: str) -> dict:
-    """The shell tab was closed on purpose: stop it. (Claude and the working copy stay while claude is still running.)"""
+def end_shell(session_id: str, pane: str = "") -> dict:
+    """A shell terminal was closed on purpose: stop it. (Claude and the working copy stay while claude or another shell is running.)"""
     session_or_404(session_id)
+    if pane and not re.fullmatch(r"[a-z0-9]{1,12}", pane):
+        raise HTTPException(400, "unknown terminal pane")
     if not (TERMINAL_URL and TERMINAL_TOKEN):
         return {"ended": False}
     try:
         import httpx
 
+        params = {"sid": session_id, "kind": "shell", **({"pane": pane} if pane else {})}
         with httpx.Client(trust_env=False, timeout=10) as client:
-            response = client.post(f"{TERMINAL_URL}/pty/end", params={"sid": session_id, "kind": "shell"}, headers={"x-terminal-token": TERMINAL_TOKEN})
+            response = client.post(f"{TERMINAL_URL}/pty/end", params=params, headers={"x-terminal-token": TERMINAL_TOKEN})
         return {"ended": bool(response.json().get("ended"))}
     except Exception:
         return {"ended": False}
+
+
+@app.get("/api/sessions/{session_id}/shells")
+def running_shells(session_id: str) -> dict:
+    """Which of this review's shells (and whether claude) are still running in the terminal service: a reloaded page picks them up again."""
+    session_or_404(session_id)
+    nothing = {"panes": [], "claude": False}
+    if not (TERMINAL_URL and TERMINAL_TOKEN):
+        return nothing
+    try:
+        import httpx
+
+        with httpx.Client(trust_env=False, timeout=5) as client:
+            data = client.get(f"{TERMINAL_URL}/shells", params={"sid": session_id}, headers={"x-terminal-token": TERMINAL_TOKEN}).json()
+        panes = [p for p in data.get("panes", []) if isinstance(p, str) and (p == "" or re.fullmatch(r"[a-z0-9]{1,12}", p))]
+        return {"panes": panes, "claude": data.get("claude") is True}
+    except Exception:
+        return nothing
 
 
 def review_prompt_for(session: Session) -> tuple[str, dict]:

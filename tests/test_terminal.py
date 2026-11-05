@@ -1057,3 +1057,92 @@ def test_a_server_that_cannot_start_does_not_hold_the_terminal_up(env, xvfb, mon
     monkeypatch.setenv("FAKE_XVFB_BROKEN", "1")
     start = time.monotonic()
     assert "DISPLAY" not in terminal.child_env() and time.monotonic() - start < 4
+
+
+# ---------------------------------------------------------------- several shells per review (split panes, terminal tabs)
+
+
+def test_each_pane_is_a_shell_of_its_own_and_they_share_one_copy(env):
+    client = TestClient(terminal.app)
+    with client.websocket_connect(shell_url("sess-pan001", "&pane=t1"), headers=HEADERS) as one, \
+            client.websocket_connect(shell_url("sess-pan001", "&pane=t2"), headers=HEADERS) as two:
+        assert "its own throw-away copy" in read_until(one, "SHELL-ENV:")
+        second = read_until(two, "SHELL-ENV:")
+        assert "the other shell's working copy" in second                                  # no second copy for the second pane
+        assert len(list(env.scratch.iterdir())) == 1
+        one.send_text('{"t":"i","d":"first\\n"}')
+        two.send_text('{"t":"i","d":"second\\n"}')
+        assert "SH-GOT:first" in read_until(one, "SH-GOT:") and "SH-GOT:second" in read_until(two, "SH-GOT:")
+    a, b = terminal._live["sess-pan001:shell:t1"], terminal._live["sess-pan001:shell:t2"]
+    assert a is not b and a.process.pid != b.process.pid and a.workdir == b.workdir
+    assert terminal.shell_panes("sess-pan001") == ["t1", "t2"]
+
+
+def test_ending_one_pane_leaves_the_others_and_the_copy_until_the_last_one_ends(env):
+    client = TestClient(terminal.app)
+    for pane in ("t1", "t2"):
+        with client.websocket_connect(shell_url("sess-pan002", f"&pane={pane}"), headers=HEADERS) as ws:
+            read_until(ws, "SHELL-ENV:")
+    t1, t2 = terminal._live["sess-pan002:shell:t1"], terminal._live["sess-pan002:shell:t2"]
+    assert client.post("/pty/end", params={"sid": "sess-pan002", "kind": "shell", "pane": "t1"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: t1.process.poll() is not None)
+    assert t2.process.poll() is None and len(list(env.scratch.iterdir())) == 1 and terminal.shell_panes("sess-pan002") == ["t2"]
+    assert client.post("/pty/end", params={"sid": "sess-pan002", "kind": "shell", "pane": "t2"}, headers=HEADERS).json() == {"ended": True}
+    assert wait_for(lambda: not list(env.scratch.iterdir()) and not terminal._live)
+    assert client.post("/pty/end", params={"sid": "sess-pan002", "kind": "shell", "pane": "t2"}, headers=HEADERS).json() == {"ended": False}
+
+
+def test_the_unnamed_shell_and_the_named_ones_are_different_shells(env):
+    client = TestClient(terminal.app)
+    for extra in ("", "&pane=t1"):
+        with client.websocket_connect(shell_url("sess-pan003", extra), headers=HEADERS) as ws:
+            read_until(ws, "SHELL-ENV:")
+    assert set(terminal._live) == {"sess-pan003:shell", "sess-pan003:shell:t1"} and terminal.shell_panes("sess-pan003") == ["", "t1"]
+
+
+def test_a_review_cannot_have_more_than_eight_shells(env, monkeypatch):
+    monkeypatch.setattr(terminal, "MAX_SHELLS", 2)
+    client = TestClient(terminal.app)
+    for pane in ("t1", "t2"):
+        with client.websocket_connect(shell_url("sess-pan004", f"&pane={pane}"), headers=HEADERS) as ws:
+            read_until(ws, "SHELL-ENV:")
+    with pytest.raises(WebSocketDisconnect) as info, client.websocket_connect(shell_url("sess-pan004", "&pane=t3"), headers=HEADERS) as ws:
+        ws.receive_bytes()
+    assert info.value.code == 4429 and terminal.shell_panes("sess-pan004") == ["t1", "t2"]
+    with client.websocket_connect(shell_url("sess-pan004", "&pane=t1"), headers=HEADERS) as ws:                # an existing one is reconnected, not counted again
+        assert "reconnected" in read_until(ws, "SHELL-ENV:")
+
+
+@pytest.mark.parametrize("pane", ["../x", "T1", "a b", "a" * 13, "t1/t2", "t1:t2"])
+def test_a_pane_name_is_a_short_lowercase_word_or_nothing(env, pane):
+    client = TestClient(terminal.app)
+    with client.websocket_connect(shell_url("sess-pan005", f"&pane={pane}"), headers=HEADERS) as ws:
+        assert "unknown terminal pane" in ws.receive_bytes().decode()
+    assert not terminal._live
+    assert client.post("/pty/end", params={"sid": "sess-pan005", "kind": "shell", "pane": pane}, headers=HEADERS).status_code == 400
+
+
+def test_the_shells_endpoint_lists_the_running_ones_in_the_order_they_started_and_whether_claude_runs(env):
+    client = TestClient(terminal.app)
+    assert client.get("/shells", params={"sid": "sess-pan006"}, headers=HEADERS).json() == {"panes": [], "claude": False}
+    with client.websocket_connect("/pty?repo=42/ps&sid=sess-pan006", headers=HEADERS) as ws:
+        read_until(ws, "ENV:")
+    for pane in ("t2", "t1"):
+        with client.websocket_connect(shell_url("sess-pan006", f"&pane={pane}"), headers=HEADERS) as ws:
+            read_until(ws, "SHELL-ENV:")
+    assert client.get("/shells", params={"sid": "sess-pan006"}, headers=HEADERS).json() == {"panes": ["t2", "t1"], "claude": True}
+    assert client.get("/shells", params={"sid": "sess-pan006"}).status_code == 401
+    assert client.get("/shells", params={"sid": "../etc"}, headers=HEADERS).json() == {"panes": [], "claude": False}
+    terminal._live["sess-pan006:shell:t2"].process.kill()
+    assert wait_for(lambda: client.get("/shells", params={"sid": "sess-pan006"}, headers=HEADERS).json()["panes"] == ["t1"])
+
+
+def test_in_live_mode_every_pane_works_in_the_project_folder_itself(env, monkeypatch):
+    monkeypatch.setattr(terminal, "WORKDIR_MODE", "live")
+    client = TestClient(terminal.app)
+    for pane in ("t1", "t2"):
+        with client.websocket_connect(shell_url("sess-pan007", f"&pane={pane}"), headers=HEADERS) as ws:
+            assert "your project folder, live" in read_until(ws, "SHELL-ENV:")
+    first, second = terminal._live["sess-pan007:shell:t1"], terminal._live["sess-pan007:shell:t2"]
+    assert first.workdir == second.workdir and first.in_place and second.in_place
+    assert not list(env.scratch.iterdir())                                             # nothing was copied
