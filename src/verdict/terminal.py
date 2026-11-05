@@ -28,8 +28,10 @@ import json
 import os
 import re
 import secrets
+import resource
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import tempfile
@@ -117,6 +119,65 @@ APPEND_PROMPT_LIVE = (
 )
 
 
+# Programs with a window (MiniLibX: fract-ol, so_long, cub3D...) need an X display, and a container has none. Xvfb is a virtual one: the
+# program draws into memory and nobody sees it, but mlx_init() succeeds, so such a program can be started, tried and debugged here.
+# One server for the container, started with the first terminal and again if it ever dies. (The sandbox has the same, in runner.py.)
+X_DISPLAY = ":99"
+X_SCREEN = "1280x1024x24"
+X_DIR = Path("/tmp/.X11-unix")
+_xvfb: subprocess.Popen | None = None
+_xvfb_lock = threading.Lock()
+
+
+def _display_up() -> bool:
+    number = X_DISPLAY[1:]
+    for address in (f"\0{X_DIR}/X{number}", str(X_DIR / f"X{number}")):      # (Linux: the abstract socket, then the file)
+        probe = socket.socket(socket.AF_UNIX)
+        probe.settimeout(0.2)
+        try:
+            probe.connect(address)
+            return True
+        except OSError:
+            pass
+        finally:
+            probe.close()
+    return False
+
+
+def display_env() -> dict[str, str]:
+    """{"DISPLAY": ":99"} when a virtual X server is running (started, or restarted, here); {} when this image has none."""
+    global _xvfb
+    exe = shutil.which("Xvfb")
+    if exe is None:
+        return {}
+    with _xvfb_lock:
+        if _xvfb is None or _xvfb.poll() is not None:
+            number = X_DISPLAY[1:]
+            for stale in (X_DIR.parent / f".X{number}-lock", X_DIR / f"X{number}"):       # what a server that died leaves behind
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+            try:
+                X_DIR.mkdir(mode=0o1777, exist_ok=True)
+                X_DIR.chmod(0o1777)
+            except OSError:
+                pass
+            try:
+                _xvfb = subprocess.Popen([exe, X_DISPLAY, "-screen", "0", X_SCREEN, "-nolisten", "tcp", "-ac"], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                         preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+            except OSError:
+                _xvfb = None
+                return {}
+        end = time.monotonic() + 5
+        while not _display_up():
+            if _xvfb.poll() is not None or time.monotonic() > end:
+                return {}
+            time.sleep(0.05)
+    return {"DISPLAY": X_DISPLAY}
+
+
 def child_env(session_id: str = "", project: Path | None = None) -> dict[str, str]:
     """The only environment claude gets: no secrets from this process. `project` is the real folder when working in place."""
     env = {
@@ -143,6 +204,7 @@ def child_env(session_id: str = "", project: Path | None = None) -> dict[str, st
         # As far as the container can tell, your folder belongs to another user, and git refuses such a folder unless told otherwise.
         # Only this exact folder is declared safe, for this process and its children only; nothing is written to any git config.
         env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=str(project))
+    env.update(display_env())              # a virtual display, so that a program with a window starts (see above)
     return env
 
 

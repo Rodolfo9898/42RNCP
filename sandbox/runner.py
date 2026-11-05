@@ -11,8 +11,12 @@ GET  /health
 import json
 import os
 import resource
+import shutil
 import signal
+import socket
 import subprocess
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -37,6 +41,65 @@ if os.environ.get("DOCKER_HOST"):
     ENV["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
 
 
+# Programs with a window (MiniLibX: fract-ol, so_long, cub3D...) need an X display, and a container has none. Xvfb is a virtual one: the
+# program draws into memory and nobody sees it, but mlx_init() succeeds, so such a program can be started, crash-tested and run
+# under valgrind. One server for the whole container, started when the runner starts and again if it ever dies.
+X_DISPLAY = ":99"
+X_SCREEN = "1280x1024x24"
+X_DIR = Path("/tmp/.X11-unix")
+_xvfb: subprocess.Popen | None = None
+_xvfb_lock = threading.Lock()
+
+
+def _display_up() -> bool:
+    number = X_DISPLAY[1:]
+    for address in (f"\0{X_DIR}/X{number}", str(X_DIR / f"X{number}")):      # (Linux: the abstract socket, then the file)
+        probe = socket.socket(socket.AF_UNIX)
+        probe.settimeout(0.2)
+        try:
+            probe.connect(address)
+            return True
+        except OSError:
+            pass
+        finally:
+            probe.close()
+    return False
+
+
+def display_env() -> dict[str, str]:
+    """{"DISPLAY": ":99"} when a virtual X server is running (started, or restarted, here); {} when this image has none."""
+    global _xvfb
+    exe = shutil.which("Xvfb")
+    if exe is None:
+        return {}
+    with _xvfb_lock:
+        if _xvfb is None or _xvfb.poll() is not None:
+            number = X_DISPLAY[1:]
+            for stale in (X_DIR.parent / f".X{number}-lock", X_DIR / f"X{number}"):       # what a server that died leaves behind
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+            try:
+                X_DIR.mkdir(mode=0o1777, exist_ok=True)
+                X_DIR.chmod(0o1777)
+            except OSError:
+                pass
+            try:
+                _xvfb = subprocess.Popen([exe, X_DISPLAY, "-screen", "0", X_SCREEN, "-nolisten", "tcp", "-ac"], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                         preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+            except OSError:
+                _xvfb = None
+                return {}
+        end = time.monotonic() + 5
+        while not _display_up():
+            if _xvfb.poll() is not None or time.monotonic() > end:
+                return {}
+            time.sleep(0.05)
+    return {"DISPLAY": X_DISPLAY}
+
+
 def _limits() -> None:
     # No RLIMIT_NPROC: the kernel counts it per uid across the whole host, and uid 1000 is usually the Linux host's
     # own user (with a browser's worth of threads), so every fork would fail. pids_limit in docker-compose.yml caps the
@@ -57,7 +120,7 @@ def run(argv: list[str], cwd: Path, timeout: float, stdin: str, extra_env: dict[
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
-        env={**ENV, **(extra_env or {})},
+        env={**ENV, **display_env(), **(extra_env or {})},
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -145,6 +208,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=display_env, daemon=True).start()      # (so that the first program does not wait for the display)
     # 0.0.0.0 is only safe because the container sits on an internal Docker network.
     # Never run this directly on a host: it executes whatever it is sent.
     ThreadingHTTPServer((os.environ.get("RUNNER_HOST", "0.0.0.0"), 8001), Handler).serve_forever()

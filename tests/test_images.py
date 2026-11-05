@@ -145,6 +145,12 @@ def test_the_terminal_has_every_package_the_sandbox_has():
         assert needed in sandbox and needed in terminal
 
 
+@pytest.mark.parametrize("name,dockerfile", [("sandbox", SANDBOX), ("terminal", TERMINAL)])
+def test_both_images_have_a_virtual_display_for_programs_with_a_window(name, dockerfile):
+    assert {"xvfb", "x11-utils"} <= apt_packages(dockerfile)
+    assert "RUN command -v Xvfb && command -v xdpyinfo" in final_stage(dockerfile)          # the build fails without them
+
+
 def test_both_images_pin_the_same_norminette():
     pins = [re.findall(r"^ARG (NORMINETTE_REF|NORMINETTE_COMMIT)=(\S+)$", d, re.M) for d in (SANDBOX, TERMINAL)]
     assert pins[0] and pins[0] == pins[1]

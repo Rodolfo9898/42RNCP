@@ -130,3 +130,11 @@ def test_the_sandbox_adapter_runs_everything_through_the_runner_inside_the_works
     sandbox = FakeSandbox()
     results = sandbox_selftest(sandbox, tmp_path)
     assert summarize(results)["ready"] and all(c == tmp_path / "_selftest" or (tmp_path / "_selftest") in c.parents for c in sandbox.cwds)
+
+
+def test_the_virtual_display_is_listed_but_the_environment_is_ready_without_it(tmp_path):
+    probe = next(p for p in PROBES if "Xvfb" in p[0])
+    assert probe[1] == ["xdpyinfo"] and probe[2] is False                       # asked for, never a reason to call the environment broken
+    results = run_selftest(Recorder(broken={"xdpyinfo"}), tmp_path)
+    assert not by_name(results)[probe[0]]["ok"]
+    assert summarize(results)["ready"] is True and probe[0] not in summarize(results)["failed"]

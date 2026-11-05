@@ -35,6 +35,7 @@ PROBES = [
     ("docker daemon", ["docker", "info", "--format", "{{.ServerVersion}}"], True),
     ("valgrind", ["valgrind", "--version"], False),
     ("norminette", ["norminette", "--version"], False),
+    ("virtual display (Xvfb, for programs with a window)", ["xdpyinfo"], False),
 ]
 
 HELLO_C = '#include <stdio.h>\nint main(void) { puts("hello from C"); return 0; }\n'

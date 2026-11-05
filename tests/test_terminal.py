@@ -1,5 +1,8 @@
+import os
 import stat
+import sys
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1001,3 +1004,56 @@ def test_claude_is_told_to_test_in_the_current_directory_never_in_a_copy_in_tmp(
     flags = lambda argv: argv[argv.index("--append-system-prompt") + 1]
     for argv in (terminal.interactive_argv(), terminal.interactive_argv(live=True), terminal.review_argv("x", {}, None)):
         assert TEST_HERE in flags(argv)
+
+
+# ---------------------------------------------------------------- a virtual X display for programs with a window (MiniLibX)
+
+
+@pytest.fixture
+def xvfb(monkeypatch):
+    import tempfile
+    from .test_runner import FAKE_XVFB, FakeX
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="xt") as folder:
+        folder = Path(folder)
+        (folder / "bin").mkdir()
+        (folder / "x11").mkdir()
+        exe = folder / "bin" / "Xvfb"
+        exe.write_text(FAKE_XVFB % {"python": sys.executable})
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        monkeypatch.setenv("PATH", f"{folder / 'bin'}:{os.environ['PATH']}")
+        monkeypatch.setenv("FAKE_X_DIR", str(folder / "x11"))
+        monkeypatch.setenv("FAKE_X_LOG", str(folder / "log"))
+        monkeypatch.setattr(terminal, "X_DIR", folder / "x11")
+        monkeypatch.setattr(terminal, "_xvfb", None)
+        monkeypatch.setattr(terminal, "_display_up", lambda: (folder / "x11" / "X99").exists())      # (the real probe is tried in test_runner.py)
+        yield FakeX(folder)
+        if terminal._xvfb is not None:
+            terminal._xvfb.kill()
+            terminal._xvfb.wait()
+
+
+def test_claude_and_the_shell_get_a_display_when_the_image_has_xvfb(env, xvfb):
+    assert terminal.child_env()["DISPLAY"] == ":99" and terminal.child_env("sess-disp01", env.repo)["DISPLAY"] == ":99"
+    assert xvfb.log.read_text().splitlines() == [":99 -screen 0 1280x1024x24 -nolisten tcp -ac"]            # one server for all of them, no network listener
+
+
+def test_no_xvfb_no_display_and_nothing_else_changes(env, monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setattr(terminal, "_xvfb", None)
+    assert "DISPLAY" not in terminal.child_env()
+
+
+def test_a_server_that_died_is_started_again_for_the_next_terminal(env, xvfb):
+    terminal.child_env()
+    first = terminal._xvfb
+    first.kill()
+    first.wait()
+    (xvfb.folder / ".X99-lock").write_text("123")
+    assert terminal.child_env()["DISPLAY"] == ":99" and terminal._xvfb is not first
+    assert xvfb.starts(2) == [":99 -screen 0 1280x1024x24 -nolisten tcp -ac"] * 2          # (no [STALE]: the lock and the socket were removed first)
+
+
+def test_a_server_that_cannot_start_does_not_hold_the_terminal_up(env, xvfb, monkeypatch):
+    monkeypatch.setenv("FAKE_XVFB_BROKEN", "1")
+    start = time.monotonic()
+    assert "DISPLAY" not in terminal.child_env() and time.monotonic() - start < 4

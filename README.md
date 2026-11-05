@@ -142,6 +142,15 @@ ships: the review builds and runs it, rather than the app trying to install ever
   appears as one line in the ✨ AI review dialog, so a problem is visible *before* claude starts.
 - **claude** is told to confirm the environment first (`cc --version`, `c++ --version`, `make --version`, `docker info`), then to
   look for the student's Dockerfile or compose file and build and run the project with it, telling you each command first.
+- **A virtual display for programs with a window.** MiniLibX programs (fract-ol, so_long, cub3D…) connect to an X server, and a
+  container has none: on Linux that is hidden by sharing the host's, but Docker on a Mac has none to share, so `mlx_init()` fails
+  and the program stops with an error of its own ("mlx_init failed (no display available?)"). Both images now carry **Xvfb**: the
+  sandbox's runner and the terminal service start one virtual server (`DISPLAY=:99`, no network listener) and give it to every
+  command, claude and the shell, restarting it if it dies. Nobody sees the windows; the program draws into memory, so it starts,
+  can be crash-tested and run under valgrind. The 🔧 Environment check lists it ("virtual display"); it is optional, so an image
+  without it is still "ready". A program that opens a window and waits for input never exits by itself: the smoke runs
+  (no argument, bad arguments, a few numbers) do not reach that point for a program that validates its arguments, and a run that
+  is still going at its time limit is killed and not counted as a crash.
 - **The daemon is separate and rootless** (`dind`, image `docker:dind-rootless`). It is *not* your Mac's Docker: the host's
   `/var/run/docker.sock` is never mounted anywhere. It sees nothing of yours (no projects folder, `.env` or ssh-agent); it only
   receives what a docker client sends it, and keeps its images in the `docker-data` volume. Rootless means a container that

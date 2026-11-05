@@ -39,8 +39,11 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat poppler-utils ripgrep build-essential make valgrind gdb vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat poppler-utils ripgrep build-essential make valgrind gdb vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev xvfb x11-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# A virtual X display for programs with a window (MiniLibX): the service starts Xvfb and gives claude and the shell DISPLAY=:99.
+RUN command -v Xvfb && command -v xdpyinfo
 
 # The ⌨ Shell tab runs zsh (TERMINAL_SHELL below) with Oh My Zsh. Both live in the image (no auto-update: the image is
 # read-only); the rc file also sources your own ~/.zshrc if you add one. OH_MY_ZSH_REF pins a branch, tag or commit.
