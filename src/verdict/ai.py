@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from .digest import Digest, _fence
 from .models import AIComponent, AIOverview, AIReview, Evidence, Improvement
+from .shared import evaluation_rules
 
 DEFAULT_MODEL = "claude-opus-5-5"
 MAX_TOKENS = 16000
@@ -170,6 +171,9 @@ def _analysis_task(subjects: list[str], summary: str, known: list[str]) -> str:
     known_text = "\n".join(f"- {t}" for t in known) or "- (none)"
     return f"""Subjects loaded: {', '.join(subjects)}
 
+How the evaluator reads the subject (these rules win over a literal reading of it):
+{evaluation_rules(subjects)}
+
 Automated checks already ran. Summary:
 {summary}
 
@@ -187,9 +191,12 @@ Fill in:
 {known_text}"""
 
 
-def _review_task(items: list[tuple[str, str]]) -> str:
+def _review_task(items: list[tuple[str, str]], subjects: list[str] | None = None) -> str:
     listing = "\n".join(f'<subject_item id="{rule_id}">{_fence(_clean(text, 700))}</subject_item>' for rule_id, text in items)
-    return f"""A script could not check these requirements from the subject. For each one give:
+    return f"""How the evaluator reads the subject (these rules win over a literal reading of it; judge the items by them):
+{evaluation_rules(subjects or [])}
+
+A script could not check these requirements from the subject. For each one give:
 - assessment: likely_ok, likely_problem or unclear
 - why_manual: one sentence on why a script cannot verify it, i.e. what the evaluator should look at or test by hand
 - finding: 2-4 sentences on what the repository shows that is relevant to this requirement
@@ -657,13 +664,13 @@ def analyze(backend: Backend, digest: Digest, *, subjects: list[str], summary: s
     return overview, improvements
 
 
-def review(backend: Backend, digest: Digest, items: list[tuple[str, str]], usage: Usage) -> dict[str, AIReview]:
+def review(backend: Backend, digest: Digest, items: list[tuple[str, str]], usage: Usage, subjects: list[str] | None = None) -> dict[str, AIReview]:
     reviews: dict[str, AIReview] = {}
     for start in range(0, len(items), backend.batch):
         batch = items[start:start + backend.batch]
         wanted = {rule_id for rule_id, _ in batch}
         backend.job.notify(f"Step 2: assessing manual-review items {start + 1}–{start + len(batch)} of {len(items)}")
-        out: ReviewOut = backend.structured(SYSTEM, digest.text, _review_task(batch), ReviewOut, usage)
+        out: ReviewOut = backend.structured(SYSTEM, digest.text, _review_task(batch, subjects), ReviewOut, usage)
         for entry in out.items:
             if entry.rule_id in wanted and entry.rule_id not in reviews:
                 reviews[entry.rule_id] = AIReview(

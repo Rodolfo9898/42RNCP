@@ -9,9 +9,7 @@ from pathlib import Path
 
 from ..models import CheckResult, Evidence, Rule
 from ..spec import MATH_FUNCTIONS
-from . import (
-    EXCLUDED_DIRS, PHASE_ANALYSIS, PHASE_BUILD, PHASE_RUNTIME, Ctx, checker, grep, label, result,
-)
+from . import PHASE_ANALYSIS, PHASE_BUILD, PHASE_RUNTIME, Ctx, checker, grep, label, result
 
 COMPILER_LINE = re.compile(r"^\s*@?\s*(\S*(?:clang\+\+|g\+\+|c\+\+|gcc|clang|cc))\s")
 SOURCE_ARG = re.compile(r"\S+\.(?:c|cpp|cc)\b")
@@ -244,7 +242,9 @@ def functions_defined(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
 def _norm_report(ctx: Ctx) -> dict | None:
     if "norm" in ctx.cache:
         return ctx.cache["norm"]
+    # The student's own code: the project, plus the submodules they wrote (their libft...). MiniLibX is given to them, so it is left out.
     files = [p.as_posix() for p in ctx.source_files(".") if p.suffix in (".c", ".h")]
+    files += [p.as_posix() for p in ctx.student_submodule_files() if p.as_posix() not in files]
     report: dict = {"files": len(files), "errors": {}, "available": True}
     if not files:
         ctx.cache["norm"] = report
@@ -274,6 +274,9 @@ def norm(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
         yield result(rule, "skipped", "The Norm does not apply to C++ projects.")
         return
     report = _norm_report(ctx)
+    vendored = sorted(set(ctx.minilibx_dirs()) | {p.parent.as_posix() for p in ctx.files() if p.name == "mlx.h" and ctx.is_vendored(p)})
+    left_out = (f" MiniLibX ({', '.join(f'`{d}/`' for d in vendored[:3])}) is not checked: it is given to the students, not "
+                "written by them.") if vendored else ""
     if not report["available"]:
         yield result(rule, "skipped", "norminette is not installed in the sandbox.")
     elif report["files"] == 0:
@@ -285,9 +288,9 @@ def norm(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
             evidence = [Evidence(file=f, line=line, snippet=f"{code}: {msg}")
                         for f, errs in errors.items() for code, line, msg, _ in errs][:60]
             total = sum(len(v) for v in errors.values())
-            yield result(rule, "fail", f"{total} Norm error(s) in {len(errors)} of {report['files']} file(s).", evidence=evidence)
+            yield result(rule, "fail", f"{total} Norm error(s) in {len(errors)} of {report['files']} file(s).{left_out}", evidence=evidence)
         else:
-            yield result(rule, "pass", f"norminette: all {report['files']} file(s) OK.")
+            yield result(rule, "pass", f"norminette: all {report['files']} file(s) OK.{left_out}")
 
 
 @checker("no_globals", PHASE_ANALYSIS)
@@ -382,7 +385,7 @@ def makefile_behavior(ctx: Ctx) -> Iterable[CheckResult]:
         base = ctx.unit_dir(unit)
 
         def objects() -> list[str]:
-            return [p.as_posix() for p in ctx.walk(base) if p.suffix == ".o" and not EXCLUDED_DIRS.search("/" + p.as_posix())]
+            return [p.as_posix() for p in ctx.walk(base) if p.suffix == ".o" and not ctx.is_vendored((base / p).relative_to(ctx.repo.resolve()))]
 
         def present() -> list[str]:
             return [n for n in names if (base / n).is_file()]

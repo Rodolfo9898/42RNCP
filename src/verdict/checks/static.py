@@ -7,9 +7,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from ..models import CheckResult, Evidence, Rule
-from . import (
-    EXCLUDED_DIRS, PHASE_STATIC, Ctx, checker, grep, label, result,
-)
+from ..sandbox import SandboxError
+from . import PHASE_STATIC, Ctx, checker, grep, label, result
 
 BINARY_MAGIC = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"MZ")
 ARTIFACT_SUFFIXES = {".o", ".a", ".so", ".dylib", ".out", ".exe"}
@@ -28,7 +27,7 @@ def repo_hygiene(ctx: Ctx) -> Iterable[CheckResult]:
     scanned = 0
     for rel in ctx.files():
         posix = rel.as_posix()
-        if EXCLUDED_DIRS.search("/" + posix):
+        if ctx.is_vendored(posix):
             continue
         path = ctx.repo / rel
         try:
@@ -60,11 +59,20 @@ def repo_hygiene(ctx: Ctx) -> Iterable[CheckResult]:
     )
 
 
+def _anywhere(pattern: str) -> str | None:
+    """`*/*.c` (or `**/*.c`) names a wildcard whose folder does not matter: the bare `*.c`, else None."""
+    *folders, name = pattern.split("/")
+    return name if folders and all(f in ("*", "**") for f in folders) and any(c in name for c in "*?[") else None
+
+
 def _find(ctx: Ctx, unit: str, pattern: str, *, root_only: bool = False) -> list[Path]:
-    """What `pattern` names in the unit: files, or a folder when it ends with `/`. `root_only`: a wildcard counts only at the root."""
+    """What `pattern` names in the unit: files, or a folder when it ends with `/`. `root_only`: a wildcard counts only at the root.
+    Outside the strict projects a wildcard counts in any subfolder (`*/*.h` is met by include/x.h or include/sub/x.h)."""
     base = ctx.unit_dir(unit)
     folder = pattern.endswith("/")
     pattern = pattern.rstrip("/") if folder else pattern
+    if not ctx.strict_layout and (bare := _anywhere(pattern)):
+        pattern = bare
     if "/" in pattern:
         hits = base.glob(pattern)
     elif any(c in pattern for c in "*?["):
@@ -74,69 +82,220 @@ def _find(ctx: Ctx, unit: str, pattern: str, *, root_only: bool = False) -> list
     out = []
     for p in hits:
         rel = p.relative_to(ctx.repo.resolve()).as_posix() if p.is_relative_to(ctx.repo.resolve()) else ""
-        if rel and not p.is_symlink() and (p.is_dir() if folder else p.is_file()) and not EXCLUDED_DIRS.search("/" + rel + ("/" if folder else "")):
+        if rel and not p.is_symlink() and (p.is_dir() if folder else p.is_file()) and not ctx.is_vendored(rel + ("/" if folder else "")):
             out.append(p)
     return out
 
 
 def _elsewhere(ctx: Ctx, unit: str, pattern: str) -> list[str]:
     """Files (or folders) that have the name or match the wildcard of `pattern` but sit elsewhere in the unit, e.g. includes/libft.h
-    for libft.h. The subject may well allow that, so the check does not decide: it points at them."""
+    for libft.h. Outside the strict projects the whole repository is searched (the layout is free there)."""
     folder = pattern.endswith("/")
     name = pattern.rstrip("/").rsplit("/", 1)[-1]
     if not name or name in ("*", "**"):
         return []
     root = ctx.repo.resolve()
     hits: list[str] = []
-    for p in ctx.unit_dir(unit).rglob(name):
+    for p in (ctx.unit_dir(unit) if ctx.strict_layout else root).rglob(name):
         if (p.is_dir() if folder else p.is_file()) and not p.is_symlink() and p.is_relative_to(root):
             rel = p.relative_to(root).as_posix()
-            if not EXCLUDED_DIRS.search("/" + rel + ("/" if folder else "")):
+            if ".git" not in rel.split("/") and not ctx.is_vendored(rel + ("/" if folder else "")):
                 hits.append(rel + ("/" if folder else ""))
         if len(hits) >= 3:
             break
     return hits
 
 
+def _after_make(ctx: Ctx, unit: str):
+    """Build the unit, for files that are only there once `make` has run (a Makefile that downloads them, a submodule).
+    None when nothing can be built here."""
+    if ctx.sandbox is None or not ctx.has_makefile(unit):
+        return None
+    try:
+        return ctx.build(unit)
+    except SandboxError:
+        return None
+
+
 @checker("required_files", PHASE_STATIC)
 def required_files(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     title = label(rule)
+    strict = ctx.strict_layout
+    moved = ctx.moved_unit(rule.unit) if not strict else rule.unit
     if not ctx.unit_dir(rule.unit).is_dir():
         yield result(rule, "fail", f"Directory `{rule.unit}/` does not exist in the repository.", title=title)
         return
-    # `root`: the subject says these belong at the root of the repository. `soft`: they only appear in an example layout.
-    root, soft = set(rule.params.get("root") or []), set(rule.params.get("soft") or [])
-    missing, relocated, expected, found = [], [], [], 0
-    for alternatives in rule.params["files"]:
-        if any(_find(ctx, rule.unit, alt, root_only=alt in root) for alt in alternatives):
-            found += 1
-            continue
-        wanted = " or ".join(alternatives)
-        elsewhere = [hit for alt in alternatives for hit in _elsewhere(ctx, rule.unit, alt)][:3]
-        if elsewhere and all(alt in root for alt in alternatives):         # the subject is explicit about the root: elsewhere is not enough
-            missing.append(f"{wanted} (it is at {', '.join(f'`{hit}`' for hit in elsewhere)}, but the subject says it belongs at the root)")
-        elif elsewhere:                                 # there, but not where the list says: a question about structure, not a missing file
-            relocated.append(f"{wanted} → {', '.join(f'`{hit}`' for hit in elsewhere)}")
-        elif all(alt in soft for alt in alternatives):  # only shown in an example layout of the subject
-            expected.append(wanted)
-        else:
-            hint = ""
-            lowered = {p.name.lower() for p in ctx.unit_dir(rule.unit).iterdir()}
-            if any(alt.lower() in lowered for alt in alternatives if "*" not in alt):
-                hint = " (a file exists with different letter case)"
-            missing.append(wanted + hint)
+    moved_text = (f" The subject's `{rule.unit}/` folder does not exist: the project shares its code instead (DRY, which this evaluation "
+                  f"accepts outside libft, ft_printf and get_next_line), so its files were looked for in `{moved}/`." if moved != rule.unit else "")
+    # `root`: the subject says these belong at the root of the repository (binding only in the strict projects).
+    # `soft`: they only appear in an example layout.
+    root = set(rule.params.get("root") or []) if strict else set()
+    soft = set(rule.params.get("soft") or [])
+
+    def search() -> tuple[list[str], list[str], list[str], int]:
+        missing, relocated, expected, found = [], [], [], 0
+        for alternatives in rule.params["files"]:
+            if any(_find(ctx, rule.unit, alt, root_only=alt in root) for alt in alternatives):
+                found += 1
+                continue
+            wanted = " or ".join(alternatives)
+            elsewhere = [hit for alt in alternatives for hit in _elsewhere(ctx, rule.unit, alt)][:3]
+            if elsewhere and all(alt in root for alt in alternatives):     # the subject is explicit about the root: elsewhere is not enough
+                missing.append(f"{wanted} (it is at {', '.join(f'`{hit}`' for hit in elsewhere)}, but the subject says it belongs at the root)")
+            elif elsewhere:                             # there, but not where the list says: a question about structure, not a missing file
+                relocated.append(f"{wanted} → {', '.join(f'`{hit}`' for hit in elsewhere)}")
+            elif all(alt in soft for alt in alternatives):   # only shown in an example layout of the subject
+                expected.append(wanted)
+            else:
+                hint = ""
+                lowered = {p.name.lower() for p in ctx.unit_dir(rule.unit).iterdir()}
+                if any(alt.lower() in lowered for alt in alternatives if "*" not in alt):
+                    hint = " (a file exists with different letter case)"
+                missing.append(wanted + hint)
+        return missing, relocated, expected, found
+
+    missing, relocated, expected, found = search()
+    after_make = ""
+    if missing:
+        # "Copy it into your repository" is met by any way of getting it there, as long as the files are there once `make` ran.
+        build = _after_make(ctx, rule.unit)
+        if build is not None:
+            before = len(missing)
+            missing, relocated, expected, found = search()
+            if len(missing) < before:
+                after_make = " Some of them only appear once `make` has run (a submodule or a download in the Makefile), which counts."
+            if missing and (reason := ctx.offline_reason(build)):
+                yield result(rule, "warn", f"Not in the repository: {', '.join(missing)}. They may come with the build, but {reason}",
+                             title=title, log=build.log)
+                return
     notes = rule.params.get("notes") or []
     note_text = f" Not machine-checkable: {'; '.join(notes)}." if notes else ""
-    elsewhere_text = (f" Found elsewhere than listed: {'; '.join(relocated)}. If the subject lets you organise the project in subfolders "
-                      "this is fine; a human (or the AI review) should confirm it does.") if relocated else ""
-    expected_text = (f" Not found, but the subject only shows these in an example layout: {', '.join(f'`{e}`' for e in expected)}. "
-                     "Whether the layout matters is for a human (or the AI review) to say.") if expected else ""
+    if strict:
+        elsewhere_text = (f" Found elsewhere than listed: {'; '.join(relocated)}. If the subject lets you organise the project in subfolders "
+                          "this is fine; a human (or the AI review) should confirm it does.") if relocated else ""
+        expected_text = (f" Not found, but the subject only shows these in an example layout: {', '.join(f'`{e}`' for e in expected)}. "
+                         "Whether the layout matters is for a human (or the AI review) to say.") if expected else ""
+    else:
+        elsewhere_text = (f" Present in another place than the subject shows: {'; '.join(relocated)}. The layout is free in this project "
+                          "(only libft, ft_printf and get_next_line must follow it), so this is fine.") if relocated else ""
+        expected_text = (f" The subject's example layout also shows {', '.join(f'`{e}`' for e in expected)}; an example is not a requirement.") if expected else ""
     if missing:
-        yield result(rule, "fail", f"Missing: {', '.join(missing)}.{elsewhere_text}{expected_text}{note_text}", title=title)
-    elif relocated or expected:
+        yield result(rule, "fail", f"Missing: {', '.join(missing)}.{elsewhere_text}{expected_text}{moved_text}{note_text}", title=title)
+    elif strict and (relocated or expected):
         yield result(rule, "warn", f"Not exactly as the subject lists.{elsewhere_text}{expected_text}{note_text}", title=title)
     else:
-        yield result(rule, "pass", f"All {found} required file pattern(s) are present.{note_text}", title=title)
+        yield result(rule, "pass", f"All {found + len(relocated)} required file pattern(s) are present.{elsewhere_text}{expected_text}"
+                                   f"{moved_text}{after_make}{note_text}", title=title)
+
+
+# --------------------------------------------------------------------------- "copy your libft into a libft folder"
+
+
+def _libft_copies(ctx: Ctx) -> list[str]:
+    """Folders that hold a copy of a libft: libft.h with a Makefile in the same folder or above it, inside the project. Any folder name
+    counts outside the strict projects; how it got there does not matter (committed, a submodule, downloaded by the Makefile)."""
+    root = ctx.repo.resolve()
+    out: list[str] = []
+    for header in root.rglob("libft.h"):
+        rel = header.relative_to(root)
+        if ".git" in rel.parts or ctx.is_vendored(rel) or len(rel.parts) == 1:
+            continue
+        for folder in [header.parent, *header.parent.parents]:
+            if folder == root:
+                break
+            if (folder / "Makefile").is_file():
+                out.append(folder.relative_to(root).as_posix())
+                break
+    return sorted(set(out))
+
+
+def _uses_libft(ctx: Ctx) -> list[str]:
+    """Where the project says it uses a libft: a Makefile that names it, or a source that includes libft.h."""
+    found: list[str] = []
+    for rel in ctx.files():
+        if ctx.is_vendored(rel):
+            continue
+        if rel.name == "Makefile" and re.search(r"\blibft\b", ctx.read(rel), re.I):
+            found.append(rel.as_posix())
+        elif rel.suffix in (".c", ".h") and re.search(r'#\s*include\s*[<"](?:[\w./]*/)?libft\.h[>"]', ctx.read(rel)):
+            found.append(rel.as_posix())
+        if len(found) >= 3:
+            break
+    return found
+
+
+@checker("libft_copy", PHASE_STATIC)
+def libft_copy(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
+    if any(r.kind == "program" and r.params.get("program") == "libft.a" for r in ctx.rules):
+        yield result(rule, "na", "This project is the libft itself.")
+        return
+    users = _uses_libft(ctx)
+    copies = _libft_copies(ctx)
+    modules = ctx.submodule_paths()
+
+    def how(folder: str) -> str:
+        return f"`{folder}/` (a git submodule)" if any(folder == m or folder.startswith(m.rstrip("/") + "/") for m in modules) else f"`{folder}/`"
+
+    if not users and not copies:
+        yield result(rule, "na", "The project does not use a libft.")
+        return
+    after_make = ""
+    if not copies:
+        build = _after_make(ctx, ".")
+        if build is not None:
+            copies = _libft_copies(ctx)
+            after_make = " It is only there once `make` has run (downloaded by the Makefile), which counts." if copies else ""
+            if not copies and (reason := ctx.offline_reason(build)):
+                yield result(rule, "warn", f"The project uses a libft ({', '.join(users)}) that is not in the repository yet. {reason}", log=build.log)
+                return
+    if copies:
+        found = f"The libft sources and Makefile are in the repository: {', '.join(how(c) for c in copies[:3])}.{after_make}"
+        evidence = [Evidence(file=f"{c}/Makefile") for c in copies[:3]]
+        if any(Path(c).name == "libft" for c in copies):
+            yield result(rule, "pass", found, evidence=evidence)
+        elif ctx.strict_layout:                         # ft_printf: the format is binding, and the subject says "a libft folder"
+            yield result(rule, "warn", f"{found} The subject asks for a folder called libft, and in this project the format is binding.",
+                         evidence=evidence)
+        else:
+            yield result(rule, "pass", f"{found} The folder is not called libft, which is fine: the layout is free outside libft, "
+                                       "ft_printf and get_next_line.", evidence=evidence)
+    else:
+        yield result(rule, "fail", f"The project uses a libft ({', '.join(users)}), but its sources and Makefile are not in the repository "
+                                   "(committed, as a submodule, or downloaded by `make`).",
+                     evidence=[Evidence(file=u) for u in users])
+
+
+# --------------------------------------------------------------------------- files added for the evaluation
+
+EXTRA_DIRS = re.compile(r"^(tests?|testers?|unit_?tests?|test_?suite|testing|checker_?tests?|scripts?|tools)$", re.I)
+EXTRA_SUFFIXES = {".sh", ".bash", ".zsh", ".py", ".rb", ".pl", ".js", ".ts"}
+DOCKER_NAME = re.compile(r"(dockerfile(\.[\w-]+)?|[\w.-]+\.dockerfile|(docker-)?compose(\.[\w-]+)?\.ya?ml)", re.I)
+
+
+def evaluation_extras(ctx: Ctx) -> list[str]:
+    """Files that the subject does not ask for and that serve to evaluate or run the project: test suites, scripts, Docker files."""
+    found: dict[str, None] = {}
+    for rel in ctx.files():
+        if ctx.is_vendored(rel) or rel.name.startswith(".") and rel.suffix not in EXTRA_SUFFIXES:
+            continue
+        folder = next((part for part in rel.parts[:-1] if EXTRA_DIRS.match(part)), None)
+        if folder:
+            found.setdefault("/".join(rel.parts[: rel.parts.index(folder) + 1]) + "/")
+        elif rel.suffix.lower() in EXTRA_SUFFIXES or DOCKER_NAME.fullmatch(rel.name):
+            found.setdefault(rel.as_posix())
+        if len(found) >= 12:
+            break
+    return list(found)
+
+
+def extras_check(ctx: Ctx) -> Iterable[CheckResult]:
+    extras = evaluation_extras(ctx)
+    if extras:
+        yield result(None, "manual",
+                     f"The repository has files added for the evaluation: {', '.join(f'`{e}`' for e in extras)}. That is allowed, but they "
+                     "must work: run them (the test suite, the scripts, `docker build` / `docker compose up --build`). If one is broken, the "
+                     "project fails because of it.",
+                     title="Files added for the evaluation work", evidence=[Evidence(file=e.rstrip("/")) for e in extras], auto=False)
 
 
 def _has_target(makefile: str, target: str) -> bool:
@@ -163,17 +322,19 @@ def makefile_rules(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
 
 @checker("language", PHASE_STATIC)
 def language(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
-    wrong_cpp = [p for p in ctx.files() if p.suffix.lower() in (".cpp", ".cc", ".hpp", ".cxx") and not EXCLUDED_DIRS.search("/" + p.as_posix())]
+    wrong_cpp = [p for p in ctx.files() if p.suffix.lower() in (".cpp", ".cc", ".hpp", ".cxx") and not ctx.is_vendored(p)]
     other = [p for p in ctx.files() if p.suffix.lower() in (".py", ".rs", ".go", ".java", ".js", ".ts", ".rb", ".php", ".cs")
-             and not EXCLUDED_DIRS.search("/" + p.as_posix())]
+             and not ctx.is_vendored(p)]
     if wrong_cpp:
         yield result(rule, "fail", "C++ files found in a C project.",
                      evidence=[Evidence(file=p.as_posix()) for p in wrong_cpp[:20]])
-    elif other:
-        yield result(rule, "warn", "Files in other languages are present; make sure the project itself is C.",
-                     evidence=[Evidence(file=p.as_posix()) for p in other[:20]])
     elif not any(p.suffix == ".c" for p in ctx.files()):
         yield result(rule, "fail", "No .c files found.")
+    elif other:
+        # Test scripts and tools added for the evaluation are allowed (they must work: see "Files added for the evaluation work").
+        yield result(rule, "pass", f"The project is written in C. The {len(other)} file(s) in other languages are extras such as test scripts, "
+                                   "which are allowed as long as they work.",
+                     evidence=[Evidence(file=p.as_posix()) for p in other[:20]])
     else:
         yield result(rule, "pass", "Only C sources found.")
 

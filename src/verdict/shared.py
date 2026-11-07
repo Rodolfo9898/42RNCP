@@ -22,6 +22,40 @@ def is_subject_name(name: str) -> bool:
     return bool(SUBJECT_NAME.fullmatch(name)) and ".." not in name
 
 
+# How this evaluator reads a subject. These are the evaluator's rules, and they win over a literal reading of the PDF: the checks
+# follow them, and every prompt repeats them so that claude judges the same way.
+#
+# The format of the files to turn in is binding only for these projects (matched on the subject's file name).
+STRICT_LAYOUT = re.compile(r"(^|[^a-z])(libft|ft_printf|get_next_line)([^a-z]|$)", re.IGNORECASE)
+
+
+def strict_layout(subjects) -> bool:
+    """Whether the required files must be exactly where and as the subject says (libft, ft_printf, get_next_line)."""
+    return any(STRICT_LAYOUT.search(str(name)) for name in subjects)
+
+
+def evaluation_rules(subjects) -> str:
+    """The evaluator's reading of a subject, as bullet points for a prompt."""
+    if strict_layout(subjects):
+        layout = ("- This project is libft, ft_printf or get_next_line: here the files to turn in must respect the subject's format exactly "
+                  "(names, and where they sit when the subject says so).")
+    else:
+        layout = ("- Layout is not binding in this project (it only is for libft, ft_printf and get_next_line). When the subject asks for a "
+                  "structure (`*.h, *.c`, `*/*.h, */*.c`, \"all your files\", one folder per program such as philo/ and philo_bonus/), the "
+                  "files must exist, but where they sit is free: headers in include/ and sources in srcs/ (or any subfolders) satisfy it, and "
+                  "code shared between programs (the DRY principle) beats duplicating it to copy the subject's folders. Diverging from the "
+                  "layout is never a problem by itself; work that is missing is.")
+    return "\n".join([
+        "- \"Copy X into your repository\" (for example the libft sources and Makefile into a libft folder) is met by any way of putting "
+        "it there, a git submodule included, as long as the files are there once `make` has run.",
+        "- MiniLibX (any version, whatever its folder is called) is provided to the students, not written by them: the Norm does not "
+        "apply to it, and neither do findings about its code.",
+        layout,
+        "- Files added for the evaluation (a test suite, test scripts, a Dockerfile or compose file that installs the dependencies, ...) "
+        "are allowed, but they must work: try them. One that is broken is a real problem, and the project fails because of it.",
+    ])
+
+
 # Where claude tries the project: in the folder it was started in. A copy in /tmp is not the project (other files, other build
 # output, a different path) and a test run there proves little, so every prompt says to build, run and test right here.
 TEST_HERE = ("Build, run and test in the current directory, which is the project: never copy the project to /tmp or to any other "

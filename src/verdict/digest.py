@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .checks import EXCLUDED_DIRS, GENERATED_VERDICT_NAMES, VERDICT_MARKER
+from .checks import EXCLUDED_DIRS, GENERATED_VERDICT_NAMES, VERDICT_MARKER, minilibx_dirs
 from .repo import tracked_files
 
 MAX_FILE_BYTES = 300_000
@@ -62,9 +62,11 @@ def build_digest(root: Path, max_chars: int = 150_000) -> Digest:
     root = root.resolve()
     candidates: list[tuple[int, str, Path]] = []
     tree: list[str] = []
-    for rel in tracked_files(root):
+    files = tracked_files(root)
+    mlx = tuple(d + "/" for d in minilibx_dirs(root, files))      # MiniLibX, whatever its folder is called: not the student's code
+    for rel in files:
         posix = rel.as_posix()
-        if EXCLUDED_DIRS.search("/" + posix):
+        if EXCLUDED_DIRS.search("/" + posix) or posix.startswith(mlx):
             continue
         if len(rel.parts) == 1 and rel.name in GENERATED_VERDICT_NAMES:
             try:
@@ -129,9 +131,11 @@ def line_index(root: Path) -> dict[str, int]:
     """Every readable text file and its line count: lets citations be checked when the model explores by itself."""
     root = root.resolve()
     lines: dict[str, int] = {}
-    for rel in tracked_files(root):
+    files = tracked_files(root)
+    mlx = tuple(d + "/" for d in minilibx_dirs(root, files))      # MiniLibX, whatever its folder is called: not the student's code
+    for rel in files:
         posix = rel.as_posix()
-        if EXCLUDED_DIRS.search("/" + posix):
+        if EXCLUDED_DIRS.search("/" + posix) or posix.startswith(mlx):
             continue
         if len(rel.parts) == 1 and rel.name in GENERATED_VERDICT_NAMES:
             try:

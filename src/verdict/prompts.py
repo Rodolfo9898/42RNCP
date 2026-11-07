@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from .models import AIState, CheckResult, ClaudeReport, ReviewItem
-from .shared import EVALUATOR, EVALUATOR_EMAIL, HEADER_AUTHOR, TEST_HERE, verdict_update_rules
+from .shared import EVALUATOR, EVALUATOR_EMAIL, HEADER_AUTHOR, TEST_HERE, evaluation_rules, verdict_update_rules
 from .report import Entry, _fenced, _where, bucket, corrected
 
 MAX_ITEMS = 60
@@ -26,7 +26,7 @@ UNCOVERED_BY_ANY_SCRIPT = [
     "Memory ownership beyond a short valgrind run: leaks and double frees on paths that run did not take, "
     "use-after-free, uninitialised reads, undefined behaviour.",
     "Design and clarity: how the code is split up, duplication, naming, comments that explain why, function size.",
-    "Whether any bonus work is real and complete, and whether it stays separate from the mandatory part.",
+    "Whether any bonus work is real and complete, and whether the mandatory part works without it (sharing code between them is fine).",
     "Whether the README actually explains the project beyond having the right headings.",
 ]
 
@@ -136,6 +136,10 @@ CONTEXT
 {bullets(failed, 'nothing')}
   Could not be run:
 {bullets(not_run, 'nothing')}
+
+HOW I READ THE SUBJECT: these are my rules as the evaluator. They win over a literal reading of the PDF, the scripts above already
+follow them, and you judge every item and finding by them too:
+{evaluation_rules(subjects)}
 
 YOUR JOB: evaluate what the scripts could NOT cover.
 
@@ -254,11 +258,15 @@ HOW TO WORK
 - Fix the cause with the smallest change that removes the issue. Do not refactor, rename or restyle anything else, and do not add features the subject does not ask for.
 - {rules}
 - Do not edit verdict.md or verdict-report.md by hand. You will update them through your report, as the last step says.
-{norm_rule}- Go in order. After each fix, prove it ({proof}, whichever fits) and tell me the command and its result before moving on.
+{norm_rule}- Do not move or rename files only to match the subject's layout, and do not duplicate shared code: the rules below say when the layout matters.
+- Go in order. After each fix, prove it ({proof}, whichever fits) and tell me the command and its result before moving on.
 - {TEST_HERE}
 - Ask me before running anything that deletes files, installs software or uses the network.
 - When you are done, list every issue by number as fixed, not fixed (why) or not a real problem (why).
 - Then update the verdict. {verdict_update_rules(report_at)} Give every issue below an entry in "fixes", and a "correction" for every issue whose status changed.
+
+HOW THE EVALUATOR READS THE SUBJECT (an issue that only breaks a literal reading of it is "not a real problem"):
+{evaluation_rules(subjects)}
 
 {body}"""
     return prompt, {**stats, "chars": len(prompt)}

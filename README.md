@@ -124,6 +124,30 @@ Free servers are flaky: temporary errors (429, 5xx) are retried with a pause (ho
 `LLM_FALLBACK_MODELS=model-b,model-c` lists models to try, in order, when the main one is down, rate limited or
 needs a balance. The model that actually answered is the one shown in the app and in `verdict.md`.
 
+## How a subject is read
+
+These are the evaluator's rules, and they win over a literal reading of the PDF. The checks follow them, and the review prompt,
+the fix prompt and the API-based AI review all repeat them (`evaluation_rules` in `src/verdict/shared.py`), so Claude judges the
+same way.
+
+- **Copying something into the repo** ("copy its sources and its Makefile into a libft folder") can be done any way, including a
+  **git submodule** or a download by the Makefile, as long as the files are there once `make` has run. The libft sentence is a
+  real check now: it passes for a committed copy, a submodule or a download by `make`. It is not applicable when the project
+  does not use a libft or is the libft itself. It fails when the project uses a libft that is nowhere to be found.
+- **MiniLibX is not the student's code.** It is found by its files (`mlx.h` next to `mlx_*` files, or MLX42's
+  `include/MLX42/MLX42.h`), whatever its folder is called. norminette, the code checks and the AI digest leave it out, and the Norm
+  result says so. A submodule the student wrote (their libft, with 42 headers) *is* checked by norminette. A submodule without
+  any 42 header (a third-party library) is not.
+- **Layout is binding only for libft, ft_printf and get_next_line.** Everywhere else, the files the subject lists must exist, but
+  their location is free. `*.h, *.c`, `*/*.h, */*.c` and "all your files (at the root)" are met by `include/` and `srcs/` (or any
+  subfolders). Code shared between programs (DRY) beats the subject's folders: if `philo_bonus/` does not exist, its files and
+  its build are looked for in `philo/` (or at the root). This only applies to program folders. A missing C++ exercise folder is
+  still missing work. In the strict projects, a file in the wrong place stays a second look, or a failure when the subject says
+  "at the root".
+- **Files added for the evaluation** (a test suite, scripts, a Dockerfile or compose file that installs the dependencies) are
+  allowed but must work. When the repo has any, the review gets the item "Files added for the evaluation work". Claude has to
+  try them, and if one is broken, the project fails. Test scripts in other languages no longer make "Written in C" a warning.
+
 ## norminette
 
 The sandbox image builds norminette from its official repository (https://github.com/42School/norminette) at the pinned

@@ -1247,7 +1247,7 @@ def _run_ai(session: Session, state: AIState, job: ai_mod.Job) -> None:
         for r in session.results:
             if r.status == "manual" and r.rule_id and r.rule_id not in manual:
                 manual[r.rule_id] = r.detail or r.title
-        reviews = ai_mod.review(backend, digest, list(manual.items())[:60], usage) if manual else {}
+        reviews = ai_mod.review(backend, digest, list(manual.items())[:60], usage, subjects=list(session.subjects)) if manual else {}
         with store.lock:
             if not current():
                 return  # cancelled or replaced while the last request was in flight: drop the result

@@ -465,6 +465,8 @@ def _classify(sentence: str, line: Line, pdf: str, module: int | None) -> Rule |
                   sections=["Description", "Instructions", "Resources"])
     if "include guards" in low:
         return mk("include_guards", "Headers have include guards")
+    if re.search(r"\bcopy\b.*\bsources\b.*\blibft\b", low):
+        return mk("libft_copy", "The libft is in the repository")
     return None
 
 
