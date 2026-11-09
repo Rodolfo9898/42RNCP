@@ -4,7 +4,8 @@
 # works there, pushes the result and deletes the folder. The projects are never cloned either: a submodule is a project's URL plus
 # the commit it is at, and the newest commit of a project is read from GitHub (git ls-remote).
 #   init                    create the GitHub repo (and its first commit) if it does not exist yet; safe to run again
-#   sort [name=track ...]   add every git repo of the projects folder as a submodule under its track's folder, then push
+#   sort [name=track ...]   add every git repo of the projects folder as a submodule under its track's folder, then push; a
+#                           folder that only holds git repos (cpp-modules/cpp00 ...) keeps that folder: common-core/cpp-modules/cpp00
 #   update                  move every submodule to the newest commit of its own repository, then push
 #   push [name ...]         push the projects (all of the projects folder, or the ones named) to their own GitHub repos
 # The track comes from the subject PDFs in samples/: a project named like a PDF (libft -> libft.pdf) goes in that PDF's
@@ -136,6 +137,54 @@ EOF
     echo "cursus: $repo is ready ($visibility)"
 }
 
+# A group is a folder of the projects folder that is not a git repository itself but holds some (e.g. cpp-modules/ with cpp00/,
+# cpp01/...). Prints the git repositories directly inside folder $1, one name per line.
+group_members() {
+    for c in "$1"/*/; do
+        [ -e "$c/.git" ] && basename "$c"
+    done
+}
+
+# Prints the track of group $1 (folder $2): an explicit name=track for the group first, then the track of the first of its
+# repositories that has one (cpp-modules -> cpp00 -> common-core). Every repository of the group goes in that track.
+group_track() {
+    k=$(key "$1")
+    for o in $overrides; do
+        [ "$(key "${o%%=*}")" = "$k" ] && { echo "${o#*=}"; return 0; }
+    done
+    for m in $(group_members "$2"); do
+        track_of "$m" && return 0
+    done
+    track_of "$1"
+}
+
+# Adds the repository at folder $1, shown as $2, as the submodule at path $3 of $work. Counts in added, failed and names.
+add_one() {
+    repo_dir=$1 label=$2 dest=$3
+    url=$(git -C "$repo_dir" remote get-url origin 2>/dev/null) || { echo "skip $label: no origin remote, a submodule needs a URL"; return 0; }
+    if [ -n "$(git -C "$work" ls-files -s -- ":(literal)$dest")" ]; then
+        echo "ok   $label: already in ${dest%/*}/"; return 0
+    fi
+
+    # The submodule is the commit GitHub has, so local work that was not pushed is not in it.
+    ahead=$(git -C "$repo_dir" rev-list --count '@{u}..HEAD' 2>/dev/null)
+    if [ "${ahead:-0}" -gt 0 ] || [ -n "$(git -C "$repo_dir" status --porcelain 2>/dev/null)" ]; then
+        echo "warn $label: unpushed commits or uncommitted changes; the submodule will only have what GitHub has (make cursus-push)"
+    fi
+    sha=$(newest "$url")
+    if [ -z "$sha" ]; then
+        echo "fail $label: could not read $url (network, the ssh key, or the repository has no commits)" >&2
+        failed=$((failed + 1)); return 0
+    fi
+    git -C "$work" config -f .gitmodules "submodule.$dest.path" "$dest" &&
+        git -C "$work" config -f .gitmodules "submodule.$dest.url" "$url" &&
+        git -C "$work" update-index --add --cacheinfo 160000 "$sha" "$dest" || { echo "fail $label: could not add it" >&2; failed=$((failed + 1)); return 0; }
+    echo "add  $label -> ${dest%/*}/ ($(printf '%.7s' "$sha"))"
+    added=$((added + 1))
+    names="$names
+$dest"
+}
+
 sort_projects() {
     [ -d "$projects" ] || die "no projects folder at $projects"
     clone_cursus
@@ -144,31 +193,20 @@ sort_projects() {
     names=
     for p in "$projects"/*/; do
         [ -d "$p" ] || continue
+        p=${p%/}
         name=$(basename "$p")
-        [ -e "$p/.git" ] || { echo "skip $name: not a git repository"; continue; }
-        url=$(git -C "$p" remote get-url origin 2>/dev/null) || { echo "skip $name: no origin remote, a submodule needs a URL"; continue; }
-        track=$(track_of "$name") || { echo "skip $name: no subject PDF with this name; run again with $name=<track>"; continue; }
-        if [ -n "$(git -C "$work" ls-files -s -- ":(literal)$track/$name")" ]; then
-            echo "ok   $name: already in $track/"; continue
+        if [ -e "$p/.git" ]; then
+            git -C "$p" remote get-url origin >/dev/null 2>&1 || { echo "skip $name: no origin remote, a submodule needs a URL"; continue; }
+            track=$(track_of "$name") || { echo "skip $name: no subject PDF with this name; run again with $name=<track>"; continue; }
+            add_one "$p" "$name" "$track/$name"
+            continue
         fi
-
-        # The submodule is the commit GitHub has, so local work that was not pushed is not in it.
-        ahead=$(git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null)
-        if [ "${ahead:-0}" -gt 0 ] || [ -n "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
-            echo "warn $name: unpushed commits or uncommitted changes; the submodule will only have what GitHub has (make cursus-push)"
-        fi
-        sha=$(newest "$url")
-        if [ -z "$sha" ]; then
-            echo "fail $name: could not read $url (network, the ssh key, or the repository has no commits)" >&2
-            failed=$((failed + 1)); continue
-        fi
-        git -C "$work" config -f .gitmodules "submodule.$track/$name.path" "$track/$name" &&
-            git -C "$work" config -f .gitmodules "submodule.$track/$name.url" "$url" &&
-            git -C "$work" update-index --add --cacheinfo 160000 "$sha" "$track/$name" || { echo "fail $name: could not add it" >&2; failed=$((failed + 1)); continue; }
-        echo "add  $name -> $track/ ($(printf '%.7s' "$sha"))"
-        added=$((added + 1))
-        names="$names
-$track/$name"
+        members=$(group_members "$p")
+        [ -n "$members" ] || { echo "skip $name: not a git repository"; continue; }
+        track=$(group_track "$name" "$p") || { echo "skip $name/: none of its projects has a subject PDF; run again with $name=<track>"; continue; }
+        for m in $members; do
+            add_one "$p/$m" "$name/$m" "$track/$name/$m"
+        done
     done
     if [ "$added" -gt 0 ]; then
         git -C "$work" add .gitmodules || exit 1
@@ -228,14 +266,26 @@ update_projects() {
 push_projects() {
     [ -d "$projects" ] || die "no projects folder at $projects"
     command -v git >/dev/null || die "git is not installed"
+    # The names: every folder of the projects folder, a group (a folder of repositories, e.g. cpp-modules) standing for each of
+    # its repositories (cpp-modules/cpp00 ...). A name given can be a project, a group, or group/project.
     if [ $# -eq 0 ]; then
         for p in "$projects"/*/; do [ -d "$p" ] && set -- "$@" "$(basename "$p")"; done
     else
         for n in "$@"; do
-            case $n in */* | .* | "") die "'$n' is not a project name (the name of a folder in $projects)" ;; esac
+            case $n in */*/* | .* | */.* | /* | */ | "") die "'$n' is not a project name (the name of a folder in $projects)" ;; esac
             [ -d "$projects/$n" ] || die "no project '$n' in $projects"
         done
     fi
+    for n in "$@"; do
+        shift
+        members=
+        [ -e "$projects/$n/.git" ] || members=$(group_members "$projects/$n")
+        if [ -n "$members" ]; then
+            for m in $members; do set -- "$@" "$n/$m"; done
+        else
+            set -- "$@" "$n"
+        fi
+    done
     pushed=0
     failed=0
     for name in "$@"; do

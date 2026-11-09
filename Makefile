@@ -89,6 +89,7 @@ models:
 #   make cursus-push ONLY="libft nm" ...or only these
 #   make cursus                      create the private GitHub repo (once)
 #   make cursus-sort                 add what is in the projects folder to it as submodules, and push
+#                                    (a folder of repos, e.g. cpp-modules/, stays a folder: common-core/cpp-modules/cpp00)
 #   make cursus-sort MAP="ft_transcendence=common-core"   for a project that has no subject PDF with its name
 #   make cursus-update               move every submodule to the newest commit of its own GitHub repo, and push
 cursus:

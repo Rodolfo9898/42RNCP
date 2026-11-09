@@ -297,6 +297,40 @@ def test_a_project_with_no_subject_pdf_of_its_name_needs_a_track_and_a_wrong_one
     assert code == 1 and "expected name=track" in out
 
 
+def test_a_folder_of_repositories_is_kept_as_a_folder_under_the_track_of_its_projects(world):
+    cpp00, utils = world.project("cpp00"), world.project("cpp_utils")
+    group = world.projects / "cpp-modules"
+    group.mkdir()
+    for name in ("cpp00", "cpp_utils"):
+        git("clone", "-q", str(world.remote(name)), str(group / name), cwd=world.base)
+    (group / "notes").mkdir()                                                             # not a repository: ignored
+    (world.projects / "empty").mkdir()
+    world.build()
+    code, out = world.run("sort")
+    assert code == 0, out
+    assert f"add  cpp-modules/cpp00 -> common-core/cpp-modules/ ({cpp00[:7]})" in out          # cpp00.pdf is in common-core
+    assert f"add  cpp-modules/cpp_utils -> common-core/cpp-modules/ ({utils[:7]})" in out      # and the whole group follows it
+    assert "skip empty: not a git repository" in out and "notes" not in out
+    assert world.position("common-core/cpp-modules/cpp00") == cpp00 and world.position("common-core/cpp-modules/cpp_utils") == utils
+    code, out = world.run("sort")
+    assert code == 0 and "ok   cpp-modules/cpp00: already in common-core/cpp-modules/" in out and "nothing to add" in out
+    code, out = world.update()
+    assert code == 0 and "ok   common-core/cpp-modules/cpp_utils: already the newest" in out
+
+
+def test_a_group_with_no_subject_pdf_needs_a_track(world):
+    world.project("zzz_a"), world.project("zzz_b")
+    group = world.projects / "zzz-group"
+    group.mkdir()
+    for name in ("zzz_a", "zzz_b"):
+        git("clone", "-q", str(world.remote(name)), str(group / name), cwd=world.base)
+    world.build()
+    code, out = world.run("sort")
+    assert code == 0 and "skip zzz-group/: none of its projects has a subject PDF; run again with zzz-group=<track>" in out
+    code, out = world.run("sort", "zzz-group=rncp")
+    assert code == 0 and "add  zzz-group/zzz_a -> rncp/zzz-group/" in out and "add  zzz-group/zzz_b -> rncp/zzz-group/" in out
+
+
 def test_a_dry_run_of_sort_pushes_nothing(world):
     world.project("libft")
     world.local("libft")
@@ -336,7 +370,7 @@ def test_only_the_named_projects_are_pushed_and_a_bad_name_is_refused(world):
     code, out = world.run("push", "nm")
     assert code == 0 and "push nm" in out and "libft" not in out
     assert git("rev-parse", "main", cwd=world.remote("libft")) != git("rev-parse", "HEAD", cwd=libft)
-    for bad in ("../libft", "a/b", ".hidden", ""):
+    for bad in ("../libft", "a/b/c", "a/..", ".hidden", "/abs", "a/", ""):
         code, out = world.run("push", bad)
         assert code == 1 and "is not a project name" in out, bad
     code, out = world.run("push", "missing")
@@ -371,6 +405,25 @@ def test_a_new_branch_is_pushed_with_its_upstream_and_a_detached_head_or_no_orig
     assert "push libft: 1 commit(s) of feature" in out and "skip nm: not on a branch" in out and "skip alone: no origin remote" in out
     assert git("rev-parse", "feature", cwd=world.remote("libft")) == git("rev-parse", "HEAD", cwd=libft)
     assert git("rev-parse", "--abbrev-ref", "@{u}", cwd=libft) == "origin/feature"
+
+
+def test_the_repositories_of_a_group_are_pushed_all_together_or_one_by_one(world):
+    world.project("cpp00"), world.project("cpp01")
+    group = world.projects / "cpp-modules"
+    group.mkdir()
+    for name in ("cpp00", "cpp01"):
+        repo = group / name
+        git("clone", "-q", str(world.remote(name)), str(repo), cwd=world.base)
+        (repo / "x.txt").write_text("x")
+        git("add", "-A", cwd=repo)
+        git("commit", "-q", "-m", "x", cwd=repo)
+    code, out = world.run("push", "cpp-modules/cpp01")
+    assert code == 0 and "push cpp-modules/cpp01: 1 commit(s) of main" in out and "cpp00" not in out
+    code, out = world.run("push")
+    assert code == 0 and "push cpp-modules/cpp00: 1 commit(s) of main" in out and "ok   cpp-modules/cpp01: nothing to push" in out
+    assert git("rev-parse", "main", cwd=world.remote("cpp00")) == git("rev-parse", "HEAD", cwd=group / "cpp00")
+    code, out = world.run("push", "cpp-modules")
+    assert code == 0 and "ok   cpp-modules/cpp00" in out and "ok   cpp-modules/cpp01" in out
 
 
 def test_a_dry_run_of_push_pushes_nothing(world):

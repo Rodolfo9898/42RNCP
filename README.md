@@ -408,6 +408,10 @@ The usual round after working on projects: `make cursus-push`, then `make cursus
   folder without an `origin` is skipped.
 - **`cursus-sort`** adds a project at the commit its GitHub has (it warns when you have unpushed commits or uncommitted
   changes: run `cursus-push`). A name that matches no subject PDF needs `make cursus-sort MAP="ft_transcendence=common-core"`.
+  A folder that is not a repository but holds some (`projects/cpp-modules/cpp00`, `cpp01`...) is a group: it is kept as a
+  folder, under the track of the first of its projects with a subject PDF (`common-core/cpp-modules/cpp00`), or the one
+  given with `MAP="cpp-modules=common-core"`. `make cursus-push ONLY=cpp-modules` pushes all of its projects,
+  `ONLY=cpp-modules/cpp00` just that one.
 - **`cursus-update`** moves each submodule to the newest commit of its own repository (its default branch, or the `branch`
   set for it in `.gitmodules`) and commits the new positions in one commit (`Update N project(s)`, listing them). The report
   says per project what it did: `up common-core/libft: 69ba8fd -> 3c1e0a2`, `ok … already the newest`, `skip …`, `fail …`.
