@@ -1,0 +1,4 @@
+# VS Code extensions (Open VSX ids, publisher.name), installed when the editor starts if they are not already.
+# An extension you install or uninstall in the editor is added here or taken off by itself. `#` starts a comment.
+mhutchie.git-graph
+tejasvi.rainbow-brackets-2

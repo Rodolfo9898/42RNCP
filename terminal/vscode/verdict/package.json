@@ -1,0 +1,201 @@
+{
+  "name": "verdict",
+  "displayName": "Verdict",
+  "description": "Review a 42 project against its subject: run the checks, ask claude, read the verdict.",
+  "publisher": "verdict",
+  "version": "1.0.0",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Verdict only talks to the review service; it never runs the workspace's code itself (claude, when you start it, asks before running anything)."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "verdict",
+          "title": "Verdict",
+          "icon": "media/verdict.svg"
+        }
+      ]
+    },
+    "views": {
+      "verdict": [
+        {
+          "id": "verdict.review",
+          "name": "Review"
+        },
+        {
+          "id": "verdict.subjects",
+          "name": "Subjects"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "verdict.review",
+        "contents": "Pick the project to review, add its subject, then run the checks.\n[Open Project](command:verdict.openProject)\n[Clone a Repository](command:verdict.cloneProject)"
+      },
+      {
+        "view": "verdict.subjects",
+        "contents": "No subject yet.\n[Add from the Library](command:verdict.addSubjects)\n[Upload a PDF](command:verdict.uploadSubject)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "verdict.openProject",
+        "title": "Open Project\u2026",
+        "category": "Verdict",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "verdict.cloneProject",
+        "title": "Clone a Repository\u2026",
+        "category": "Verdict",
+        "icon": "$(repo-clone)"
+      },
+      {
+        "command": "verdict.addSubjects",
+        "title": "Add Subjects from the Library\u2026",
+        "category": "Verdict",
+        "icon": "$(add)"
+      },
+      {
+        "command": "verdict.uploadSubject",
+        "title": "Upload a Subject PDF\u2026",
+        "category": "Verdict",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "verdict.removeSubject",
+        "title": "Remove Subject",
+        "category": "Verdict",
+        "icon": "$(close)"
+      },
+      {
+        "command": "verdict.runChecks",
+        "title": "Run Checks",
+        "category": "Verdict",
+        "icon": "$(play)"
+      },
+      {
+        "command": "verdict.aiReview",
+        "title": "AI Review",
+        "category": "Verdict",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "verdict.mergeClaudeReview",
+        "title": "Merge claude's Review into verdict.md",
+        "category": "Verdict",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "verdict.fixPrompt",
+        "title": "Fix Prompt",
+        "category": "Verdict",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "verdict.openVerdict",
+        "title": "Open verdict.md",
+        "category": "Verdict",
+        "icon": "$(book)"
+      },
+      {
+        "command": "verdict.refresh",
+        "title": "Refresh",
+        "category": "Verdict",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "verdict.checkEnvironment",
+        "title": "Check the Environment",
+        "category": "Verdict",
+        "icon": "$(pulse)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "verdict.runChecks",
+          "when": "view == verdict.review",
+          "group": "navigation@1"
+        },
+        {
+          "command": "verdict.aiReview",
+          "when": "view == verdict.review",
+          "group": "navigation@2"
+        },
+        {
+          "command": "verdict.mergeClaudeReview",
+          "when": "view == verdict.review",
+          "group": "navigation@3"
+        },
+        {
+          "command": "verdict.openVerdict",
+          "when": "view == verdict.review",
+          "group": "navigation@4"
+        },
+        {
+          "command": "verdict.openProject",
+          "when": "view == verdict.review",
+          "group": "navigation@5"
+        },
+        {
+          "command": "verdict.fixPrompt",
+          "when": "view == verdict.review",
+          "group": "more@1"
+        },
+        {
+          "command": "verdict.cloneProject",
+          "when": "view == verdict.review",
+          "group": "more@2"
+        },
+        {
+          "command": "verdict.refresh",
+          "when": "view == verdict.review",
+          "group": "more@3"
+        },
+        {
+          "command": "verdict.checkEnvironment",
+          "when": "view == verdict.review",
+          "group": "more@4"
+        },
+        {
+          "command": "verdict.addSubjects",
+          "when": "view == verdict.subjects",
+          "group": "navigation@1"
+        },
+        {
+          "command": "verdict.uploadSubject",
+          "when": "view == verdict.subjects",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "verdict.removeSubject",
+          "when": "view == verdict.subjects && viewItem == subject",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "verdict.removeSubject",
+          "when": "false"
+        }
+      ]
+    }
+  }
+}

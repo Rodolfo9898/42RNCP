@@ -471,6 +471,6 @@ def render_final_verdict(summary: dict, mandatory: Buckets, claude: ClaudeReport
     elif has_review:
         out.append("Claude's report is included above as text (it could not be merged into the lists).")
     else:
-        out.append("Claude has not reviewed what the scripts could not check (use ⌨ Claude or ✨ AI review, then save).")
+        out.append("Claude has not reviewed what the scripts could not check (use AI Review in the Verdict view, then Merge claude's Review).")
     out += ["", "_These results come from scripts and claude's review; the peer evaluation decides the grade._"]
     return out + [""]

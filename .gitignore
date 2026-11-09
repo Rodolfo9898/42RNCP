@@ -7,4 +7,3 @@ workspace/
 projects/
 .env
 .ssh-pub/
-tests/js/node_modules/

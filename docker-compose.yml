@@ -1,8 +1,8 @@
 services:
+  # The API of the review (checks, subjects, verdict.md), for the Verdict extension of the editor. Not published: the editor
+  # (the `terminal` service) reaches it as http://web:8000 on the internal network.
   web:
     build: .
-    ports:
-      - "8000:8000"
     environment:
       PROJECTS_DIR: /projects
       # Optional AI review (sends repository source to Anthropic). Leave unset to keep everything local.
@@ -67,27 +67,35 @@ services:
   # TERMINAL_PROJECTS_MODE=ro to make it read-only again). By default claude and the shell work IN that folder (TERMINAL_WORKDIR=live),
   # so what they change is on your machine at once; TERMINAL_WORKDIR=copy makes them work on throw-away copies in /scratch instead.
   # Your Claude login lives in the `claude-home` volume. Your public keys (~/.ssh/*.pub only) are in ~/.ssh, read-only.
+  # It is also the editor: VS Code in the browser (OpenVSCode Server) on http://localhost:8000, with the toolchain and claude in its
+  # terminals. Open it with the link `make run` prints (?tkn=EDITOR_TOKEN). Extensions come from Open VSX; config/extensions.txt is
+  # their list, installed at start and kept in step with what you install or uninstall (see src/verdict/editor.py).
   terminal:
     build:
       context: .
       dockerfile: terminal/Dockerfile
+    ports:
+      - "127.0.0.1:${EDITOR_PORT:-8000}:3000"   # this machine only
     environment:
       TERMINAL_TOKEN: ${TERMINAL_TOKEN:?run `make run` (it creates TERMINAL_TOKEN in .env)}
+      EDITOR_TOKEN: ${EDITOR_TOKEN:?run `make run` (it creates EDITOR_TOKEN in .env)}
+      VERDICT_API: http://web:8000
       TERMINAL_WORKDIR: ${TERMINAL_WORKDIR:-live}
       DOCKER_HOST: tcp://dind:2375     # claude can build and run a student's Dockerfile on the separate daemon below
     networks: [default, docker-net]
     volumes:
       - ${PROJECTS_DIR:-./projects}:/projects:${TERMINAL_PROJECTS_MODE:-rw}
-      - claude-home:/home/term
+      - claude-home:/home/term           # also the editor's settings and extensions (.openvscode-server)
       - ./.ssh-pub:/home/term/.ssh:ro   # your ~/.ssh/*.pub only (`make pubkeys`); no private key
+      - ./config:/config                # extensions.txt: the editor's extensions
     tmpfs:
       - /scratch:exec,size=1g,uid=1000,gid=1000   # `exec`: claude builds and runs the project here
       - /tmp:size=256m,uid=1000,gid=1000
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    pids_limit: 256
-    mem_limit: 2g
+    pids_limit: 768                     # VS Code (server, extension host, file watcher, git) next to claude and the builds
+    mem_limit: 3g
     cpus: 2
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8002/health')"]

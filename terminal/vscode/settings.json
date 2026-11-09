@@ -1,0 +1,22 @@
+{
+  "workbench.colorTheme": "Default Dark Modern",
+  "editor.bracketPairColorization.enabled": true,
+  "editor.bracketPairColorization.independentColorPoolPerBracketType": true,
+  "editor.guides.bracketPairs": "active",
+  "editor.insertSpaces": false,
+  "editor.tabSize": 4,
+  "editor.detectIndentation": true,
+  "files.insertFinalNewline": true,
+  "terminal.integrated.defaultProfile.linux": "zsh",
+  "git.autoRepositoryDetection": "subFolders",
+  "git.repositoryScanMaxDepth": 2,
+  "git.openRepositoryInParentFolders": "never",
+  "git.confirmSync": true,
+  "extensions.autoCheckUpdates": true,
+  "telemetry.telemetryLevel": "off",
+  "update.mode": "none",
+  "workbench.startupEditor": "none",
+  "workbench.welcomePage.walkthroughs.openOnInstall": false,
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "chat.disableAIFeatures": true
+}

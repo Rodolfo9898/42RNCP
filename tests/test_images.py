@@ -107,7 +107,8 @@ def test_the_terminal_gets_the_projects_folder_read_write_by_default_and_only_th
     mounts = re.findall(r"^\s+- (\S+:/projects\S*)", block, re.M)
     assert mounts == ["${PROJECTS_DIR:-./projects}:/projects:${TERMINAL_PROJECTS_MODE:-rw}"]      # read-write unless TERMINAL_PROJECTS_MODE=ro
     others = re.findall(r"^\s+- (\S+:\S+)", block.split("volumes:", 1)[1].split("tmpfs:", 1)[0], re.M)
-    assert others == [mounts[0], "claude-home:/home/term", "./.ssh-pub:/home/term/.ssh:ro"], others    # nothing else of yours is mounted
+    assert others == [mounts[0], "claude-home:/home/term", "./.ssh-pub:/home/term/.ssh:ro", "./config:/config"], others    # nothing else of yours is mounted
+    assert sorted(p.name for p in (ROOT / "config").iterdir()) == ["extensions.txt"]                  # (config/ is the editor's extension list only)
 
 
 def test_the_terminal_gets_only_your_public_keys_and_read_only():
@@ -131,7 +132,9 @@ def test_the_terminal_keeps_its_isolation_and_none_of_the_apps_secrets():
     assert "read_only: true" in block and "cap_drop: [ALL]" in block                               # (the container's own filesystem stays read-only)
     for secret in ("ANTHROPIC_API_KEY", "LLM_API_KEY", "SSH_AUTH_SOCK", "ssh-auth.sock"):
         assert secret not in block, secret
-    assert "ports:" not in block and "privileged" not in block
+    assert "privileged" not in block and "EDITOR_TOKEN: ${EDITOR_TOKEN:?" in block                  # the editor never opens without its token
+    ports = re.findall(r"^\s+- \"(\S+)\"", block.split("ports:", 1)[1].split("environment:", 1)[0], re.M)
+    assert ports == ["127.0.0.1:${EDITOR_PORT:-8000}:3000"]                                           # only the editor, and only for this machine
     assert "DOCKER_HOST: tcp://dind:2375" in block and networks_of(block) == {"default", "docker-net"}
 
 

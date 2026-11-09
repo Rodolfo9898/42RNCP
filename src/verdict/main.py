@@ -16,7 +16,6 @@ from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, Response
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import ai as ai_mod
@@ -939,8 +938,11 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
 
 @app.get("/api/sessions/{session_id}/review-prompt")
 def review_prompt(session_id: str) -> dict:
-    """The review request for claude, built from what the checks did and did not cover."""
-    text, stats = review_prompt_for(session_or_404(session_id))
+    """The review request for claude, built from what the checks did and did not cover. The subject PDFs go to the terminal
+    container first, where the editor starts claude with this prompt."""
+    session = session_or_404(session_id)
+    text, stats = review_prompt_for(session)
+    push_subjects(session)
     return {"text": text, **stats}
 
 
@@ -1320,7 +1322,3 @@ def verdict_md(session_id: str, download: bool = False) -> PlainTextResponse:
     headers = {"Content-Disposition": 'attachment; filename="verdict.md"'} if download else {}
     return PlainTextResponse(verdict_text(session), media_type="text/markdown; charset=utf-8", headers=headers)
 
-
-static_dir = Path(__file__).parent / "static"
-if static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

@@ -26,6 +26,20 @@ RUN --mount=type=ssh fetch-norminette
 RUN for po in /src/norminette/locale/*/LC_MESSAGES/norminette.po; do msgfmt "$po" -o "${po%.po}.mo"; done \
     && pip wheel --no-deps --wheel-dir /dist /src
 
+# ---- the editor: VS Code in the browser (OpenVSCode Server, which installs extensions from Open VSX), pinned and checked
+FROM python:3.14-slim AS openvscode
+ARG TARGETARCH
+ARG OPENVSCODE_VERSION=1.109.5
+ARG OPENVSCODE_SHA256_X64=b433bf4f0227321a7014d8460d10a8f958adc0f45aa79bd889e84e65e8f88363
+ARG OPENVSCODE_SHA256_ARM64=36d9c14036489b63de84ebace837fcacf7e60e669a0dc715802c5443684ea4dc
+RUN set -e; \
+    case "${TARGETARCH:-amd64}" in arm64) arch=arm64; sum=$OPENVSCODE_SHA256_ARM64 ;; *) arch=x64; sum=$OPENVSCODE_SHA256_X64 ;; esac; \
+    name="openvscode-server-v${OPENVSCODE_VERSION}-linux-${arch}"; \
+    python -c "import sys, urllib.request as u; u.urlretrieve(sys.argv[1], '/tmp/ovs.tgz')" \
+        "https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v${OPENVSCODE_VERSION}/${name}.tar.gz"; \
+    echo "$sum  /tmp/ovs.tgz" | sha256sum -c -; \
+    mkdir /opt/openvscode-server && tar -xzf /tmp/ovs.tgz -C /opt/openvscode-server --strip-components=1 && rm /tmp/ovs.tgz
+
 # ---- the Docker client (docker, docker compose) from the official image. A CLIENT only: there is deliberately no daemon here
 # and the host's /var/run/docker.sock is never mounted (that would give student code root on your machine).
 FROM ${DOCKER_CLI_IMAGE} AS dockercli
@@ -87,6 +101,13 @@ RUN pip install --no-cache-dir .
 COPY --chmod=755 terminal/readpdf /usr/local/bin/readpdf
 RUN readpdf --help >/dev/null && pdftotext -v 2>&1 | head -1
 
+# The editor (see src/verdict/editor.py): VS Code, with the Verdict extension built in (terminal/vscode/verdict) and the settings it
+# starts with. The extensions you add (config/extensions.txt) and your own settings live in the claude-home volume.
+COPY --from=openvscode /opt/openvscode-server /opt/openvscode-server
+COPY terminal/vscode/verdict /opt/openvscode-server/extensions/verdict
+COPY terminal/vscode/settings.json /etc/verdict-editor/settings.json
+RUN /opt/openvscode-server/bin/openvscode-server --version | head -1
+
 # The same entrypoint as the web app. As `term` (the default) it only starts the service. With docker-compose.ssh.yml the container
 # starts as root, relays the ssh-agent socket so that uid 1000 can open it (Docker Desktop's is root-owned), then drops to uid 1000.
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
@@ -96,5 +117,6 @@ USER term
 ENV PROJECTS_DIR=/projects SCRATCH_DIR=/scratch TERMINAL_HOME=/home/term \
     CLAUDE_CONFIG_DIR=/home/term/.claude PYTHONDONTWRITEBYTECODE=1 \
     TERMINAL_SHELL=/usr/bin/zsh ZDOTDIR=/etc/verdict-zsh
-EXPOSE 8002
-CMD ["uvicorn", "verdict.terminal:app", "--host", "0.0.0.0", "--port", "8002"]
+# 3000: the editor (published by docker-compose.yml); 8002: the terminal service (the web app only, on the internal network).
+EXPOSE 3000 8002
+CMD ["python", "-m", "verdict.editor"]

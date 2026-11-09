@@ -753,6 +753,16 @@ def test_the_terminal_status_says_whether_the_terminal_has_the_ssh_agent(client,
 # ---------------------------------------------------------------- the review prompt for the terminal
 
 
+def test_the_review_prompt_hands_the_subject_pdfs_to_the_terminal_where_the_editor_starts_claude(client, monkeypatch):
+    c, main = client
+    sid = c.post("/api/sessions").json()["id"]
+    handed = []
+    monkeypatch.setattr(main, "review_prompt_for", lambda session: ("the prompt", {}))
+    monkeypatch.setattr(main, "push_subjects", lambda session: handed.append(session.id))
+    assert c.get(f"/api/sessions/{sid}/review-prompt").json()["text"] == "the prompt"
+    assert handed == [sid]
+
+
 def test_review_prompt_reflects_this_sessions_results(client, monkeypatch):
     c, main = client
     sid, _ = prepared_session(c, main, "rp1")
@@ -1366,16 +1376,6 @@ def test_the_sandbox_copy_is_a_git_repository_without_hooks(client, tmp_path):
     assert (work / ".git" / "HEAD").is_file() and not (work / ".git" / "hooks").exists()
     log = subprocess.run(["git", "-C", str(work), "log", "--format=%s"], capture_output=True, text=True, check=True)
     assert log.stdout.strip() == "first"
-
-
-def test_the_vendored_file_icons_are_served_with_their_license(client):
-    c, main = client
-    theme = c.get("/vendor/great-icons/icons.json")
-    assert theme.status_code == 200
-    path = theme.json()["iconDefinitions"][theme.json()["fileExtensions"]["c"]]["iconPath"].removeprefix("./")
-    icon = c.get(f"/vendor/great-icons/{path}")
-    assert icon.status_code == 200 and icon.headers["content-type"].startswith("image/")
-    assert "MIT" in c.get("/vendor/great-icons/LICENSE").text
 
 
 def test_verdict_md_in_the_clone_follows_the_verdict_shown_in_the_app(client, tmp_path):
@@ -2214,22 +2214,3 @@ def test_the_running_shells_are_listed_for_a_reloaded_page(client, monkeypatch):
     monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_HTTPX_CLIENT(transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ConnectError("down")))))
     assert c.get(f"/api/sessions/{sid}/shells").json() == {"panes": [], "claude": False}
     assert c.get("/api/sessions/nope/shells").status_code == 404
-
-
-def test_the_page_and_every_script_stylesheet_and_icon_file_it_needs_are_served(client):
-    import re
-
-    c, _ = client
-    page = c.get("/")
-    assert page.status_code == 200 and "<title>verdict</title>" in page.text
-    csp = page.headers["content-security-policy"]
-    assert "script-src 'self'" in csp and "style-src 'self' 'unsafe-inline'" in csp and "connect-src 'self' ws: wss:" in csp
-    needed = [p for p in re.findall(r'(?:src|href)="([^"#]+)"', page.text) if not p.startswith("data:")]        # (the favicon is inline)
-    assert len(needed) >= 22 and "boot.js" in needed and "style.css" in needed
-    for path in needed:
-        answer = c.get(f"/{path}")
-        assert answer.status_code == 200, path
-        assert (answer.headers["content-type"].startswith("text/css") if path.endswith(".css") else "javascript" in answer.headers["content-type"]), path
-    # the icon theme the explorer reads and one icon it points to
-    theme = c.get("/vendor/great-icons/icons.json")
-    assert theme.status_code == 200 and "iconDefinitions" in theme.json()

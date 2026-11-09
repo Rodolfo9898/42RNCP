@@ -50,6 +50,7 @@ build: token ssh pubkeys
 
 run: build token
 	@mkdir -p $(PROJECTS_DIR)
+	@$(MAKE) --no-print-directory url
 	$(COMPOSE) up
 
 clean: token
@@ -60,10 +61,16 @@ fclean: token
 
 re: fclean build
 
-# The web app and the terminal container share a random token; it lives in .env (never committed).
+# The web app and the terminal container share a random token, and the editor has its own (the ?tkn= of its link); both live
+# in .env (never committed).
 token:
 	@touch .env && chmod 600 .env
 	@grep -q '^TERMINAL_TOKEN=.' .env || { printf '\nTERMINAL_TOKEN=%s\n' "$$(openssl rand -hex 24)" >> .env; echo "created TERMINAL_TOKEN in .env"; }
+	@grep -q '^EDITOR_TOKEN=.' .env || { printf 'EDITOR_TOKEN=%s\n' "$$(openssl rand -hex 24)" >> .env; echo "created EDITOR_TOKEN in .env"; }
+
+# The link to the editor, with its token.
+url: token
+	@echo "Open http://localhost:$${EDITOR_PORT:-8000}/?tkn=$$(grep -m1 '^EDITOR_TOKEN=' .env | cut -d= -f2-)"
 
 # Starts the agent if needed and loads your keys into it (asks for each key's passphrase once).
 ssh:
@@ -104,10 +111,4 @@ cursus-update:
 cursus-push:
 	@sh scripts/cursus.sh push $(ONLY)
 
-# The page itself (every script, with a fake server) is run in jsdom by tests/test_ui.py: no browser needed. This installs jsdom once, next
-# to the tests (tests/js/node_modules), and runs them. Without jsdom `uv run pytest` skips them.
-test-ui:
-	@cd tests/js && npm install --no-audit --no-fund --silent
-	@uv run pytest tests/test_ui.py -q
-
-.PHONY: all build run clean fclean re models token ssh pubkeys cursus cursus-sort cursus-update cursus-push test-ui
+.PHONY: all build run clean fclean re models token url ssh pubkeys cursus cursus-sort cursus-update cursus-push
