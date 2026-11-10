@@ -661,14 +661,17 @@ def ensure_review_files(session: Session) -> bool:
     return True
 
 
-def collect_claude_review(session: Session, context: str | None = None) -> bool:
+def collect_claude_review(session: Session, context: str | None = None, strict: bool = False) -> bool:
     """Store claude's saved report in the session and merge it into verdict.md. False when there was nothing new.
-    `context` is what the terminal was opened for: a report from a terminal of another repository or subject set is ignored."""
+    `context` is what the terminal was opened for: a report from a terminal of another repository or subject set is ignored.
+    `strict`: a terminal service that cannot be reached raises instead of counting as "nothing new"."""
     if context is not None and context != review_context(session):
         return False
     try:
         text = fetch_claude_review(session.id)
     except Exception:
+        if strict:
+            raise
         return False
     if text and text != session.claude_review:
         with store.lock:
@@ -678,6 +681,23 @@ def collect_claude_review(session: Session, context: str | None = None) -> bool:
         store.save(session)
         return True
     return ensure_review_files(session)
+
+
+@app.post("/api/sessions/{session_id}/claude-review/collect")
+def collect_review(session_id: str) -> dict:
+    """The automatic pickup, asked by the editor each time claude saves its report: a report that is new goes into the session and
+    into verdict.md at once, so every pass of claude's review (the first one and each fix-and-update after it) reaches the verdict
+    by itself. Only a report asked for by this review counts (`stale`: the project, its commit, the subjects or the run changed
+    since claude was asked, so ask it again); nothing is forced here (that is `.../save`). 503 when the terminal service is down."""
+    session = session_or_404(session_id)
+    before = session.claude_review
+    try:
+        written = collect_claude_review(session, session.review_context, strict=True)
+    except Exception as exc:
+        raise HTTPException(503, "could not reach the terminal service") from exc
+    return {"new": session.claude_review != before, "written": written, "stale": session.review_context != review_context(session),
+            "verdict_file": session.verdict_file, "structured": session.claude.structured, "assessed": session.claude.assessed,
+            "total": session.claude.total, "problems": session.claude.problems}
 
 
 @app.post("/api/sessions/{session_id}/claude-review/save")

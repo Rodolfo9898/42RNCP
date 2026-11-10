@@ -111,4 +111,10 @@ cursus-update:
 cursus-push:
 	@sh scripts/cursus.sh push $(ONLY)
 
-.PHONY: all build run clean fclean re models token url ssh pubkeys cursus cursus-sort cursus-update cursus-push
+# The Verdict extension (terminal/vscode/verdict) is tested in node with a fake editor: tests/test_extension.py runs those tests when node
+# is installed. This also installs, once and next to the tests, the TextMate engine that checks the colours of the ignore files.
+test-extension:
+	@cd tests/js && npm install --no-audit --no-fund --silent
+	@uv run pytest tests/test_extension.py -q
+
+.PHONY: all build run clean fclean re models token url ssh pubkeys cursus cursus-sort cursus-update cursus-push test-extension

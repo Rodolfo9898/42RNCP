@@ -78,7 +78,7 @@ nothing. Since claude reads the student's code, its decision can in principle be
 
 **After a fix.** `verdict.md` is generated, so an edit made by hand would be overwritten. When you ask claude to fix something and
 update the verdict, it saves a report with a `"fixes"` block instead (the fix prompt and its system prompt both tell it how), and
-that is merged within seconds while the tab is open. An update only says what changed and the rest of the review stands. The page
+that is merged within seconds, by itself, like every report claude saves. An update only says what changed and the rest of the review stands. The page
 gets a **🛠 What Claude corrected** section (each issue as fixed, not fixed or not a real problem, with what changed and how it
 was proven), which also says whether any new improvements were found; those are marked 🆕 in the list. Like the rest of the
 review, this lasts until the next **Run Checks**.
@@ -192,10 +192,14 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   judge what they could not: the subject requirements that need a human, plus correctness on edge cases, error handling, memory,
   design and readability. Each point must cite file:line, "unclear" is an accepted answer, and it asks before running anything.
   claude saves its report as `claude-review.md` in a folder outside your project (so no file is added to your repository), and
-  you approve that one write. **Merge claude's Review** (Verdict view) then merges it into `verdict.md`, between the improvements
-  and the closing **Final verdict** section. The report is treated as untrusted text (markup defused, headings demoted). The
-  **Verdict: AI review** channel of the Output panel logs each step. Check Anthropic's terms for your plan before automating a
-  subscription login this way.
+  you approve that one write. **Every time claude saves it, the report is merged into `verdict.md` by itself**, within a few
+  seconds, between the improvements and the closing **Final verdict** section: the first pass, and each later one (a fix and
+  update, a second look). A message says what was merged, and `verdict.md` opens as a page without taking the focus from the
+  terminal claude is typing in (or updates in place if it is already open). Starting **AI Review** again begins a new pass without
+  the last report. A report written for an earlier run of the checks, or for another project, is not merged: the **Verdict: AI
+  review** channel says so, and you ask claude again. **Merge claude's Review** (Verdict view) forces the merge when you want it.
+  The report is treated as untrusted text (markup defused, headings demoted). The **Verdict: AI review** channel of the Output
+  panel logs each step. Check Anthropic's terms for your plan before automating a subscription login this way.
 - **Tests happen where the project is.** Every prompt (claude's system prompts, the review prompt, the fix prompt) tells claude to
   build, run and test in the current directory, never in a copy in `/tmp` or another folder, and to keep any scratch files
   inside it and remove them afterwards. In live mode that means the build output lands in your project (claude says so
@@ -297,7 +301,10 @@ project. A read-write mount cannot be limited to one project. If you review code
 `TERMINAL_PROJECTS_MODE=ro TERMINAL_WORKDIR=copy make run` (or those lines in `.env`): the terminal then reads the projects folder
 but cannot write to it, and nothing done in it can reach a project.
 
-If claude's report was not picked up (after a new run, or the tab was already closed), `POST /api/sessions/{id}/claude-review/save`
+The Verdict extension looks at claude's report (`/scratch/reports/<session>/claude-review.md`) every two seconds and, each time it
+has been saved and has stopped changing, calls `POST /api/sessions/{id}/claude-review/collect`: a report that was asked for by this
+review (same project, commit, subjects and run) is merged into `verdict.md`; any other is reported as `stale` and left out. If
+claude's report was not picked up anyway (after a new run, or from another commit), `POST /api/sessions/{id}/claude-review/save`
 merges the one it saved into `verdict.md` for the project as it is now, whatever the app thought of it before.
 
 ### `git push` from the terminal (opt-in)
@@ -487,7 +494,10 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
   not wrong behaviour. Per-project functional tests (sorting correctness for push_swap, etc.) are not written yet.
 - born2beroot, netpractice, inception and ft_transcendence are not repository checks; their rules are listed for manual review.
 - Dev: `uv sync && uv run pytest`. The sandbox-dependent checks are only fully exercised inside Docker, and the Verdict
-  extension (`terminal/vscode/verdict/`) only inside the editor.
+  extension (`terminal/vscode/verdict/`) only inside the editor. Its logic (the merge after every pass, the JSON view, the
+  markdown buttons) is run in node against a fake editor by `tests/js` (`uv run pytest` does it when node 20+ is there); `make
+  test-extension` also installs the TextMate engine that checks the colours of the ignore files. How the real editor draws it is
+  not covered: look at it once after changing the extension.
 
 ## Interface
 
@@ -500,12 +510,29 @@ search, splits, themes, keys, Settings.
 
 | Where | What |
 |---|---|
-| Review view | the result, the checks grouped by status (a `file:line` opens the file at that line), the AI review; its title bar has **Run Checks**, **AI Review**, **Merge claude's Review**, **Open verdict.md**, **Open Project**, and in `…` **Fix Prompt**, **Clone a Repository**, **Refresh**, **Check the Environment** |
+| Review view | the result, the checks grouped by status (a `file:line` opens the file at that line), the AI review; its title bar has **Run Checks**, **AI Review**, **Merge claude's Review** (only to force it: claude's reports are merged by themselves), **Open verdict.md**, **Open Project**, and in `…` **Fix Prompt**, **Clone a Repository**, **Refresh**, **Check the Environment** |
 | Subjects view | the PDFs of this review: **Add from the Library**, **Upload a PDF**, ✕ to remove one |
 | Output panel | **Verdict: Checks** (what the run logged) and **Verdict: AI review** (each step of the AI review) |
 | Status bar | the project under review, its commit and the result; a click opens the Review view |
 
 Every action is also a command: ⇧⌘P / Ctrl+Shift+P, then type `Verdict:`.
+
+### Reading files
+
+- **Markdown opens as the page** (VS Code's own Markdown preview, set as the editor of `*.md`), styled like GitHub by the
+  [Markdown Preview Github Styling](https://open-vsx.org/extension/bierner/markdown-preview-github-styles) extension of the list
+  below. The title bar has a **`</>` Show Markdown Source** button, and the source has an **Open Markdown Page** button to go back
+  (VS Code's own "Show Source" does not work when the page is the default, so these replace it). The same two are in the Command
+  Palette; **View: Reopen Editor With…** also works.
+- **JSON is shown pretty-printed.** A `.json` file saved on one line, or in very long lines, opens as `name (pretty).json`: indented, one
+  value per line, with the JSON colours, folding and search. It is read-only and the file on disk is never changed (numbers
+  and keys are printed exactly as they are in the file). The title bar has **Open the Raw JSON File** to edit it; a file that
+  is shown raw and is hard to read has **Show Pretty JSON** to go back. A pretty view follows its file when it changes. A file that
+  is readable already opens as usual; turn the whole thing off with the setting `verdict.json.prettyOnOpen`.
+- **`.gitignore`, `.dockerignore` and the other `*ignore` files** (`.npmignore`, `.eslintignore`, `.prettierignore`, …) are coloured: comments,
+  `!` negations, `*` `**` `?` wildcards, `[a-z]` classes, `\` escapes, `/`. (VS Code alone colours only the `#` comments of a `.gitignore`,
+  and does not know `.dockerignore` at all.) **`.gitmodules`** is read as a properties file: sections, keys and values are coloured.
+  The associations are in `terminal/vscode/settings.json` (`files.associations`).
 
 ### Extensions
 
@@ -517,7 +544,7 @@ popular extension is published on both). `config/extensions.txt` is their list:
 - an extension you install in the editor is **added to the list by itself**, one you uninstall is taken off (within ~10 seconds);
 - edit the file by hand too: one id (`publisher.name`, as on the extension's page) per line, `#` starts a comment.
 
-[Git Graph](https://open-vsx.org/extension/mhutchie/git-graph) is listed by default. Rainbow brackets need no extension: they are
+[Git Graph](https://open-vsx.org/extension/mhutchie/git-graph) and the GitHub styles for the Markdown page are listed by default. Rainbow brackets need no extension: they are
 VS Code's own bracket pair colours, on by default (`editor.bracketPairColorization`), with indent guides for the bracket pair
 under the cursor. The classic *Rainbow Brackets* extension is not on Open VSX.
 

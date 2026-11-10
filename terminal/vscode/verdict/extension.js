@@ -4,6 +4,8 @@
 //  - a Verdict view: the result and every check (a check opens the file and line it cites), and the subjects of the review;
 //  - commands: open or clone a project, add subjects, run the checks, ask claude (in a VS Code terminal) or the configured AI,
 //    merge claude's report into verdict.md, write a fix prompt, open verdict.md;
+//  - claude's report is merged into verdict.md by itself, each time claude saves it (report.js);
+//  - how files are shown: markdown as a page, JSON pretty-printed (viewers.js), and the colours of .gitignore / .dockerignore files.
 //  - two Output channels, "Verdict: Checks" and "Verdict: AI review", and the project under review in the status bar.
 // Everything shown comes from untrusted input (subject PDFs, repositories): it is only ever put in labels and plain text.
 
@@ -11,9 +13,13 @@ const vscode = require("vscode");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const reports = require("./report");
+const viewers = require("./viewers");
 
 const API = (process.env.VERDICT_API || "http://web:8000").replace(/\/$/, "");
 const PROJECTS = process.env.PROJECTS_DIR || "/projects";
+const REPORTS = (process.env.REPORTS_ROOT || "/scratch/reports").replace(/\/$/, "");     // where claude saves its report: <here>/<session>/claude-review.md
+const REPORT_TICK = 2000;
 const ORDER = ["fail", "warn", "manual", "skipped", "na", "pass"];
 const TITLES = { fail: "Failed", warn: "Warnings", manual: "Needs manual review", skipped: "Not checked", na: "Not applicable", pass: "Passed" };
 const ICONS = { fail: ["error", "errorForeground"], warn: ["warning", "editorWarning.foreground"], manual: ["question", "editorInfo.foreground"],
@@ -388,20 +394,55 @@ async function claudeReview() {
     shellPath: "python3", shellArgs: ["-m", "verdict.editor", "claude", "--session", sid, "--project", projectDir(), "--prompt-file", file] });
   terminal.show();
   logTo(aiLog, `claude started in the terminal "claude: review" with the review prompt (${text.length} characters).`);
-  const merge = await vscode.window.showInformationMessage("When claude has saved its report, merge it into verdict.md.", "Merge claude's Review");
-  if (merge) await mergeClaudeReview();
+  vscode.window.showInformationMessage("claude's report goes into verdict.md by itself, each time it saves it.");
+}
+
+// What a merge did, in words.
+function describeMerge(r) {
+  const file = r.verdict_file || "verdict.md";
+  if (!r.structured) return `claude's report was added to ${file} as text: it has no data block at the end, so it could not be merged into the lists. ${(r.problems || [])[0] || ""}`.trim();
+  return `Merged claude's answers (${r.assessed} of ${r.total} requirements) into ${file}.${r.assessed < r.total ? ` ${r.total - r.assessed} requirement(s) were not answered.` : ""}`;
 }
 
 async function mergeClaudeReview() {
   const r = await api(`sessions/${sid}/claude-review/save`, { method: "POST" });
   setSession(await api(`sessions/${sid}`));
   if (r.warning) vscode.window.showWarningMessage(r.warning);
-  let message;
-  if (!r.structured) message = `claude's report was added to ${r.verdict_file || "verdict.md"} as text: it has no data block at the end, so it could not be merged into the lists. ${(r.problems || [])[0] || ""}`;
-  else message = `Merged claude's answers (${r.assessed} of ${r.total} requirements) into ${r.verdict_file || "verdict.md"}.${r.assessed < r.total ? ` ${r.total - r.assessed} requirement(s) were not answered.` : ""}`;
+  const message = describeMerge(r);
   logTo(aiLog, message);
   vscode.window.showInformationMessage(message);
-  await openVerdict(true);
+  await openVerdict(false);
+}
+
+// claude saved its report (again): the app has merged it into verdict.md. Show what changed, without taking the focus from the
+// terminal claude is typing in.
+async function reportMerged(r) {
+  try {
+    if (r.stale) {
+      logTo(aiLog, "claude's report is for an earlier run of the checks or another project, so it is not merged: ask claude again (AI Review).");
+      return;
+    }
+    if (!r.new && !r.written) return;
+    setSession(await api(`sessions/${sid}`));
+    if (!r.new) return;
+    const message = describeMerge(r);
+    logTo(aiLog, message);
+    vscode.window.showInformationMessage(message);
+    await openVerdict(true);
+  } catch (err) {
+    logTo(aiLog, `claude's report was merged, but the view could not be refreshed: ${err.message}`);
+  }
+}
+
+// Looks at claude's report every couple of seconds (a stat of one file) and has it merged each time it is saved.
+function watchReport(ctx) {
+  const watch = reports.watcher({
+    look: () => (sid ? reports.signature(fs.promises.stat, path.join(REPORTS, sid, reports.REPORT_NAME)) : Promise.resolve(null)),
+    collect: () => api(`sessions/${sid}/claude-review/collect`, { method: "POST" }),
+    done: reportMerged,
+  });
+  const timer = setInterval(() => watch.tick(), REPORT_TICK);
+  ctx.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
 async function fixPrompt() {
@@ -412,20 +453,30 @@ async function fixPrompt() {
     .then((copy) => copy && vscode.env.clipboard.writeText(r.text));
 }
 
-async function openVerdict(beside) {
+// verdict.md as a page (markdown opens as the page; the button in its title bar shows the code). `quiet`: it opens without taking the
+// focus, and an editor that has it already is left as it is (VS Code reloads it when the file changes).
+async function openVerdict(quiet) {
   if (!session.results?.length) return vscode.window.showInformationMessage("Run the checks first.");
   const file = session.verdict_file && fileUri(session.verdict_file);
   if (file && fs.existsSync(file.fsPath)) {
-    await vscode.commands.executeCommand("markdown.showPreview", file).then(undefined, () => vscode.window.showTextDocument(file, { preview: false }));
+    if (quiet && viewers.isOpen(file.fsPath)) return;
+    await vscode.commands.executeCommand("vscode.open", file, { preview: false, preserveFocus: !!quiet });
     return;
   }
   const text = await (await fetch(`${API}/api/sessions/${sid}/verdict.md`)).text();
-  await showText(text, "markdown", beside);
+  await showMarkdown(text);
 }
 
 async function showText(content, language, beside) {
   const doc = await vscode.workspace.openTextDocument({ content, language });
   await vscode.window.showTextDocument(doc, { preview: false, viewColumn: beside ? vscode.ViewColumn.Beside : undefined });
+}
+
+// Markdown that is not a file (a report made on the spot): shown as the page, with its code one click away in the Markdown preview.
+async function showMarkdown(content) {
+  const doc = await vscode.workspace.openTextDocument({ content, language: "markdown" });
+  await vscode.window.showTextDocument(doc, { preview: false });
+  await vscode.commands.executeCommand("markdown.showPreview", doc.uri).then(undefined, () => {});
 }
 
 async function checkEnvironment() {
@@ -445,7 +496,7 @@ async function checkEnvironment() {
     lines.push("");
   }
   lines.push("Only ✖ makes it not ready.");
-  await showText(lines.join("\n"), "markdown");
+  await showMarkdown(lines.join("\n"));
 }
 
 async function refresh() {
@@ -475,6 +526,8 @@ function activate(ctx) {
   ctx.subscriptions.push(vscode.window.registerTreeDataProvider("verdict.review", new ReviewTree()));
   ctx.subscriptions.push(vscode.window.registerTreeDataProvider("verdict.subjects", new SubjectsTree()));
   ctx.subscriptions.push(status.item, checksLog, aiLog, changed);
+  viewers.activate(ctx);
+  watchReport(ctx);
   status.refresh();
   ensureSession().then(() => { if (busy()) poll(); }, (err) => {
     status.item.text = "$(warning) Verdict unavailable";

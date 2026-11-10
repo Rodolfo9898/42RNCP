@@ -7,3 +7,4 @@ workspace/
 projects/
 .env
 .ssh-pub/
+node_modules/

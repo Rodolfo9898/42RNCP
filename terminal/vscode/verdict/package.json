@@ -123,6 +123,30 @@
         "title": "Check the Environment",
         "category": "Verdict",
         "icon": "$(pulse)"
+      },
+      {
+        "command": "verdict.markdownCode",
+        "title": "Show Markdown Source",
+        "category": "Verdict",
+        "icon": "$(code)"
+      },
+      {
+        "command": "verdict.markdownPreview",
+        "title": "Open Markdown Page",
+        "category": "Verdict",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "verdict.jsonRaw",
+        "title": "Open the Raw JSON File",
+        "category": "Verdict",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "verdict.jsonPretty",
+        "title": "Show Pretty JSON",
+        "category": "Verdict",
+        "icon": "$(json)"
       }
     ],
     "menus": {
@@ -194,8 +218,86 @@
         {
           "command": "verdict.removeSubject",
           "when": "false"
+        },
+        {
+          "command": "verdict.markdownCode",
+          "when": "activeCustomEditorId == 'vscode.markdown.preview.editor'"
+        },
+        {
+          "command": "verdict.markdownPreview",
+          "when": "resourceExtname == .md && activeEditor == workbench.editors.files.textFileEditor"
+        },
+        {
+          "command": "verdict.jsonRaw",
+          "when": "resourceScheme == verdict-json"
+        },
+        {
+          "command": "verdict.jsonPretty",
+          "when": "resourceScheme == file && resourceExtname == .json"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "verdict.markdownCode",
+          "when": "activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "verdict.markdownPreview",
+          "when": "resourceExtname == .md && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@1"
+        },
+        {
+          "command": "verdict.jsonRaw",
+          "when": "resourceScheme == verdict-json",
+          "group": "navigation@1"
+        },
+        {
+          "command": "verdict.jsonPretty",
+          "when": "resourceScheme == file && resourceExtname == .json && verdict.jsonMinified && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@1"
         }
       ]
+    },
+    "languages": [
+      {
+        "id": "verdict-ignore",
+        "aliases": [
+          "Ignore File"
+        ],
+        "filenames": [
+          ".gitignore",
+          ".dockerignore",
+          ".containerignore",
+          ".npmignore",
+          ".eslintignore",
+          ".prettierignore",
+          ".stylelintignore",
+          ".gcloudignore",
+          ".helmignore",
+          ".vscodeignore",
+          ".slugignore",
+          ".cfignore"
+        ],
+        "configuration": "./ignore.language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "verdict-ignore",
+        "scopeName": "source.verdict-ignore",
+        "path": "./syntaxes/ignore.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Verdict",
+      "properties": {
+        "verdict.json.prettyOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open a JSON file that is hard to read (saved on one line, or in very long lines) as a pretty-printed, read-only view. The file itself is never changed; the title bar has a button for the raw file."
+        }
+      }
     }
   }
 }

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Ignore file",
+  "scopeName": "source.verdict-ignore",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#pattern" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "^#.*$",
+      "name": "comment.line.number-sign.verdict-ignore"
+    },
+    "pattern": {
+      "begin": "^(?=[ \\t]*[^ \\t\\r\\n])",
+      "end": "$",
+      "contentName": "string.unquoted.pattern.verdict-ignore",
+      "patterns": [
+        { "match": "\\G(!)", "captures": { "1": { "name": "keyword.control.negation.verdict-ignore" } } },
+        { "match": "\\\\.", "name": "constant.character.escape.verdict-ignore" },
+        { "match": "\\*\\*|\\*|\\?", "name": "constant.character.escape.wildcard.verdict-ignore" },
+        { "match": "\\[(?:\\\\.|[^\\]\\\\])+\\]", "name": "string.regexp.character-class.verdict-ignore" },
+        { "match": "/", "name": "punctuation.separator.path.verdict-ignore" }
+      ]
+    }
+  }
+}

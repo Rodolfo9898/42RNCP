@@ -1720,6 +1720,67 @@ def test_nothing_to_save_is_explained(client, monkeypatch):
     assert save(c, bare).status_code == 400 and "run the checks first" in save(c, bare).json()["detail"]
 
 
+# ---------------------------------------------------------------- every pass of claude's review reaches verdict.md by itself (POST .../claude-review/collect)
+
+
+def collect(c, sid):
+    return c.post(f"/api/sessions/{sid}/claude-review/collect")
+
+
+def test_every_pass_of_claudes_review_is_merged_when_the_editor_asks_and_nothing_is_forced(client, monkeypatch):
+    c, main = client
+    sid, repo, first = session_with_claudes_report(c, main, monkeypatch, "co1")
+    assert "note for 1" not in (repo / "verdict.md").read_text()
+    picked = collect(c, sid).json()
+    assert picked["new"] is True and picked["stale"] is False and picked["structured"] is True and picked["assessed"] == picked["total"] > 0
+    assert picked["verdict_file"] == "verdict.md" and "note for 1" in (repo / "verdict.md").read_text()
+    assert main.store.get(sid).claude_review == first
+
+    assert collect(c, sid).json()["new"] is False                              # the same report again: nothing new
+    numbers = [i.n for i in main.store.get(sid).review_items]
+    second = structured_review(numbers).replace("note for 1", "after the fix, note for 1").replace("pass with reservations", "ready to pass")
+    terminal_returns(monkeypatch, main, lambda session_id: second)             # the next pass: claude saved the file again
+    again = collect(c, sid).json()
+    assert again["new"] is True
+    document = (repo / "verdict.md").read_text()
+    assert "after the fix, note for 1" in document and "decided by Claude: **ready to pass**" in document
+    assert main.store.get(sid).claude_review == second and main.store.get(sid).claude_review_at
+
+
+def test_a_report_nobody_asked_for_is_not_merged_by_the_pickup(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "co2")
+    main.store.get(sid).review_context = ""                                    # no review was requested for this project as it is now
+    answer = collect(c, sid).json()
+    assert answer["new"] is False and answer["stale"] is True
+    assert main.store.get(sid).claude_review == "" and "note for 1" not in (repo / "verdict.md").read_text()
+    assert save(c, sid).json()["saved"] is True                                # forcing it is still the person's call
+    assert "note for 1" in (repo / "verdict.md").read_text()
+
+
+def test_a_run_after_the_review_was_asked_makes_the_old_report_stale_for_the_pickup(client, monkeypatch):
+    c, main = client
+    sid, repo, report = session_with_claudes_report(c, main, monkeypatch, "co3")
+    assert collect(c, sid).json()["new"] is True
+    run_to_completion(c, sid)                                                  # a new run starts from nothing
+    assert main.store.get(sid).claude_review == ""
+    late = collect(c, sid).json()                                              # the old terminal still has its report on disk
+    assert late["new"] is False and late["stale"] is True and main.store.get(sid).claude_review == ""
+    assert "note for 1" not in (repo / "verdict.md").read_text()
+
+
+def test_the_pickup_says_so_when_the_terminal_service_cannot_be_reached(client, monkeypatch):
+    c, main = client
+    sid, _, _ = session_with_claudes_report(c, main, monkeypatch, "co4")
+    def down(session_id):
+        raise OSError("connection refused")
+    monkeypatch.setattr(main, "fetch_claude_review", down)
+    assert collect(c, sid).status_code == 503                                  # not "nothing new": the editor looks again
+    monkeypatch.setattr(main, "fetch_claude_review", lambda session_id: None)
+    assert collect(c, sid).json()["new"] is False
+    assert collect(c, "nosuchsession").status_code == 404
+
+
 # ---------------------------------------------------------------- a better parser reaches reviews that already had the subject
 
 

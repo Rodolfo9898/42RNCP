@@ -18,5 +18,17 @@
   "workbench.startupEditor": "none",
   "workbench.welcomePage.walkthroughs.openOnInstall": false,
   "workbench.secondarySideBar.defaultVisibility": "hidden",
-  "chat.disableAIFeatures": true
+  "chat.disableAIFeatures": true,
+  "workbench.editorAssociations": {
+    "*.md": "vscode.markdown.preview.editor"
+  },
+  "files.associations": {
+    ".gitignore": "verdict-ignore",
+    ".dockerignore": "verdict-ignore",
+    ".containerignore": "verdict-ignore",
+    ".npmignore": "verdict-ignore",
+    ".eslintignore": "verdict-ignore",
+    ".prettierignore": "verdict-ignore",
+    ".gitmodules": "properties"
+  }
 }

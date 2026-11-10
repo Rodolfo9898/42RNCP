@@ -72,6 +72,7 @@ def test_the_editor_and_its_terminals_get_no_secret_of_the_service(monkeypatch):
     env = editor.server_env()
     assert not {"TERMINAL_TOKEN", "EDITOR_TOKEN", "ANTHROPIC_API_KEY"} & env.keys()
     assert env["VERDICT_API"] == "http://web:8000" and env["GIT_CONFIG_VALUE_0"] == "*"
+    assert env["REPORTS_ROOT"] == "/scratch/reports", "where the Verdict extension looks for claude's report"
 
 
 def test_claude_is_only_started_in_a_project_and_for_a_real_review(tmp_path, monkeypatch):
@@ -97,3 +98,21 @@ def test_claude_starts_in_the_project_with_the_prompt_and_its_report_outside(tmp
     assert started["argv"][-1] == "review this" and started["cwd"] == project
     assert started["env"]["REPORT_DIR"] == str(tmp_path / "reports" / "abcdef123") and Path(started["env"]["REPORT_DIR"]).is_dir()
     assert not prompt.exists(), "the prompt file is used once"
+
+
+def test_a_new_pass_starts_without_the_report_of_the_last_one(tmp_path, monkeypatch):
+    project = tmp_path / "projects" / "cub3d"
+    project.mkdir(parents=True)
+    old = tmp_path / "reports" / "abcdef123" / "claude-review.md"
+    old.parent.mkdir(parents=True)
+    old.write_text("# the report of the last pass")
+    (old.parent / "notes.txt").write_text("not a report")
+    monkeypatch.setattr("verdict.terminal.PROJECTS", tmp_path / "projects")
+    monkeypatch.setattr("verdict.terminal.REPORTS_ROOT", tmp_path / "reports")
+    monkeypatch.setattr("verdict.terminal.display_env", lambda: {})
+    monkeypatch.setattr(editor.os, "execvpe", lambda exe, argv, env: None)
+    monkeypatch.chdir(tmp_path)
+    editor.claude("abcdef123", str(project), "")
+    assert not old.exists(), "or it would be merged as if claude had just written it"
+    assert (old.parent / "notes.txt").exists()
+    editor.claude("abcdef123", str(project), "")                                # and a folder without one is fine

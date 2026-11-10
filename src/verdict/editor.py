@@ -134,12 +134,13 @@ def keep_list_in_step(stop: threading.Event) -> None:
 
 def server_env() -> dict[str, str]:
     """What VS Code, and every terminal opened in it, gets: claude's environment (no token, no secret of the service), a shell,
-    the address of the web app for the Verdict extension, and git allowed in the projects folder (it belongs to your user on the
-    host, which git inside a container may see as someone else)."""
-    from .terminal import child_env
+    the address of the web app and the folder of claude's reports for the Verdict extension, and git allowed in the projects
+    folder (it belongs to your user on the host, which git inside a container may see as someone else)."""
+    from .terminal import REPORTS_ROOT, child_env
 
     env = child_env()
     env.update(SHELL=os.environ.get("TERMINAL_SHELL", "/bin/bash"), VERDICT_API=os.environ.get("VERDICT_API", "http://web:8000"),
+               REPORTS_ROOT=str(REPORTS_ROOT),      # where claude saves its report: the Verdict extension merges it when it appears
                GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0="*")
     if os.environ.get("ZDOTDIR"):
         env["ZDOTDIR"] = os.environ["ZDOTDIR"]
@@ -199,7 +200,7 @@ def serve() -> None:
 def claude(session: str, project: str, prompt_file: str) -> None:
     """Replaces this process by claude, in the project folder, with the review prompt and the environment of a review: where the
     subject PDFs are, where its report goes (outside the project), and nothing else."""
-    from .terminal import PROJECTS, SESSION_ID, child_env, interactive_argv
+    from .terminal import PROJECTS, REVIEW_FILE, SESSION_ID, child_env, interactive_argv
 
     folder = Path(project).resolve()
     if not SESSION_ID.fullmatch(session) or not folder.is_dir() or not folder.is_relative_to(PROJECTS.resolve()):
@@ -212,7 +213,12 @@ def claude(session: str, project: str, prompt_file: str) -> None:
         finally:
             path.unlink(missing_ok=True)
     env = child_env(session, folder)
-    (Path(env["REPORT_DIR"])).mkdir(parents=True, exist_ok=True)
+    reports = Path(env["REPORT_DIR"])
+    reports.mkdir(parents=True, exist_ok=True)
+    try:
+        (reports / REVIEW_FILE).unlink(missing_ok=True)      # a new pass starts without the last one's report: the extension merges what claude saves from now on
+    except OSError:
+        pass
     os.chdir(folder)
     argv = interactive_argv(prompt, live=True)
     os.execvpe(argv[0], argv, env)
