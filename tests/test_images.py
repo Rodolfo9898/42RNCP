@@ -1,6 +1,7 @@
 """Guards for the container images and compose file. They cannot build an image, but they catch the mistakes that
 break a build or weaken the isolation, which are easy to make and hard to notice."""
 
+import json
 import re
 from pathlib import Path
 
@@ -208,6 +209,11 @@ def test_claude_and_the_shell_work_in_the_project_by_default_and_the_copy_is_one
     assert "TERMINAL_WORKDIR: ${TERMINAL_WORKDIR:-live}" in block                       # live unless TERMINAL_WORKDIR=copy
     for other in ("web", "sandbox", "dind"):
         assert "TERMINAL_WORKDIR" not in without_comments(services()[other]), other     # the web app asks the terminal, so the two cannot disagree
+
+
+def test_the_editor_has_the_c_language_server_its_extension_is_set_to_use():
+    assert "clangd" in apt_packages(TERMINAL)
+    assert json.loads((ROOT / "terminal" / "vscode" / "settings.json").read_text())["clangd.path"] == "/usr/bin/clangd"     # (where Debian puts it)
 
 
 def test_the_terminal_can_read_pdfs_without_a_script_of_claudes_own():

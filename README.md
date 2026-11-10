@@ -521,7 +521,8 @@ Every action is also a command: ⇧⌘P / Ctrl+Shift+P, then type `Verdict:`.
 
 - **Markdown opens as the page** (VS Code's own Markdown preview, set as the editor of `*.md`), styled like GitHub by the
   [Markdown Preview Github Styling](https://open-vsx.org/extension/bierner/markdown-preview-github-styles) extension of the list
-  below. The title bar has a **`</>` Show Markdown Source** button, and the source has an **Open Markdown Page** button to go back
+  below, in its **dark** theme (`markdown-preview-github-styles.colorTheme` in `terminal/vscode/settings.json`; `light` or `auto` for
+  the light page, and `markdown-preview-github-styles.darkTheme` set to `dark_dimmed` for a softer one). The title bar has a **`</>` Show Markdown Source** button, and the source has an **Open Markdown Page** button to go back
   (VS Code's own "Show Source" does not work when the page is the default, so these replace it). The same two are in the Command
   Palette; **View: Reopen Editor With…** also works.
 - **JSON is shown pretty-printed.** A `.json` file saved on one line, or in very long lines, opens as `name (pretty).json`: indented, one
@@ -533,6 +534,23 @@ Every action is also a command: ⇧⌘P / Ctrl+Shift+P, then type `Verdict:`.
   `!` negations, `*` `**` `?` wildcards, `[a-z]` classes, `\` escapes, `/`. (VS Code alone colours only the `#` comments of a `.gitignore`,
   and does not know `.dockerignore` at all.) **`.gitmodules`** is read as a properties file: sections, keys and values are coloured.
   The associations are in `terminal/vscode/settings.json` (`files.associations`).
+
+### Languages
+
+- **Colours** come with VS Code for the usual languages (C, C++, Python, JavaScript/TypeScript, Go, Rust, Java, PHP, Ruby, shell,
+  Makefile, Dockerfile, SQL, HTML/CSS, XML, YAML, JSON, Markdown, Lua, Swift, C#, …). With **semantic highlighting** on, the
+  language server of a language also colours functions, macros, parameters and types by what they are, not by how they look.
+  `*.h` is read as C (VS Code assumes C++); `.env` files as properties.
+- **Intelligence** (completion, hover, go to definition, errors as you type) comes from a language server, one per language, as
+  extensions of the list below: **C / C++ / Objective-C** (clangd, installed in the image; it finds your headers through
+  `compile_commands.json` if the project has one, otherwise through `-I. -Iinclude -Iincludes -Iinc`), **Python** (Pyright),
+  **shell** (bash-language-server), **YAML**, **TOML**. JavaScript, TypeScript, JSON, HTML, CSS and Markdown are VS Code's own.
+- **Any other language:** install its extension from the Extensions view (it is added to `config/extensions.txt` by itself).
+  Colours work at once. Intelligence also needs the language's tools in the container, which holds the 42 toolchain (cc, c++, make,
+  valgrind, norminette, node via VS Code): Go, Rust, Java and the like need their compiler or JDK added to `terminal/Dockerfile`.
+  Extensions that Microsoft publishes only on its own Marketplace are not available on Open VSX: *C/C++* (cpptools, replaced by
+  clangd), *Pylance* (replaced by Pyright) and *C# Dev Kit* among them. So "every language, exactly like VS Code" is not literally
+  possible; what is possible is the same experience wherever an Open VSX extension and its tools exist.
 
 ### Extensions
 

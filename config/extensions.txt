@@ -1,5 +1,10 @@
 # VS Code extensions (Open VSX ids, publisher.name), installed when the editor starts if they are not already.
 # An extension you install or uninstall in the editor is added here or taken off by itself. `#` starts a comment.
 bierner.markdown-preview-github-styles
+llvm-vs-code-extensions.vscode-clangd
+mads-hartmann.bash-ide-vscode
 mhutchie.git-graph
+ms-pyright.pyright
+redhat.vscode-yaml
+tamasfe.even-better-toml
 tejasvi.rainbow-brackets-2

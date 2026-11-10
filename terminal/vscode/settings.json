@@ -19,6 +19,11 @@
   "workbench.welcomePage.walkthroughs.openOnInstall": false,
   "workbench.secondarySideBar.defaultVisibility": "hidden",
   "chat.disableAIFeatures": true,
+  "editor.semanticHighlighting.enabled": true,
+  "clangd.path": "/usr/bin/clangd",
+  "clangd.arguments": ["--background-index"],
+  "clangd.fallbackFlags": ["-Wall", "-Wextra", "-I.", "-Iinclude", "-Iincludes", "-Iinc"],
+  "markdown-preview-github-styles.colorTheme": "dark",
   "workbench.editorAssociations": {
     "*.md": "vscode.markdown.preview.editor"
   },
@@ -29,6 +34,9 @@
     ".npmignore": "verdict-ignore",
     ".eslintignore": "verdict-ignore",
     ".prettierignore": "verdict-ignore",
-    ".gitmodules": "properties"
+    ".gitmodules": "properties",
+    "*.h": "c",
+    ".env": "properties",
+    ".env.*": "properties"
   }
 }

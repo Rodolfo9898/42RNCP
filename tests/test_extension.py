@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from verdict import shared, terminal
+from verdict import editor, shared, terminal
 
 ROOT = Path(__file__).resolve().parents[1]
 EXT = ROOT / "terminal" / "vscode" / "verdict"
 SETTINGS = ROOT / "terminal" / "vscode" / "settings.json"
 MANIFEST = json.loads((EXT / "package.json").read_text())
 SOURCES = {p.name: p.read_text() for p in EXT.glob("*.js")}
-BUILT_IN_LANGUAGES = {"properties"}          # VS Code's own, which the settings point a file at
+BUILT_IN_LANGUAGES = {"properties", "c"}      # VS Code's own, which the settings point a file at
 
 
 def node_runs_tests() -> str | None:
@@ -88,7 +88,29 @@ def test_markdown_opens_as_a_page_and_both_buttons_are_in_the_title_bar():
     assert "resourceScheme == verdict-json" in titles["verdict.jsonRaw"] and "verdict.jsonMinified" in titles["verdict.jsonPretty"]
 
 
+def test_the_markdown_page_is_dark_and_comes_from_the_listed_extension():
+    """The GitHub styles follow the editor's theme by default ("auto"), which did not give a dark page: dark is set outright."""
+    assert json.loads(SETTINGS.read_text())["markdown-preview-github-styles.colorTheme"] == "dark"
+    listed = [line.strip() for line in (ROOT / "config" / "extensions.txt").read_text().splitlines() if not line.startswith("#")]
+    assert "bierner.markdown-preview-github-styles" in listed
+
+
 def test_the_json_view_has_a_setting_that_the_code_reads():
     props = MANIFEST["contributes"]["configuration"]["properties"]
     assert props["verdict.json.prettyOnOpen"]["default"] is True
     assert '.get("json.prettyOnOpen", true)' in SOURCES["viewers.js"]
+
+
+def test_the_languages_have_their_servers_and_the_editor_is_set_up_for_them():
+    """Colours come with VS Code for the usual languages; completion, hover and errors come from a language server. clangd is in the
+    image (the extension would not download one for arm64) and the other servers are bundled in their extensions."""
+    text = (ROOT / "config" / "extensions.txt").read_text()
+    listed = editor.read_list(ROOT / "config" / "extensions.txt")
+    assert len(listed) == len([line for line in text.splitlines() if line.strip() and not line.startswith("#")]), "an id was not read"
+    assert {"llvm-vs-code-extensions.vscode-clangd", "ms-pyright.pyright", "mads-hartmann.bash-ide-vscode", "redhat.vscode-yaml",
+            "tamasfe.even-better-toml"} <= set(listed)
+    settings = json.loads(SETTINGS.read_text())
+    assert settings["editor.semanticHighlighting.enabled"] is True, "functions, macros and parameters are coloured by the language server"
+    assert settings["files.associations"]["*.h"] == "c", "a header is C here, not C++ (which is what VS Code assumes)"
+    assert settings["clangd.path"] == "/usr/bin/clangd"
+    assert "--background-index" in settings["clangd.arguments"]
