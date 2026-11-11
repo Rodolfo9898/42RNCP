@@ -8,12 +8,13 @@
 #                           folder that only holds git repos (cpp-modules/cpp00 ...) keeps that folder: common-core/cpp-modules/cpp00
 #   update                  move every submodule to the newest commit of its own repository, then push
 #   push [name ...]         push the projects (all of the projects folder, or the ones named) to their own GitHub repos
+#   refresh [name ...]      pull the projects (all of the projects folder, or the ones named) from their own GitHub repos
 # The track comes from the subject PDFs in samples/: a project named like a PDF (libft -> libft.pdf) goes in that PDF's
 # folder. A project with any other name needs name=track (e.g. ft_transcendence=common-core).
 # A submodule holds what a project's GitHub repo has, not your local folder: run `push` first so that `sort` and `update` see your
 # latest work.
 # Settings (environment): CURSUS_REPO (Rodolfo9898/42Cursus), CURSUS_URL (git@github.com:<CURSUS_REPO>.git), CURSUS_VISIBILITY
-# (private or public), PROJECTS_DIR (./projects), CURSUS_DRY_RUN (1: do everything except pushing and creating).
+# (private or public), PROJECTS_DIR (./projects), CURSUS_DRY_RUN (1: do everything except pushing, pulling and creating).
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 repo=${CURSUS_REPO:-Rodolfo9898/42Cursus}
@@ -261,13 +262,10 @@ update_projects() {
     [ "$failed" -eq 0 ] || die "$failed project(s) could not be updated, see above"
 }
 
-# Pushes the projects to their own GitHub repos (the current branch of each; never a force push), so that sort and update, which
-# read GitHub, see them. Uncommitted changes are not pushed (they are not commits).
-push_projects() {
+# Prints the projects the arguments name, one per line: every folder of the projects folder when there are none, a group (a folder of repositories, e.g. cpp-modules) standing
+# for each of its repositories (cpp-modules/cpp00 ...). A name given can be a project, a group, or group/project.
+select_projects() {
     [ -d "$projects" ] || die "no projects folder at $projects"
-    command -v git >/dev/null || die "git is not installed"
-    # The names: every folder of the projects folder, a group (a folder of repositories, e.g. cpp-modules) standing for each of
-    # its repositories (cpp-modules/cpp00 ...). A name given can be a project, a group, or group/project.
     if [ $# -eq 0 ]; then
         for p in "$projects"/*/; do [ -d "$p" ] && set -- "$@" "$(basename "$p")"; done
     else
@@ -277,15 +275,27 @@ push_projects() {
         done
     fi
     for n in "$@"; do
-        shift
         members=
         [ -e "$projects/$n/.git" ] || members=$(group_members "$projects/$n")
         if [ -n "$members" ]; then
-            for m in $members; do set -- "$@" "$n/$m"; done
+            for m in $members; do printf '%s/%s\n' "$n" "$m"; done
         else
-            set -- "$@" "$n"
+            printf '%s\n' "$n"
         fi
     done
+}
+
+# Pushes the projects to their own GitHub repos (the current branch of each; never a force push), so that sort and update, which
+# read GitHub, see them. Uncommitted changes are not pushed (they are not commits).
+push_projects() {
+    command -v git >/dev/null || die "git is not installed"
+    list=$(select_projects "$@") || exit 1
+    set --
+    while IFS= read -r n; do
+        [ -z "$n" ] || set -- "$@" "$n"
+    done <<EOF
+$list
+EOF
     pushed=0
     failed=0
     for name in "$@"; do
@@ -320,12 +330,68 @@ push_projects() {
     [ "$failed" -eq 0 ] || die "$failed project(s) could not be pushed, see above"
 }
 
+# Brings the projects up to date with their GitHub repos: the new commits of the current branch of each (the projects folder's, or the
+# ones named) are fast-forwarded in. Nothing is merged and nothing of yours is overwritten: a project whose branch has commits GitHub
+# does not, or whose uncommitted changes the new commits would touch, is reported and the others are still pulled.
+refresh_projects() {
+    command -v git >/dev/null || die "git is not installed"
+    list=$(select_projects "$@") || exit 1
+    set --
+    while IFS= read -r n; do
+        [ -z "$n" ] || set -- "$@" "$n"
+    done <<EOF
+$list
+EOF
+    pulled=0
+    failed=0
+    for name in "$@"; do
+        p=$projects/$name
+        [ -e "$p/.git" ] || { echo "skip $name: not a git repository"; continue; }
+        git -C "$p" remote get-url origin >/dev/null 2>&1 || { echo "skip $name: no origin remote to pull from"; continue; }
+        branch=$(git -C "$p" symbolic-ref -q --short HEAD) || { echo "skip $name: not on a branch (detached HEAD)"; continue; }
+        git -C "$p" rev-parse -q --verify '@{u}' >/dev/null 2>&1 || { echo "skip $name: $branch has no upstream branch to pull"; continue; }
+        if ! out=$(git -C "$p" fetch -q 2>&1); then
+            echo "fail $name: could not fetch: $(printf '%s' "$out" | head -n 1) (network, or the ssh key?)" >&2
+            failed=$((failed + 1)); continue
+        fi
+        count=$(git -C "$p" rev-list --count 'HEAD..@{u}' 2>/dev/null)
+        ahead=$(git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null)
+        dirty=
+        [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ] || dirty=" (uncommitted changes stay as they are)"
+        if [ "${count:-0}" -eq 0 ]; then
+            if [ "${ahead:-0}" -gt 0 ]; then
+                echo "ok   $name: up to date, with $ahead commit(s) not pushed yet$dirty"
+            else
+                echo "ok   $name: already up to date$dirty"
+            fi
+            continue
+        fi
+        if [ "${ahead:-0}" -gt 0 ]; then
+            echo "fail $name: $branch has diverged ($ahead commit(s) here, $count new on GitHub): merge or rebase it by hand" >&2
+            failed=$((failed + 1)); continue
+        fi
+        if [ "$dry" -eq 1 ]; then
+            echo "dry  $name: would pull $count commit(s) of $branch$dirty"; continue
+        fi
+        if out=$(git -C "$p" merge --ff-only -q '@{u}' 2>&1); then
+            echo "pull $name: $count commit(s) of $branch$dirty"
+            pulled=$((pulled + 1))
+        else
+            echo "fail $name: not pulled: $(printf '%s' "$out" | head -n 1) (nothing was changed)" >&2
+            failed=$((failed + 1))
+        fi
+    done
+    [ "$pulled" -eq 0 ] || echo "cursus: pulled $pulled project(s)"
+    [ "$failed" -eq 0 ] || die "$failed project(s) could not be refreshed, see above"
+}
+
 cmd=${1:-}
 [ $# -gt 0 ] && shift
 case $cmd in
     init) init ;;
     update) update_projects ;;
     push) push_projects "$@" ;;
+    refresh) refresh_projects "$@" ;;
     sort)
         for o in "$@"; do
             case $o in *=*) ;; *) die "expected name=track, got '$o'" ;; esac
@@ -333,5 +399,5 @@ case $cmd in
         done
         overrides="$*"
         sort_projects ;;
-    *) echo "usage: cursus.sh init | sort [name=track ...] | update | push [name ...]" >&2; exit 2 ;;
+    *) echo "usage: cursus.sh init | sort [name=track ...] | update | push [name ...] | refresh [name ...]" >&2; exit 2 ;;
 esac

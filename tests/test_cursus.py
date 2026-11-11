@@ -437,6 +437,110 @@ def test_a_dry_run_of_push_pushes_nothing(world):
     assert code == 0 and "dry  libft: would push 1 commit(s) of main" in out and git("rev-parse", "main", cwd=world.remote("libft")) == on_github
 
 
+# ---------------------------------------------------------------- refresh
+
+
+def test_refreshing_pulls_the_new_commits_of_every_project_and_leaves_your_uncommitted_work_alone(world):
+    world.project("libft"), world.project("nm")
+    libft, nm = world.local("libft"), world.local("nm")
+    (nm / "wip.txt").write_text("not committed")
+    world.commit("libft", "two"), world.commit("libft", "three")
+    newest = world.commit("nm", "two")
+    code, out = world.run("refresh")
+    assert code == 0, out
+    assert "pull libft: 2 commit(s) of main" in out and "pull nm: 1 commit(s) of main (uncommitted changes stay as they are)" in out
+    assert "cursus: pulled 2 project(s)" in out
+    assert git("rev-parse", "HEAD", cwd=nm) == newest and (nm / "two.txt").exists() and (nm / "wip.txt").read_text() == "not committed"
+    assert git("rev-parse", "HEAD", cwd=libft) == git("rev-parse", "main", cwd=world.remote("libft"))
+    code, out = world.run("refresh")
+    assert code == 0 and "ok   libft: already up to date" in out and "pulled" not in out
+    assert git("log", "--merges", "--oneline", cwd=libft) == "", "a pull is a fast-forward, never a merge commit"
+
+
+def test_only_the_named_projects_are_refreshed_and_a_bad_name_is_refused(world):
+    world.project("libft"), world.project("nm")
+    libft, nm = world.local("libft"), world.local("nm")
+    world.commit("libft", "two"), world.commit("nm", "two")
+    before = git("rev-parse", "HEAD", cwd=libft)
+    code, out = world.run("refresh", "nm")
+    assert code == 0 and "pull nm" in out and "libft" not in out and git("rev-parse", "HEAD", cwd=libft) == before
+    for bad in ("../libft", "a/b/c", ".hidden", "/abs", ""):
+        code, out = world.run("refresh", bad)
+        assert code == 1 and "is not a project name" in out, bad
+    code, out = world.run("refresh", "missing")
+    assert code == 1 and "no project 'missing'" in out
+
+
+def test_the_repositories_of_a_group_are_refreshed_with_it_or_one_by_one(world):
+    world.project("cpp00"), world.project("cpp01")
+    group = world.projects / "cpp-modules"
+    group.mkdir()
+    for name in ("cpp00", "cpp01"):
+        git("clone", "-q", str(world.remote(name)), str(group / name), cwd=world.base)
+        world.commit(name, "two")
+    code, out = world.run("refresh", "cpp-modules/cpp01")
+    assert code == 0 and "pull cpp-modules/cpp01: 1 commit(s)" in out and "cpp00" not in out
+    code, out = world.run("refresh", "cpp-modules")
+    assert code == 0 and "pull cpp-modules/cpp00: 1 commit(s)" in out and "ok   cpp-modules/cpp01: already up to date" in out
+    for name in ("cpp00", "cpp01"):
+        assert git("rev-parse", "HEAD", cwd=group / name) == git("rev-parse", "main", cwd=world.remote(name))
+
+
+def test_a_branch_that_has_diverged_or_is_in_the_way_of_your_changes_is_reported_and_nothing_is_changed(world):
+    world.project("libft"), world.project("nm"), world.project("push_swap")
+    libft, nm, ps = world.local("libft"), world.local("nm"), world.local("push_swap")
+    (libft / "mine.txt").write_text("mine")                                                # a commit GitHub does not have
+    git("add", "-A", cwd=libft)
+    git("commit", "-q", "-m", "mine", cwd=libft)
+    world.commit("libft", "theirs")
+    (nm / "two.txt").write_text("my own two")                                              # uncommitted, and the new commit adds the same file
+    world.commit("nm", "two")
+    world.commit("push_swap", "two")
+    mine, edited = git("rev-parse", "HEAD", cwd=libft), git("rev-parse", "HEAD", cwd=nm)
+    code, out = world.run("refresh")
+    assert code == 1, out
+    assert "fail libft: main has diverged (1 commit(s) here, 1 new on GitHub)" in out and "fail nm: not pulled" in out and "nothing was changed" in out
+    assert "pull push_swap: 1 commit(s)" in out and "2 project(s) could not be refreshed" in out, "the others are still pulled"
+    assert git("rev-parse", "HEAD", cwd=libft) == mine and git("rev-parse", "HEAD", cwd=nm) == edited
+    assert (nm / "two.txt").read_text() == "my own two"
+
+
+def test_work_not_pushed_yet_is_mentioned_and_a_detached_head_or_no_upstream_or_no_origin_is_skipped(world):
+    world.project("libft"), world.project("nm"), world.project("push_swap")
+    libft, nm, ps = world.local("libft"), world.local("nm"), world.local("push_swap")
+    (libft / "x.txt").write_text("x")
+    git("add", "-A", cwd=libft)
+    git("commit", "-q", "-m", "x", cwd=libft)
+    git("checkout", "-q", "--detach", cwd=nm)
+    git("checkout", "-q", "-b", "feature", cwd=ps)
+    git("init", "-q", "-b", "main", str(world.projects / "alone"), cwd=world.base)
+    code, out = world.run("refresh")
+    assert code == 0, out
+    assert "ok   libft: up to date, with 1 commit(s) not pushed yet" in out and "skip nm: not on a branch" in out
+    assert "skip push_swap: feature has no upstream branch" in out and "skip alone: no origin remote" in out
+
+
+def test_a_project_that_cannot_be_fetched_is_reported_and_does_not_stop_the_others(world):
+    world.project("libft"), world.project("nm")
+    world.local("libft"), world.local("nm")
+    world.commit("nm", "two")
+    shutil.rmtree(world.remote("libft"))                                                   # its GitHub is gone
+    code, out = world.run("refresh")
+    assert code == 1 and "fail libft: could not fetch" in out and "pull nm: 1 commit(s)" in out
+
+
+def test_a_dry_run_of_refresh_changes_nothing_in_the_projects(world):
+    world.project("libft")
+    libft = world.local("libft")
+    world.commit("libft", "two")
+    before = git("rev-parse", "HEAD", cwd=libft)
+    code, out = world.run("refresh", CURSUS_DRY_RUN="1")
+    assert code == 0 and "dry  libft: would pull 1 commit(s) of main" in out and git("rev-parse", "HEAD", cwd=libft) == before
+    assert not (libft / "two.txt").exists()
+    code, out = world.run("refresh")
+    assert code == 0 and "pull libft: 1 commit(s)" in out
+
+
 # ---------------------------------------------------------------- init
 
 
@@ -497,8 +601,9 @@ def test_a_dry_run_of_init_creates_nothing(world):
 
 def test_the_make_targets_and_the_usage_line_exist():
     makefile = (ROOT / "Makefile").read_text()
-    for target, command in (("cursus-update", "update"), ("cursus-push", "push $(ONLY)"), ("cursus-sort", "sort $(MAP)"), ("cursus", "init")):
+    for target, command in (("cursus-update", "update"), ("cursus-push", "push $(ONLY)"), ("cursus-refresh", "refresh $(ONLY)"),
+                            ("cursus-sort", "sort $(MAP)"), ("cursus", "init")):
         assert f"\n{target}:\n\t@sh scripts/cursus.sh {command}\n" in makefile, target
         assert target in makefile.split(".PHONY:")[1].split()
     done = subprocess.run(["sh", str(SCRIPT), "nonsense"], capture_output=True, text=True)
-    assert done.returncode == 2 and "| update | push [name ...]" in done.stderr
+    assert done.returncode == 2 and "| update | push [name ...] | refresh [name ...]" in done.stderr

@@ -380,6 +380,7 @@ your own ssh keys):
 
 ```sh
 make cursus-push     # push your projects (all of ./projects) to their own GitHub repos
+make cursus-refresh  # pull the newest commits of every project of ./projects from its GitHub repo
 make cursus          # once: create the private GitHub repo (needs `brew install gh && gh auth login`)
 make cursus-sort     # add every git repo of ./projects to it as a submodule, in the folder of its subject PDF, and push
 make cursus-update   # move every submodule to the newest commit of its own GitHub repo, and push
@@ -392,6 +393,13 @@ The usual round after working on projects: `make cursus-push`, then `make cursus
   your latest commits visible to `sort` and `update`. It never forces: a project whose GitHub has commits you do not is
   reported (`git pull` it first) and the others are still pushed. Uncommitted changes are not pushed; a detached HEAD or a
   folder without an `origin` is skipped.
+- **`cursus-refresh`** is the other direction: it pulls every git repo in `./projects` from its own `origin`
+  (`make cursus-refresh ONLY="libft nm"`, `ONLY=cpp-modules` or `ONLY=cpp-modules/cpp00` for just those). It only
+  fast-forwards: no merge commit is ever made and nothing of yours is overwritten. A branch with commits GitHub does not have
+  (diverged), or uncommitted changes that the new commits would touch, is reported with nothing changed, the others are still
+  pulled and the command ends with an error. Uncommitted changes that are not in the way stay as they are; a detached HEAD, a
+  branch without an upstream and a folder without an `origin` are skipped. With `CURSUS_DRY_RUN=1` it fetches and says what it
+  would pull. A submodule inside a project (`netpractice/website`) is not touched.
 - **`cursus-sort`** adds a project at the commit its GitHub has (it warns when you have unpushed commits or uncommitted
   changes: run `cursus-push`). A name that matches no subject PDF needs `make cursus-sort MAP="ft_transcendence=common-core"`.
   A folder that is not a repository but holds some (`projects/cpp-modules/cpp00`, `cpp01`...) is a group: it is kept as a
@@ -403,7 +411,7 @@ The usual round after working on projects: `make cursus-push`, then `make cursus
   says per project what it did: `up common-core/libft: 69ba8fd -> 3c1e0a2`, `ok … already the newest`, `skip …`, `fail …`.
   A project that cannot be read (network, ssh key, deleted repository) is reported, makes the command end with an error,
   and does not stop the rest.
-- **Add `CURSUS_DRY_RUN=1`** (e.g. `make cursus-update CURSUS_DRY_RUN=1`) to see what would happen without pushing or creating
+- **Add `CURSUS_DRY_RUN=1`** (e.g. `make cursus-update CURSUS_DRY_RUN=1`) to see what would happen without pushing, pulling or creating
   anything. If a push is refused (someone else pushed meanwhile), run the command again.
 - Addresses are only followed over `file`, `git`, `http(s)` and `ssh`, never `ext::`, because project URLs come from repositories
   other people wrote. `CURSUS_REPO`, `CURSUS_URL`, `CURSUS_VISIBILITY` and `PROJECTS_DIR` change what is used; `CURSUS_DIR` and

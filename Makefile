@@ -94,6 +94,8 @@ models:
 # of them to do everything except pushing and creating.
 #   make cursus-push                 push your projects (all of ./projects) to their own GitHub repos, so the rest sees them
 #   make cursus-push ONLY="libft nm" ...or only these
+#   make cursus-refresh              pull the newest commits of every project of ./projects from its GitHub repo (fast-forward only)
+#   make cursus-refresh ONLY="libft" ...or only these
 #   make cursus                      create the private GitHub repo (once)
 #   make cursus-sort                 add what is in the projects folder to it as submodules, and push
 #                                    (a folder of repos, e.g. cpp-modules/, stays a folder: common-core/cpp-modules/cpp00)
@@ -111,10 +113,13 @@ cursus-update:
 cursus-push:
 	@sh scripts/cursus.sh push $(ONLY)
 
+cursus-refresh:
+	@sh scripts/cursus.sh refresh $(ONLY)
+
 # The Verdict extension (terminal/vscode/verdict) is tested in node with a fake editor: tests/test_extension.py runs those tests when node
 # is installed. This also installs, once and next to the tests, the TextMate engine that checks the colours of the ignore files.
 test-extension:
 	@cd tests/js && npm install --no-audit --no-fund --silent
 	@uv run pytest tests/test_extension.py -q
 
-.PHONY: all build run clean fclean re models token url ssh pubkeys cursus cursus-sort cursus-update cursus-push test-extension
+.PHONY: all build run clean fclean re models token url ssh pubkeys cursus cursus-sort cursus-update cursus-push cursus-refresh test-extension
