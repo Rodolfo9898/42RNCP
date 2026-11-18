@@ -4,7 +4,7 @@ claude writes a free-form report (kept as claude-review.md) and ends it with one
 merged into verdict.md, so the document stays one readable page instead of two. Everything in it is checked: unknown
 requirement numbers are ignored, and a cited file or line that does not exist is dropped rather than shown.
 
-A block with a "fixes" key is an update, written after claude fixed something: it is laid over the previous report, so it only
+A block with a "fixes" key (or without "items") is an update, written after claude fixed something or settled points with the evaluator: it is laid over the previous report, so it only
 has to say what changed.
 """
 
@@ -149,7 +149,7 @@ def parse_report(markdown: str, items: list[ReviewItem], files: dict[str, int], 
             reviews[rule_id] = AIReview(
                 rule_id=rule_id, assessment=status, finding=_text(entry.get("note"), 700),
                 why_manual=_text(entry.get("check_by_hand"), 400), evidence=citations(entry.get("evidence"), files), by="Claude")
-    is_fix_report = "fixes" in data
+    is_fix_report = "fixes" in data or "items" not in data     # a block that answers no requirement can only be an update
     layered = is_fix_report and previous is not None and previous.structured
     if layered:
         reviews = {**(previous_reviews or {}), **reviews}

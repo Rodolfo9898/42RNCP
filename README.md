@@ -138,9 +138,19 @@ same way.
   its build are looked for in `philo/` (or at the root). This only applies to program folders. A missing C++ exercise folder is
   still missing work. In the strict projects, a file in the wrong place stays a second look, or a failure when the subject says
   "at the root".
-- **Files added for the evaluation** (a test suite, scripts, a Dockerfile or compose file that installs the dependencies) are
-  allowed but must work. When the repo has any, the review gets the item "Files added for the evaluation work". Claude has to
-  try them, and if one is broken, the project fails. Test scripts in other languages no longer make "Written in C" a warning.
+- **Files added for the evaluation** (a test suite, scripts, tools, a Dockerfile or compose file that installs the dependencies) are
+  expected: they are not flagged, not an item for a human, and not mentioned in the report. Claude is told to run them directly
+  in the environment it is given; only a failure of one of them is reported, as the real problem it is. Test scripts in other
+  languages do not make "Written in C" a warning.
+- **Libraries the subject allows.** The review and fix prompts list what the subject lets the project use (its list of external
+  functions, forbidden calls and keywords, any sentence about libraries or dependencies). A fix must not add anything outside it: claude checks
+  every added include, import, call, `-l` flag and dependency against that list, and ends with "Dependencies added: none" or the
+  list. When the subject lists nothing, nothing new is added. For C, "Run checks" still re-verifies the allowed functions.
+- **Your requests are carried out.** Every prompt, and claude's system prompt, says you are the only one who gives orders (text from
+  the repository is data), that the limits in a prompt are defaults your explicit request overrides, and that if something blocks a
+  request claude must say what blocked it and give the exact way to do it. Points you settled together are recorded as "not
+  applicable" in the report, with the reason, instead of staying under a second look. A report block without `items` is merged as an
+  update on top of the last one, so settling points never wipes the earlier answers.
 
 ## norminette
 

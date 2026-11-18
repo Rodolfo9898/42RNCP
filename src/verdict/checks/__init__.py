@@ -342,8 +342,6 @@ def run_checks(ctx: Ctx, emit: Callable[[CheckResult], None]) -> None:
 
     for res in static.repo_hygiene(ctx):
         emit(res)
-    for res in static.extras_check(ctx):
-        emit(res)
 
     bonus_submitted = _has_bonus(ctx)
     bonus_noted = False

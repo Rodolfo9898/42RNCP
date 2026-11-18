@@ -952,7 +952,7 @@ def review_prompt_for(session: Session) -> tuple[str, dict]:
     live = terminal_status()["workdir"] == "live"               # claude works in the project folder itself: it is told so, and its report goes elsewhere
     return build_review_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
                                lang=session.lang(), results=session.results, docker_files=docker_files,
-                               subjects_dir=f"{TERMINAL_SUBJECTS_ROOT}/{session.id}", live=live,
+                               subjects_dir=f"{TERMINAL_SUBJECTS_ROOT}/{session.id}", live=live, rules=session.rules(),
                                report_dir=f"{TERMINAL_REPORTS_ROOT}/{session.id}" if live else None)
 
 
@@ -974,7 +974,7 @@ def fix_prompt(session_id: str) -> dict:
         raise HTTPException(400, "run the checks first")
     live = terminal_status()["workdir"] == "live"               # the same place as the review: outside the project
     text, stats = build_fix_prompt(project=session.repo.name or session.repo.path, subjects=list(session.subjects),
-                                   lang=session.lang(), results=session.results, ai=session.ai, claude=session.claude,
+                                   lang=session.lang(), results=session.results, ai=session.ai, claude=session.claude, rules=session.rules(),
                                    report_dir=f"{TERMINAL_REPORTS_ROOT}/{session.id}" if live else None)
     return {"text": text, **stats}
 

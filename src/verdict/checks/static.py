@@ -265,39 +265,6 @@ def libft_copy(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
                      evidence=[Evidence(file=u) for u in users])
 
 
-# --------------------------------------------------------------------------- files added for the evaluation
-
-EXTRA_DIRS = re.compile(r"^(tests?|testers?|unit_?tests?|test_?suite|testing|checker_?tests?|scripts?|tools)$", re.I)
-EXTRA_SUFFIXES = {".sh", ".bash", ".zsh", ".py", ".rb", ".pl", ".js", ".ts"}
-DOCKER_NAME = re.compile(r"(dockerfile(\.[\w-]+)?|[\w.-]+\.dockerfile|(docker-)?compose(\.[\w-]+)?\.ya?ml)", re.I)
-
-
-def evaluation_extras(ctx: Ctx) -> list[str]:
-    """Files that the subject does not ask for and that serve to evaluate or run the project: test suites, scripts, Docker files."""
-    found: dict[str, None] = {}
-    for rel in ctx.files():
-        if ctx.is_vendored(rel) or rel.name.startswith(".") and rel.suffix not in EXTRA_SUFFIXES:
-            continue
-        folder = next((part for part in rel.parts[:-1] if EXTRA_DIRS.match(part)), None)
-        if folder:
-            found.setdefault("/".join(rel.parts[: rel.parts.index(folder) + 1]) + "/")
-        elif rel.suffix.lower() in EXTRA_SUFFIXES or DOCKER_NAME.fullmatch(rel.name):
-            found.setdefault(rel.as_posix())
-        if len(found) >= 12:
-            break
-    return list(found)
-
-
-def extras_check(ctx: Ctx) -> Iterable[CheckResult]:
-    extras = evaluation_extras(ctx)
-    if extras:
-        yield result(None, "manual",
-                     f"The repository has files added for the evaluation: {', '.join(f'`{e}`' for e in extras)}. That is allowed, but they "
-                     "must work: run them (the test suite, the scripts, `docker build` / `docker compose up --build`). If one is broken, the "
-                     "project fails because of it.",
-                     title="Files added for the evaluation work", evidence=[Evidence(file=e.rstrip("/")) for e in extras], auto=False)
-
-
 def _has_target(makefile: str, target: str) -> bool:
     if target == "NAME":
         return bool(re.search(r"^\s*NAME\s*[:+?]?=", makefile, re.M) or re.search(r"^\$\(NAME\)\s*:", makefile, re.M))
@@ -331,9 +298,8 @@ def language(ctx: Ctx, rule: Rule) -> Iterable[CheckResult]:
     elif not any(p.suffix == ".c" for p in ctx.files()):
         yield result(rule, "fail", "No .c files found.")
     elif other:
-        # Test scripts and tools added for the evaluation are allowed (they must work: see "Files added for the evaluation work").
-        yield result(rule, "pass", f"The project is written in C. The {len(other)} file(s) in other languages are extras such as test scripts, "
-                                   "which are allowed as long as they work.",
+        yield result(rule, "pass", f"The project is written in C. The {len(other)} file(s) in other languages (test scripts, tools) are "
+                                   "not part of the C code and do not count against it.",
                      evidence=[Evidence(file=p.as_posix()) for p in other[:20]])
     else:
         yield result(rule, "pass", "Only C sources found.")

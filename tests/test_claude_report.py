@@ -212,3 +212,16 @@ def test_a_correction_with_no_usable_status_is_reported():
     rep, _ = parse_report(report({"items": [], "corrections": [{"check": "A", "status": "banana", "actually": "y"}, {"check": "B", "status": "bonus", "actually": "z", "section": "bonus"}]}), ITEMS, FILES)
     assert [c.status for c in rep.corrections] == ["unclear", "unclear"] and rep.corrections[1].section == "bonus"
     assert sum("no usable status" in p for p in rep.problems) == 2
+
+
+def test_a_block_without_items_is_an_update_that_keeps_the_earlier_answers():
+    """Settling points with the evaluator writes only corrections and a verdict: that must not wipe the item answers."""
+    from verdict.claude_report import parse_report
+    from verdict.models import ReviewItem
+    items = [ReviewItem(n=1, text="a", rule_ids=["r1"]), ReviewItem(n=2, text="b", rule_ids=["r2"])]
+    full = '```json\n{"items": [{"n": 1, "status": "likely ok", "note": "fine"}, {"n": 2, "status": "unclear", "note": "?"}], "verdict": {"decision": "pass with reservations", "reason": "x"}}\n```'
+    first, reviews = parse_report(full, items, {})
+    update = '```json\n{"corrections": [{"check": "Needs manual review", "status": "not applicable", "actually": "settled with the evaluator"}], "verdict": {"decision": "ready to pass", "reason": "y"}}\n```'
+    second, merged = parse_report(update, items, {}, previous=first, previous_reviews=reviews)
+    assert set(merged) == {"r1", "r2"} and second.assessed == 2                      # earlier answers stay
+    assert second.verdict.decision == "ready to pass" and second.corrections[0].status == "not_applicable"

@@ -3,14 +3,14 @@
 - "Copy X into your repository" is met by any way of getting it there (a submodule, a download by the Makefile).
 - MiniLibX is given to the students: no Norm for it, whatever its folder is called.
 - The layout of the files to turn in is binding only for libft, ft_printf and get_next_line.
-- Files added for the evaluation (tests, scripts, Docker) are allowed, but must work.
+- Files added for the evaluation (tests, scripts, Docker) are expected: never flagged, run directly.
 """
 
 from pathlib import Path
 
 from verdict import ai
 from verdict.checks import Ctx, minilibx_dirs, run_checks
-from verdict.checks.static import evaluation_extras, libft_copy, required_files
+from verdict.checks.static import libft_copy, required_files
 from verdict.models import CheckResult, Rule, Source
 from verdict.prompts import build_fix_prompt, build_review_prompt
 from verdict.repo import tracked_files
@@ -61,7 +61,7 @@ def test_only_libft_ft_printf_and_get_next_line_have_a_binding_layout():
         assert not strict_layout([name]), name
     assert "respect the subject's format exactly" in evaluation_rules(["libft.pdf"])
     loose = evaluation_rules(["philosophers.pdf"])
-    assert "DRY" in loose and "include/" in loose and "submodule" in loose and "MiniLibX" in loose and "must work" in loose
+    assert "DRY" in loose and "include/" in loose and "submodule" in loose and "MiniLibX" in loose and "never a finding" in loose
 
 
 # ---------------------------------------------------------------- the layout is free outside the strict projects
@@ -223,24 +223,20 @@ def test_required_files_that_only_appear_after_make_count(tmp_path, local_sandbo
 # ---------------------------------------------------------------- files added for the evaluation
 
 
-def test_files_added_for_the_evaluation_are_allowed_but_must_be_tried(tmp_path):
+def test_files_added_for_the_evaluation_are_never_flagged(tmp_path):
     repo = project(tmp_path, ["Makefile", "main.c", "philo.h", "tests/run.sh", "tests/cases/a.txt", "tester.py", "Dockerfile",
                               "mlx/test.sh"])
-    assert evaluation_extras(Ctx(repo=repo.resolve(), rules=[], sandbox=None, lang="c")) == ["Dockerfile", "tester.py", "tests/"]
     spec = parse_subject("philosophers.pdf", ["Chapter I\nMandatory part\nYour project must be written in C.\n"])
     results: list[CheckResult] = []
     run_checks(Ctx(repo=repo.resolve(), rules=spec.rules, sandbox=None, lang="c"), results.append)
-    extras = next(r for r in results if r.title == "Files added for the evaluation work")
-    assert extras.status == "manual" and "must work" in extras.detail and "fails" in extras.detail
+    assert not any("evaluation" in (r.title + r.detail).lower() for r in results)        # no item, no mention
     language = next(r for r in results if r.title == "Written in C")
-    assert language.status == "pass" and "test scripts" in language.detail
+    assert language.status == "pass" and "test scripts" in language.detail and "allowed" not in language.detail
 
 
-def test_no_extras_no_item(tmp_path):
-    repo = project(tmp_path, ["Makefile", "main.c"])
-    results: list[CheckResult] = []
-    run_checks(Ctx(repo=repo.resolve(), rules=[], sandbox=None, lang="c"), results.append)
-    assert not any(r.title == "Files added for the evaluation work" for r in results)
+def test_the_prompts_tell_claude_to_just_run_the_evaluation_files():
+    review, _ = build_review_prompt(project="philo", subjects=["philosophers.pdf"], lang="c", results=[])
+    assert "never a finding" in review and "do not mention them" in review and "directly" in review
 
 
 # ---------------------------------------------------------------- the prompts say the same
