@@ -78,7 +78,7 @@ def test_it_tells_claude_the_copy_is_unbuilt_and_that_it_can_build_and_run_it():
     prompt, _ = build()
     assert "only the files they committed, nothing has been built or run" in prompt
     assert "is not from the student's commit" in prompt
-    for tool in ("cc and c++", "make", "valgrind", "gdb", "norminette"):
+    for tool in ("cc and c++", "make", "nasm", "valgrind", "gdb", "norminette"):
         assert tool in prompt
     assert "from scratch: build it with its own Makefile" in prompt and "bad input" in prompt
     assert "do not take it on faith either" in prompt

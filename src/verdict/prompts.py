@@ -168,7 +168,7 @@ I am the evaluator: {EVALUATOR} (my 42 login; my email, for a 42 header the Norm
 
 CONTEXT
 - {where}
-- You have the same basic toolchain as the review sandbox: cc and c++, make, valgrind, gdb and norminette, with the readline and X11 headers. Anything beyond those basics is meant to come from a Docker setup the student ships.
+- You have the same basic toolchain as the review sandbox: cc and c++, make, nasm, valgrind, gdb and norminette, with the readline and X11 headers. Anything beyond those basics is meant to come from a Docker setup the student ships.
 - Docker: the `docker` client is installed and DOCKER_HOST points to a separate, rootless Docker daemon that has internet access for package downloads and holds nothing else (it is not the evaluator's own Docker). {docker_hint}
 {subject_files}- Automated scripts already checked what is listed below. Do not redo it, but do not take it on faith either: if anything you see contradicts it, say so.
   Passed:

@@ -33,6 +33,7 @@ PROBES = [
     ("docker client", ["docker", "--version"], True),
     ("docker compose", ["docker", "compose", "version"], True),
     ("docker daemon", ["docker", "info", "--format", "{{.ServerVersion}}"], True),
+    ("nasm (assembler)", ["nasm", "--version"], False),
     ("valgrind", ["valgrind", "--version"], False),
     ("norminette", ["norminette", "--version"], False),
     ("virtual display (Xvfb, for programs with a window)", ["xdpyinfo"], False),

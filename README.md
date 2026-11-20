@@ -160,7 +160,7 @@ the reviewed one. Bump `NORMINETTE_REF` and `NORMINETTE_COMMIT` in `sandbox/Dock
 
 ## Docker, C, C++ and make: the environment
 
-The sandbox (and claude's terminal) provide the basics: **cc, c++, make**, valgrind, norminette, and the **Docker client**
+The sandbox (and claude's terminal) provide the basics: **cc, c++, make**, **nasm**, valgrind, norminette, and the **Docker client**
 with `docker compose`. Anything a project needs beyond that is expected to come from a Dockerfile or compose file the student
 ships: the review builds and runs it, rather than the app trying to install everything.
 
@@ -234,7 +234,7 @@ run `make`, valgrind, norminette or claude yourself. Splits, tabs, moving a term
 terminal feature work as usual. With `TERMINAL_WORKDIR=copy`, the claude of **AI Review** works in a throw-away copy instead of
 the project (see *Safety* above); terminals you open yourself are always in the real folders.
 
-It is the terminal container, not the sandbox: same toolchain (cc, c++, make, valgrind, gdb, norminette, the readline and X11
+It is the terminal container, not the sandbox: same toolchain (cc, c++, make, nasm, valgrind, gdb, norminette, the readline and X11
 headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
 checks has no network, so it cannot answer questions like "does `apt-get install` work here". Two limits to know when you
 experiment:

@@ -1,5 +1,5 @@
 # The `terminal` service: claude (Claude Code) in its own container, away from the web app's secrets.
-# It has the SAME toolchain as the sandbox (cc/c++, make, valgrind, norminette, readline and X11 headers), so claude
+# It has the SAME toolchain as the sandbox (cc/c++, make, nasm, valgrind, norminette, readline and X11 headers), so claude
 # can build and run the student's project itself instead of only reading it. Keep the packages in step with sandbox/Dockerfile.
 
 # ---- stage 1: claude (Claude Code), pinned
@@ -53,7 +53,7 @@ COPY --from=claude /opt/claude /opt/claude
 ENV PATH="/opt/claude/bin:${PATH}"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat poppler-utils ripgrep build-essential make valgrind gdb clangd vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev xvfb x11-utils \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client socat poppler-utils ripgrep build-essential make nasm valgrind gdb clangd vim nano zsh libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev xvfb x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # A virtual X display for programs with a window (MiniLibX): the service starts Xvfb and gives claude and the shell DISPLAY=:99.
