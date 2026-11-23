@@ -5,5 +5,6 @@ mads-hartmann.bash-ide-vscode
 mhutchie.git-graph
 ms-pyright.pyright
 redhat.vscode-yaml
+squarewave.arm-asm-syntax
 tamasfe.even-better-toml
 tejasvi.rainbow-brackets-2
