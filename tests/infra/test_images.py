@@ -207,11 +207,8 @@ def test_the_terminal_starts_through_the_shared_entrypoint_but_still_runs_as_the
     assert final.rstrip().splitlines()[-1].startswith("CMD ")
 
 
-def test_claude_and_the_shell_work_in_the_project_by_default_and_the_copy_is_one_setting_away():
-    block = without_comments(services()["terminal"])
-    assert "TERMINAL_WORKDIR: ${TERMINAL_WORKDIR:-live}" in block                       # live unless TERMINAL_WORKDIR=copy
-    for other in ("web", "sandbox", "dind"):
-        assert "TERMINAL_WORKDIR" not in without_comments(services()[other]), other     # the web app asks the terminal, so the two cannot disagree
+def test_claude_works_in_the_project_folder_and_there_is_no_setting_for_a_copy():
+    assert "TERMINAL_WORKDIR" not in COMPOSE and "TERMINAL_WORKDIR" not in (ROOT / ".env.example").read_text()
 
 
 def test_the_editor_has_the_c_language_server_its_extension_is_set_to_use():

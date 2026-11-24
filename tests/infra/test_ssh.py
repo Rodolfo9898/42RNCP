@@ -13,54 +13,6 @@ from tests.paths import SCRIPTS
 ENTRYPOINT = SCRIPTS / "container" / "entrypoint.sh"
 
 
-# ---------------------------------------------------------------- ssh_status
-
-
-def fake_ssh_add(monkeypatch, rc, stdout="", stderr=""):
-    monkeypatch.setattr(repo.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], rc, stdout, stderr))
-
-
-def test_status_without_agent(monkeypatch):
-    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
-    status = repo.ssh_status()
-    assert (status["ok"], status["code"]) == (False, "no-agent")
-
-
-def test_status_with_missing_socket(monkeypatch, tmp_path):
-    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "nope.sock"))
-    assert repo.ssh_status()["code"] == "no-socket"
-
-
-@pytest.fixture
-def sock_file(monkeypatch, tmp_path):
-    path = tmp_path / "agent.sock"
-    path.write_text("")
-    monkeypatch.setenv("SSH_AUTH_SOCK", str(path))
-    return path
-
-
-def test_status_ok_lists_keys(monkeypatch, sock_file):
-    fake_ssh_add(monkeypatch, 0, stdout="256 SHA256:abc me@laptop (ED25519)\n3072 SHA256:def work (RSA)\n")
-    status = repo.ssh_status()
-    assert status["ok"] and len(status["keys"]) == 2 and "2 key" in status["message"]
-
-
-def test_status_agent_without_keys(monkeypatch, sock_file):
-    fake_ssh_add(monkeypatch, 1, stdout="The agent has no identities.\n")
-    status = repo.ssh_status()
-    assert (status["ok"], status["code"]) == (False, "no-keys") and "ssh-add" in status["message"]
-
-
-def test_status_permission_denied(monkeypatch, sock_file):
-    fake_ssh_add(monkeypatch, 2, stderr="Error connecting to agent: Permission denied\n")
-    assert repo.ssh_status()["code"] == "permission"
-
-
-def test_status_other_connection_error(monkeypatch, sock_file):
-    fake_ssh_add(monkeypatch, 2, stderr="Could not open a connection to your authentication agent.\n")
-    assert repo.ssh_status()["code"] == "unreachable"
-
-
 # ---------------------------------------------------------------- clone errors
 
 

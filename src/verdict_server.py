@@ -1,5 +1,5 @@
 """Main of the review app (the `web` container): `uvicorn verdict_server:app`."""
 
-from verdict.app.server import app
+from verdict.app.factory import create_app
 
-__all__ = ["app"]
+app = create_app()

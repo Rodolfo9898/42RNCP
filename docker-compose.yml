@@ -66,14 +66,14 @@ services:
       timeout: 3s
       retries: 10
 
-  # `claude` for the in-app terminal and the one-click review. It gets internet (to reach Anthropic) but none of the
+  # `claude` for the editor's terminals and the one-click review. It gets internet (to reach Anthropic) but none of the
   # web app's secrets: no .env, no ssh-agent, no other sessions. The projects folder is mounted read-write (set
-  # TERMINAL_PROJECTS_MODE=ro to make it read-only again). By default claude and the shell work IN that folder (TERMINAL_WORKDIR=live),
-  # so what they change is on your machine at once; TERMINAL_WORKDIR=copy makes them work on throw-away copies in /scratch instead.
+  # TERMINAL_PROJECTS_MODE=ro to make it read-only again). claude and the shell work IN that folder, so what they change is on
+  # your machine at once.
   # Your Claude login lives in the `claude-home` volume. Your public keys (~/.ssh/*.pub only) are in ~/.ssh, read-only.
   # It is also the editor: VS Code in the browser (OpenVSCode Server) on http://localhost:8000, with the toolchain and claude in its
   # terminals. Open it with the link `make run` prints (?tkn=EDITOR_TOKEN). Extensions come from Open VSX; config/extensions.txt is
-  # their list, installed at start and kept in step with what you install or uninstall (see src/verdict/editor.py).
+  # their list, installed at start and kept in step with what you install or uninstall (see src/terminal/editor).
   terminal:
     build:
       context: .
@@ -84,7 +84,6 @@ services:
       TERMINAL_TOKEN: ${TERMINAL_TOKEN:?run `make run` (it creates TERMINAL_TOKEN in .env)}
       EDITOR_TOKEN: ${EDITOR_TOKEN:?run `make run` (it creates EDITOR_TOKEN in .env)}
       VERDICT_API: http://web:8000
-      TERMINAL_WORKDIR: ${TERMINAL_WORKDIR:-live}
       DOCKER_HOST: tcp://dind:2375     # claude can build and run a student's Dockerfile on the separate daemon below
     networks: [default, docker-net]
     volumes:

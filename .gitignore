@@ -2,13 +2,14 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-workspace/
+/workspace/
 .DS_Store
-projects/
+/projects/
 .env
 .ssh-pub/
 node_modules/
-artifacts/
+/artifacts/
 .session/
 .scraper-venv/
 .debug/
+.claude/worktrees/

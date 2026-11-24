@@ -1,6 +1,8 @@
 """Main of the sandbox (the `sandbox` container): runs commands for the review, with no network. Standard library only."""
 
-from sandbox.runner import main
+import os
+
+from sandbox.service.serve import serve
 
 if __name__ == "__main__":
-    main()
+    serve(os.environ)

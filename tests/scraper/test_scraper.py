@@ -8,24 +8,24 @@ from pathlib import Path
 import httpx
 import pytest
 
-from scraper.__main__ import main
-from scraper.auth import Authenticator, SessionManager
-from scraper.catalog import Catalog
-from scraper.cli import CommandFactory, build_parser
-from scraper.commands import PlanCommand, ScrapeCommand, select_targets
-from scraper.config import DATA, ROOT, Settings
-from scraper.debug import NullDumper
-from scraper.download import FileDownloader
-from scraper.exceptions import ScraperError
-from scraper.http import HttpClient
-from scraper.intra import FileCollector, IntraGateway, ProjectReader, SIGNIN_URL
-from scraper.library import Library
-from scraper.models import Link, Stats
-from scraper.names import key, stem
-from scraper.page import PageParser
-from scraper.reporting import Reporter
-from scraper.tracks import TRACKS, Target, build_plan, rncp_ids
-from scraper.utils import load_env, prune_empty
+from scraper.cli.main import main
+from scraper.site.login import Authenticator, SessionManager
+from scraper.plan.catalog import Catalog
+from scraper.cli.parser import CommandFactory, build_parser
+from scraper.cli.commands import PlanCommand, ScrapeCommand, select_targets
+from scraper.core.config import DATA, ROOT, Settings
+from scraper.core.debug import NullDumper
+from scraper.storage.download import FileDownloader
+from scraper.core.exceptions import ScraperError
+from scraper.site.http import HttpClient
+from scraper.site.gateway import FileCollector, IntraGateway, ProjectReader, SIGNIN_URL
+from scraper.storage.library import Library
+from scraper.core.models import Link, Stats
+from scraper.plan.names import key, stem
+from scraper.site.page import PageParser
+from scraper.core.reporting import Reporter
+from scraper.plan.tracks import TRACKS, Target, build_plan, rncp_ids
+from scraper.core.utils import load_env, prune_empty
 
 PDF = b"%PDF-1.4\n" + b"x" * 2000
 
@@ -134,7 +134,7 @@ def run_scrape(tmp: Path, site: FakeSite, targets: list[Target], **kw) -> tuple[
 
 
 def target(track: str, slug: str, pid: int = 1, name: str = "") -> Target:
-    from scraper.catalog import Project
+    from scraper.plan.catalog import Project
     return Target(track, Project(pid, name or slug, slug))
 
 
@@ -514,15 +514,14 @@ def test_main_runs_a_selected_project_and_turns_errors_into_messages(tmp_path):
         main(["-p", "nope"], settings=settings(tmp_path), reporter=reporter, factory=factory)
 
 
-def test_the_library_the_scraper_writes_is_the_one_the_app_reads(tmp_path, monkeypatch):
-    """A downloaded PDF lands where verdict's library endpoint looks: samples/<track>/<name>.pdf."""
-    from verdict.app import server as app
-    assert set(TRACKS) == set(app.TRACKS)
+def test_the_library_the_scraper_writes_is_the_one_the_app_reads(tmp_path):
+    """A downloaded PDF lands where verdict's library looks: samples/<track>/<name>.pdf."""
+    from verdict.library.catalog import TRACKS as APP_TRACKS, LibraryService
+    assert set(TRACKS) == set(APP_TRACKS)
     site = FakeSite()
     site.add_project("cpp-module-02", "CPP Module 02")
     run_scrape(tmp_path, site, [target("common-core", "cpp-module-02")])
-    monkeypatch.setattr(app, "SAMPLES", tmp_path / "samples")
-    assert "common-core/cpp02.pdf" in app.library_files()
+    assert "common-core/cpp02.pdf" in LibraryService(tmp_path / "samples").files()
 
 
 # --------------------------------------------------------------------- what must never end up in git or an image
@@ -530,7 +529,7 @@ def test_the_library_the_scraper_writes_is_the_one_the_app_reads(tmp_path, monke
 
 def test_artifacts_and_the_login_session_stay_out_of_git_and_the_docker_build():
     gitignore = (ROOT / ".gitignore").read_text().split()
-    for entry_ in ("artifacts/", ".session/", ".scraper-venv/"):
+    for entry_ in ("/artifacts/", ".session/", ".scraper-venv/"):
         assert entry_ in gitignore, f"{entry_} must be in .gitignore"
     for ignore in sorted((ROOT / "docker").glob("*/Dockerfile.dockerignore")):          # every image: only what its Dockerfile copies in
         lines = ignore.read_text().split()

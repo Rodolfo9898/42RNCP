@@ -33,7 +33,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates build-essential make nasm valgrind vim nano libreadline-dev libx11-dev libxext-dev libbsd-dev zlib1g-dev xvfb x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# A virtual X display for programs with a window (MiniLibX): runner.py starts Xvfb and gives every command DISPLAY=:99.
+# A virtual X display for programs with a window (MiniLibX): the sandbox service (src/sandbox) starts Xvfb and gives every command DISPLAY=:99.
 RUN command -v Xvfb && command -v xdpyinfo
 
 # A project's submodules, with no key: there is no ssh client here, so a git@github.com: address is read as https://github.com/ and a

@@ -11,7 +11,7 @@ from tests.paths import DOCKER, ROOT, SCRIPTS, SRC
 EXAMPLE = (ROOT / ".env.example").read_text()
 COMPOSE = (ROOT / "docker-compose.yml").read_text()
 MAKEFILE = (ROOT / "Makefile").read_text()
-SCRAPER_CONFIG = (SRC / "scraper" / "config.py").read_text()
+SCRAPER_CONFIG = (SRC / "scraper" / "core" / "config.py").read_text()
 SETUP = SCRIPTS / "env" / "env-setup.sh"
 
 

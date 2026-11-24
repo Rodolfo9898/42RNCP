@@ -34,11 +34,11 @@ class SandboxError(RuntimeError):
 
 
 class Sandbox:
-    """Client for sandbox/runner.py. Everything run on behalf of a repo goes through here."""
+    """Client for the sandbox service (src/sandbox). Everything run on behalf of a repo goes through here."""
 
     def __init__(self, url: str, env: dict[str, str] | None = None):
         self.url = url.rstrip("/")
-        self.env = dict(env or {})          # added to every command this client runs (see sandbox/runner.py for what is accepted)
+        self.env = dict(env or {})          # added to every command this client runs (see src/sandbox/request for what is accepted)
 
     def with_env(self, env: dict[str, str]) -> Sandbox:
         """The same sandbox, with extra variables for the commands run through the returned client."""
