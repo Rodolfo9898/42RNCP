@@ -16,7 +16,7 @@ is the one at the top of its `verdict.md`).
 | ft_printf | ⬜ |
 | ft_ssl_des | ✅ |
 | ft_ssl_md5 | ✅ |
-| ft_ssl_rsa | ⬜ |
+| ft_ssl_rsa | ✅ |
 | get_next_line | ⬜ |
 | inception | ⬜ |
 | lem_in | ✅ |
@@ -26,7 +26,7 @@ is the one at the top of its `verdict.md`).
 | netpractice | ⬜ |
 | philosophers | ⬜ |
 | push_swap | ✅ |
-| rubik | ⬜ |
+| rubik | ✅ |
 | scop | ⬜ |
 | webserv | ⬜ |
 

@@ -3,9 +3,6 @@ scop
 particle-system
 ft_vox
 ft_minecraft
-ft_ssl_des
-ft_ssl_rsa
-dr-quine
 abstract-vm
 ft_lex
 ft_yacc
