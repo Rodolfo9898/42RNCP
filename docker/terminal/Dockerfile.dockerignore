@@ -9,3 +9,5 @@
 !docker/terminal/editor-settings.json
 **/__pycache__
 **/node_modules
+# The extension is built in the image (the `extension` stage): a compiled copy made here must not be sent.
+src/extension/out

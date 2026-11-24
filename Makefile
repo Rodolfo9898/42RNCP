@@ -139,9 +139,12 @@ samples-plan: $(SCRAPE_VENV)/.ready
 samples: $(SCRAPE_VENV)/.ready
 	@$(SCRAPE_VENV)/bin/python src/subject_scraper.py $(ARGS)
 
-# The Verdict extension (src/extension) is tested in node with a fake editor: tests/extension/test_extension.py runs those tests when node
-# is installed. This also installs, once and next to the tests, the TextMate engine that checks the colours of the ignore files.
+# The Verdict extension (src/extension) is TypeScript. Its tests (tests/extension) are TypeScript too: tests/extension/test_extension.py
+# compiles both with the extension's own compiler and runs them in node with a fake editor (skipped, with the reason, when node 20+ or
+# the compiler is missing). This installs, once and next to each, the compiler and typings (src/extension) and the TextMate engine that
+# checks the colours of the ignore files (tests/extension). To build the extension by hand: cd src/extension && npm install && npm run build
 test-extension:
+	@cd src/extension && npm install --no-audit --no-fund --silent
 	@cd tests/extension && npm install --no-audit --no-fund --silent
 	@uv run pytest tests/extension/test_extension.py -q
 

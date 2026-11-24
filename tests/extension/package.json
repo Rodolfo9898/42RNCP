@@ -1,7 +1,7 @@
 {
   "name": "verdict-extension-tests",
   "private": true,
-  "description": "Only the grammar test needs these (make test-extension installs them); the other tests run with node alone.",
+  "description": "What only the grammar test needs (make test-extension installs it). The tests are TypeScript, compiled with the extension's own compiler (src/extension), and run with node.",
   "devDependencies": {
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"

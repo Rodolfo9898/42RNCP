@@ -1,19 +1,9 @@
-"use strict";
+// The page of a subject PDF viewer: what is inside the tab. It is plain images, no PDF is ever run, and the page has no way to
+// reach the network (its content security policy allows nothing but its own script and the images it is handed).
 
-// A subject PDF opened in the editor: the pages of the PDF as images, one under the other, scrolled like any document.
-//  - A click on a subject of the Subjects view opens it; a click on "From push_swap.pdf, page 3" of a check opens it at that page.
-//  - The pages come from the web app (the same images the old browser UI showed), one at a time and only when they are near the
-//    screen, so a 40-page subject opens at once. The page is plain images: no PDF is ever run, and the page has no way to reach the
-//    network (its content security policy allows nothing but its own script and the images it is handed).
-//  - One tab per PDF: opening it again goes to that tab, at the page asked for.
+/** What the page is told: the PDF's name, how many pages it has, and the one to show first. */
+export interface PageConfig { name: string; pages: number; page: number }
 
-const vscode = require("vscode");
-const crypto = require("crypto");
-
-const MAX_PAGES = 400;
-const panels = new Map();           // subject name -> its tab
-
-const pageOf = (value, pages) => Math.min(Math.max(Number.isInteger(Number(value)) ? Number(value) : 1, 1), pages);
 
 // What runs inside the tab. (A string, not a file: it has to be inlined, with the nonce, to be allowed to run.)
 const PAGE_SCRIPT = `
@@ -100,7 +90,7 @@ figure.failed img { background: var(--vscode-inputValidation-errorBackground, #5
 figcaption { text-align: center; opacity: 0.6; font-size: 11px; padding: 4px 0; }
 `;
 
-function pageHtml(nonce, config) {
+export function pageHtml(nonce: string, config: PageConfig): string {
   const data = JSON.stringify(config).replace(/</g, "\\u003c");     // the name comes from a file name: it cannot close the script
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -115,53 +105,3 @@ function pageHtml(nonce, config) {
 <script nonce="${nonce}">${PAGE_SCRIPT}</script>
 </body></html>`;
 }
-
-/** Open (or go to) the PDF of a subject of the review. `deps`: session() and fetchPage(name, n) -> Buffer. */
-async function open(deps, name, page) {
-  const subject = (deps.session()?.subjects || []).find((s) => s.name === name);
-  if (!subject) throw new Error(`${name || "that PDF"} is not a subject of this review`);
-  const pages = Math.min(Number(subject.pages) || 0, MAX_PAGES);
-  if (!pages) throw new Error(`${name} has no pages to show`);
-  const target = pageOf(page, pages);
-
-  const existing = panels.get(name);
-  if (existing) {
-    existing.reveal();
-    existing.webview.postMessage({ t: "goto", page: target });
-    return;
-  }
-  const panel = vscode.window.createWebviewPanel("verdict.subject", name, vscode.ViewColumn.Active,
-    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
-  panel.iconPath = undefined;
-  panels.set(name, panel);
-  panel.onDidDispose(() => { if (panels.get(name) === panel) panels.delete(name); });
-  panel.webview.onDidReceiveMessage(async (message) => {
-    if (!message || message.t !== "page" || !Number.isInteger(message.n) || message.n < 1 || message.n > pages) return;
-    try {
-      const png = await deps.fetchPage(name, message.n);
-      panel.webview.postMessage({ t: "page", n: message.n, src: `data:image/png;base64,${png.toString("base64")}` });
-    } catch (err) {
-      panel.webview.postMessage({ t: "error", n: message.n, text: String(err.message || err).slice(0, 200) });
-    }
-  });
-  panel.webview.html = pageHtml(crypto.randomBytes(16).toString("hex"), { name, pages, page: target });
-}
-
-/** After the review's subjects changed: a tab of a subject that is gone is closed. */
-function sync(session) {
-  const have = new Set((session?.subjects || []).map((s) => s.name));
-  for (const [name, panel] of [...panels]) if (!have.has(name)) panel.dispose();
-}
-
-function activate(ctx, deps) {
-  ctx.subscriptions.push(vscode.commands.registerCommand("verdict.openSubject", async (arg, page) => {
-    const name = typeof arg === "string" ? arg : arg?.subject;
-    try {
-      await open(deps, name, page);
-    } catch (err) {
-      vscode.window.showErrorMessage(`Verdict: ${err.message}`);
-    }
-  }));
-}
-
-module.exports = { activate, open, sync, pageHtml, MAX_PAGES };

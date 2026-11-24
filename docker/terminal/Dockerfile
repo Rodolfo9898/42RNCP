@@ -11,6 +11,18 @@ ARG CLAUDE_CODE_VERSION=2.1.303
 RUN npm install -g --prefix /opt/claude "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && /opt/claude/bin/claude --version
 
+# ---- the Verdict extension of the editor (src/extension): TypeScript, compiled to the JavaScript that VS Code loads. Only what the editor
+# needs goes on to the final image (the manifest, the compiled code, the grammar, the language configuration, the icon): no compiler,
+# no node_modules, no sources. The Node version is pinned, and the lock file pins the compiler and the typings.
+FROM node:22.20.0-slim AS extension
+WORKDIR /build
+COPY src/extension/package.json src/extension/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY src/extension ./
+RUN npm run build \
+    && mkdir /dist \
+    && cp -r package.json out syntaxes ignore.language-configuration.json media /dist
+
 # ---- stage 2: norminette from its official repository at a pinned, verified commit (same as the sandbox)
 FROM python:3.14-slim AS norminette
 ARG NORMINETTE_REPO=git@github.com:42school/norminette.git
@@ -59,7 +71,7 @@ RUN apt-get update \
 # A virtual X display for programs with a window (MiniLibX): the service starts Xvfb and gives claude and the shell DISPLAY=:99.
 RUN command -v Xvfb && command -v xdpyinfo
 
-# The ⌨ Shell tab runs zsh (TERMINAL_SHELL below) with Oh My Zsh. Both live in the image (no auto-update: the image is
+# The editor's terminals run zsh (TERMINAL_SHELL below) with Oh My Zsh. Both live in the image (no auto-update: the image is
 # read-only); the rc file also sources your own ~/.zshrc if you add one. OH_MY_ZSH_REF pins a branch, tag or commit.
 ARG OH_MY_ZSH_REF=master
 RUN git clone --quiet https://github.com/ohmyzsh/ohmyzsh.git /opt/oh-my-zsh \
@@ -101,10 +113,10 @@ RUN pip install --no-cache-dir .
 COPY --chmod=755 scripts/pdf/readpdf /usr/local/bin/readpdf
 RUN readpdf --help >/dev/null && pdftotext -v 2>&1 | head -1
 
-# The editor (see src/terminal/editor): VS Code, with the Verdict extension built in (src/extension) and the settings it
-# starts with. The extensions you add (config/extensions.txt) and your own settings live in the claude-home volume.
+# The editor (see src/terminal/editor): VS Code, with the Verdict extension built in (src/extension, compiled by the `extension` stage
+# above) and the settings it starts with. The extensions you add (config/extensions.txt) and your own settings live in the claude-home volume.
 COPY --from=openvscode /opt/openvscode-server /opt/openvscode-server
-COPY src/extension /opt/openvscode-server/extensions/verdict
+COPY --from=extension /dist /opt/openvscode-server/extensions/verdict
 COPY docker/terminal/editor-settings.json /etc/verdict-editor/settings.json
 RUN /opt/openvscode-server/bin/openvscode-server --version | head -1
 

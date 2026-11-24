@@ -1,41 +1,54 @@
-"use strict";
-
 // The colours of .gitignore / .dockerignore files (src/extension/syntaxes/ignore.tmLanguage.json), tokenized by VS Code's own
-// engine (vscode-textmate + oniguruma). Needs `npm install` in this folder (make test-extension); skipped without it.
+// engine (vscode-textmate + oniguruma). Needs `npm install` in tests/extension (make test-extension); skipped without it.
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const path = require("path");
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import test from "node:test";
+import { EXTENSION_DIR } from "./support/harness";
 
-let textmate = null;
-let onig = null;
+interface Token { startIndex: number; endIndex: number; scopes: string[] }
+interface Grammar { tokenizeLine(line: string, stack: unknown): { tokens: Token[]; ruleStack: unknown } }
+interface TextMate {
+  Registry: new (options: unknown) => { loadGrammar(scope: string): Promise<Grammar> };
+  INITIAL: unknown;
+  parseRawGrammar(text: string, file: string): unknown;
+}
+interface Onig {
+  loadWASM(data: ArrayBuffer): Promise<void>;
+  OnigScanner: new (patterns: string[]) => unknown;
+  OnigString: new (text: string) => unknown;
+}
+
+let textmate: TextMate | null = null;
+let onig: Onig | null = null;
 try {
   textmate = require("vscode-textmate");
   onig = require("vscode-oniguruma");
 } catch { /* not installed */ }
 
-const GRAMMAR = path.resolve(__dirname, "../../src/extension/syntaxes/ignore.tmLanguage.json");
+const GRAMMAR = path.join(EXTENSION_DIR, "syntaxes", "ignore.tmLanguage.json");
 const SCOPE = "source.verdict-ignore";
 
-async function tokenize(text) {
-  const wasm = fs.readFileSync(require.resolve("vscode-oniguruma/release/onig.wasm")).buffer;
-  await onig.loadWASM(wasm);
-  const registry = new textmate.Registry({
-    onigLib: Promise.resolve({ createOnigScanner: (p) => new onig.OnigScanner(p), createOnigString: (s) => new onig.OnigString(s) }),
-    loadGrammar: async (scope) => (scope === SCOPE ? textmate.parseRawGrammar(fs.readFileSync(GRAMMAR, "utf8"), GRAMMAR) : null),
+async function tokenize(text: string): Promise<Array<Array<[string, string[]]>>> {
+  const { Registry, INITIAL, parseRawGrammar } = textmate as TextMate;
+  const engine = onig as Onig;
+  await engine.loadWASM(fs.readFileSync(require.resolve("vscode-oniguruma/release/onig.wasm")).buffer as ArrayBuffer);
+  const registry = new Registry({
+    onigLib: Promise.resolve({ createOnigScanner: (p: string[]) => new engine.OnigScanner(p), createOnigString: (s: string) => new engine.OnigString(s) }),
+    loadGrammar: async (scope: string) => (scope === SCOPE ? parseRawGrammar(fs.readFileSync(GRAMMAR, "utf8"), GRAMMAR) : null),
   });
   const grammar = await registry.loadGrammar(SCOPE);
-  let stack = textmate.INITIAL;
+  let stack = INITIAL;
   return text.split("\n").map((line) => {
     const result = grammar.tokenizeLine(line, stack);
     stack = result.ruleStack;
-    return result.tokens.map((t) => [line.slice(t.startIndex, t.endIndex), t.scopes.slice(1).map((s) => s.replace(/\.verdict-ignore$/, ""))]);
+    return result.tokens.map((t): [string, string[]] => [line.slice(t.startIndex, t.endIndex), t.scopes.slice(1).map((s) => s.replace(/\.verdict-ignore$/, ""))]);
   });
 }
 
 const skip = textmate ? false : "vscode-textmate is not installed (make test-extension)";
-const last = (tokens, text) => tokens.find(([t]) => t === text)?.[1].at(-1);
+const last = (tokens: Array<[string, string[]]>, text: string): string | undefined => tokens.find(([t]) => t === text)?.[1].at(-1);
 
 test("comments are comments only at the start of a line", { skip }, async () => {
   const [comment, indented, trailing] = await tokenize("# build output\n  # not one: git reads it as a pattern\n.env # nor this");
