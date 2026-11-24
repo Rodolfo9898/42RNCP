@@ -1,0 +1,6 @@
+# Only what the sandbox image copies in (docker/sandbox/Dockerfile).
+*
+!scripts/norminette/fetch-norminette.sh
+!src/sandbox
+!src/sandbox_server.py
+**/__pycache__

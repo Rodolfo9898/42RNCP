@@ -19,7 +19,7 @@ into a container. `make ssh` does only that step.
 
 Settings live in `.env` (never committed). If it is missing, `make run` copies `.env.example` to it and fills in the two
 tokens on their own lines (`# TERMINAL_TOKEN=` becomes `TERMINAL_TOKEN=<random>`): nothing else of the example is moved or changed,
-and a value that is already there is never touched (`scripts/env-setup.sh`). The example says what is required, what is
+and a value that is already there is never touched (`scripts/env/env-setup.sh`). The example says what is required, what is
 recommended and what you can leave out.
 
 The subject library is `samples/`, one folder per track:
@@ -43,7 +43,7 @@ make samples ARGS="--track rncp --no-artifacts"   only the RNCP PDFs (all option
 make samples ARGS="-p libft -p cpp-module-00"     only these projects
 ```
 
-It is the `scraper/` package (the old `scapper` project, merged in) and it runs on your computer, not in Docker, because it logs in to
+It is the `src/scraper/` package (the old `scapper` project, merged in) and it runs on your computer, not in Docker, because it logs in to
 the intra with your account (`INTRA_LOGIN` and `INTRA_PASSWORD` in `.env`, see `.env.example`, or it asks; they are never given to a
 container). A real browser (Playwright, your installed Chrome) is used only to log in; add `ARGS=--headed` the first time if the intra
 asks for 2FA or a captcha. The session is kept in `.session/`, so the next run does not log in again.
@@ -53,7 +53,7 @@ asks for 2FA or a captcha. The session is kept in `.session/`, so the next run d
   Day 00, ...) is a PDF of its own in the track of its parent (`--skip-children` leaves them out). The other files of a project (its
   tester, a VM, ...) go to `artifacts/<name>/`, a folder named like the PDF, **next to** `samples/`, not inside it. They can be gigabytes:
   `--no-artifacts` skips them, and `artifacts/` is in `.gitignore` and `.dockerignore`.
-- **Which projects.** The lists are in `scraper/data/`: `rncp_21.json` (every project of every RNCP option, plus the "suite" projects;
+- **Which projects.** The lists are in `src/scraper/data/`: `rncp_21.json` (every project of every RNCP option, plus the "suite" projects;
   `--with-experience` adds the internships), `common-core.txt` and `post-common-core.txt` (one project per line: slug, name or id).
   `projects_21.json` is the intra's catalog (id, name, slug, children), a snapshot copied from the 42tools data: a project that
   is newer than it is added by slug in a `.txt` file. `make samples-plan ARGS=--unassigned` lists the catalog's projects that no track has.
@@ -198,7 +198,7 @@ same way.
 
 The sandbox image builds norminette from its official repository (https://github.com/42School/norminette) at the pinned
 tag `3.3.60`, over SSH when your agent is available at build time (falls back to HTTPS), and aborts if the commit is not
-the reviewed one. Bump `NORMINETTE_REF` and `NORMINETTE_COMMIT` in `sandbox/Dockerfile` to upgrade.
+the reviewed one. Bump `NORMINETTE_REF` and `NORMINETTE_COMMIT` in `docker/sandbox/Dockerfile` to upgrade.
 
 ## Docker, C, C++ and make: the environment
 
@@ -372,7 +372,7 @@ and `make ssh` only loads files named `~/.ssh/id_*` (or `make ssh SSH_KEYS="~/.s
 make run TERMINAL_SSH=1        # or put a line TERMINAL_SSH=1 in .env, then make run
 ```
 
-This adds `docker-compose.ssh.yml`, which gives **only the terminal container** the same ssh-agent socket the web container
+This adds `docker/terminal/compose.ssh.yml`, which gives **only the terminal container** the same ssh-agent socket the web container
 already uses for cloning (no `.env`, no API keys; the sandbox that runs student code gets nothing). **What you are agreeing to:**
 while it is on, anything that runs in that container can use your keys through the agent, including a peer's code that claude
 builds or runs there. The agent never reveals the key, but it signs for GitHub as you, so such code could push to any repository
@@ -389,7 +389,7 @@ it fetch public submodules from GitHub:
 make run SANDBOX_GITHUB=1      # or put a line SANDBOX_GITHUB=1 in .env, then make run
 ```
 
-This adds `docker-compose.sandbox-github.yml`, which gives the sandbox one new route: `github-gateway`, which forwards to
+This adds `docker/sandbox/compose.github.yml`, which gives the sandbox one new route: `github-gateway`, which forwards to
 `github.com:443` and nothing else, so there is still no general internet. No key is involved: the sandbox has no ssh client and never
 gets your ssh-agent, so code under review cannot act as you. `git@github.com:` addresses are read as `https://github.com/`, so a
 public submodule works whichever form `.gitmodules` uses. A private submodule or one on another host stays unreachable.
@@ -425,7 +425,7 @@ same text is at `GET /api/sessions/{id}/fix-prompt`.
 
 A separate repository, `Rodolfo9898/42Cursus`, holds every project as a git submodule, grouped like `samples/`
 (`common-core/`, `post-common-core/`, `rncp/`). It contains no subject PDFs. **GitHub is the only copy**: there is no
-`../42Cursus` folder any more. `scripts/cursus.sh` clones the repository into a temporary folder for each command, works
+`../42Cursus` folder any more. `scripts/cursus/cursus.sh` clones the repository into a temporary folder for each command, works
 there, pushes the result and deletes the folder. It never clones your projects either: a submodule is a project's URL plus the
 commit it is at, and the newest commit is read from GitHub (`git ls-remote`). Run it through `make`, on your machine (it uses
 your own ssh keys):
@@ -493,6 +493,33 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
 `make` mounts your `$SSH_AUTH_SOCK` on Linux and Docker Desktop's `/run/host-services/ssh-auth.sock` on macOS
 (`SSH_AGENT_MOUNT` overrides it). Running `docker compose` by hand skips that: use `make`, or export `SSH_AGENT_MOUNT`.
 
+## Project layout
+
+Like the C projects in `projects/`: a `src/` with its mains at the root and one folder per feature, folders grouped by what they do.
+
+```
+src/
+  verdict_server.py       main of the review app (the `web` container)
+  terminal_server.py      main of the terminal service (claude and the shells on a PTY)
+  editor_launcher.py      main of the terminal container: the editor (VS Code in the browser) and the service
+  sandbox_server.py       main of the sandbox that builds and runs the code under review
+  subject_scraper.py      main of the subject scraper (`make samples`)
+  verdict/                the review: app/ (server), core/ (models), sessions/, subjects/ (PDF + the rules read from it),
+                          repository/ (git, files, search), checks/, reports/ (the verdict), reviews/ (claude, AI, prompts), gateways/
+  terminal/               the terminal service and the editor launcher
+  sandbox/                the command runner (standard library only)
+  scraper/                the subject scraper (+ data/: the project lists)
+  shared/                 what several features agree on (constants, the environment self-test)
+  extension/              the Verdict extension of the editor
+docker/
+  web/  sandbox/  terminal/     one folder per image: its Dockerfile and its Dockerfile.dockerignore (an allow-list)
+                                (+ compose.github.yml and compose.ssh.yml: the opt-in overlays of docker-compose.yml)
+scripts/
+  container/  cursus/  env/  llm/  norminette/  pdf/  ssh/     shell and Python scripts, one folder per purpose
+tests/                    mirrors src/ (verdict/, terminal/, ...), plus infra/ (images, Makefile, scripts) and extension/ (node)
+docker-compose.yml        the main file: builds and wires all the images. Makefile: build, run, clean, samples, ...
+```
+
 ## How it works
 
 1. **Subject parsing** (`src/verdict/spec.py`): no LLM. The field tables (`Program Name`, `Files to Submit`,
@@ -554,7 +581,7 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
   not wrong behaviour. Per-project functional tests (sorting correctness for push_swap, etc.) are not written yet.
 - born2beroot, netpractice, inception and ft_transcendence are not repository checks; their rules are listed for manual review.
 - Dev: `uv sync && uv run pytest`. The sandbox-dependent checks are only fully exercised inside Docker, and the Verdict
-  extension (`terminal/vscode/verdict/`) only inside the editor. Its logic (the merge after every pass, the JSON view, the
+  extension (`src/extension/`) only inside the editor. Its logic (the merge after every pass, the JSON view, the
   markdown buttons) is run in node against a fake editor by `tests/js` (`uv run pytest` does it when node 20+ is there); `make
   test-extension` also installs the TextMate engine that checks the colours of the ignore files. How the real editor draws it is
   not covered: look at it once after changing the extension.
@@ -562,11 +589,11 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
 ## Interface
 
 The app is [OpenVSCode Server](https://github.com/gitpod-io/openvscode-server) (VS Code in the browser, the same version for
-everyone: it is pinned and its checksum verified in `terminal/Dockerfile`). It runs in the `terminal` container, opened on the
+everyone: it is pinned and its checksum verified in `docker/terminal/Dockerfile`). It runs in the `terminal` container, opened on the
 projects folder, so its terminals have claude and the whole toolchain. Everything VS Code does works: editing, Source Control,
 search, splits, themes, keys, Settings.
 
-**Verdict** (the shield in the activity bar, `terminal/vscode/verdict/`) is the review:
+**Verdict** (the shield in the activity bar, `src/extension/`) is the review:
 
 | Where | What |
 |---|---|
@@ -581,7 +608,7 @@ Every action is also a command: ⇧⌘P / Ctrl+Shift+P, then type `Verdict:`.
 
 - **Markdown opens as the page** (VS Code's own Markdown preview, set as the editor of `*.md`), styled like GitHub by the
   [Markdown Preview Github Styling](https://open-vsx.org/extension/bierner/markdown-preview-github-styles) extension of the list
-  below, in its **dark** theme (`markdown-preview-github-styles.colorTheme` in `terminal/vscode/settings.json`; `light` or `auto` for
+  below, in its **dark** theme (`markdown-preview-github-styles.colorTheme` in `docker/terminal/editor-settings.json`; `light` or `auto` for
   the light page, and `markdown-preview-github-styles.darkTheme` set to `dark_dimmed` for a softer one). The title bar has a **`</>` Show Markdown Source** button, and the source has an **Open Markdown Page** button to go back
   (VS Code's own "Show Source" does not work when the page is the default, so these replace it). The same two are in the Command
   Palette; **View: Reopen Editor With…** also works.
@@ -593,7 +620,7 @@ Every action is also a command: ⇧⌘P / Ctrl+Shift+P, then type `Verdict:`.
 - **`.gitignore`, `.dockerignore` and the other `*ignore` files** (`.npmignore`, `.eslintignore`, `.prettierignore`, …) are coloured: comments,
   `!` negations, `*` `**` `?` wildcards, `[a-z]` classes, `\` escapes, `/`. (VS Code alone colours only the `#` comments of a `.gitignore`,
   and does not know `.dockerignore` at all.) **`.gitmodules`** is read as a properties file: sections, keys and values are coloured.
-  The associations are in `terminal/vscode/settings.json` (`files.associations`).
+  The associations are in `docker/terminal/editor-settings.json` (`files.associations`).
 
 ### Languages
 
@@ -607,7 +634,7 @@ Every action is also a command: ⇧⌘P / Ctrl+Shift+P, then type `Verdict:`.
   **shell** (bash-language-server), **YAML**, **TOML**. JavaScript, TypeScript, JSON, HTML, CSS and Markdown are VS Code's own.
 - **Any other language:** install its extension from the Extensions view (it is added to `config/extensions.txt` by itself).
   Colours work at once. Intelligence also needs the language's tools in the container, which holds the 42 toolchain (cc, c++, make,
-  valgrind, norminette, node via VS Code): Go, Rust, Java and the like need their compiler or JDK added to `terminal/Dockerfile`.
+  valgrind, norminette, node via VS Code): Go, Rust, Java and the like need their compiler or JDK added to `docker/terminal/Dockerfile`.
   Extensions that Microsoft publishes only on its own Marketplace are not available on Open VSX: *C/C++* (cpptools, replaced by
   clangd), *Pylance* (replaced by Pyright) and *C# Dev Kit* among them. So "every language, exactly like VS Code" is not literally
   possible; what is possible is the same experience wherever an Open VSX extension and its tools exist.
@@ -627,7 +654,7 @@ VS Code's own bracket pair colours, on by default (`editor.bracketPairColorizati
 under the cursor. The classic *Rainbow Brackets* extension is not on Open VSX.
 
 The installed extensions and your settings live in the `claude-home` volume (`~/.openvscode-server`), so they survive a restart;
-the defaults this app starts with are in `terminal/vscode/settings.json` (what you change in Settings wins over them).
+the defaults this app starts with are in `docker/terminal/editor-settings.json` (what you change in Settings wins over them).
 
 ### Workspace Trust
 

@@ -7,9 +7,9 @@ import shlex
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..models import CheckResult, Evidence, Rule
-from ..spec import MATH_FUNCTIONS
-from . import PHASE_ANALYSIS, PHASE_BUILD, PHASE_RUNTIME, Ctx, checker, grep, label, result
+from verdict.core.models import CheckResult, Evidence, Rule
+from verdict.subjects.spec import MATH_FUNCTIONS
+from verdict.checks import PHASE_ANALYSIS, PHASE_BUILD, PHASE_RUNTIME, Ctx, checker, grep, label, result
 
 COMPILER_LINE = re.compile(r"^\s*@?\s*(\S*(?:clang\+\+|g\+\+|c\+\+|gcc|clang|cc))\s")
 SOURCE_ARG = re.compile(r"\S+\.(?:c|cpp|cc)\b")

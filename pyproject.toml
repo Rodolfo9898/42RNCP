@@ -22,7 +22,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/verdict"]
+# Every Python feature of src/ and the mains at its root (verdict_server.py, terminal_server.py, ...): the folder is stripped, so
+# `import verdict`, `import terminal` and `uvicorn verdict_server:app` work the same in an image and in a checkout.
+sources = ["src"]
+include = ["src/**/*.py", "src/scraper/data/*"]
+exclude = ["src/extension"]
 
 [[tool.uv.index]]
 url = "https://pypi.apple.com/simple"
@@ -30,4 +34,4 @@ default = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "."]
+pythonpath = ["src"]

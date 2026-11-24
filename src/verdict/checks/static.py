@@ -6,9 +6,9 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..models import CheckResult, Evidence, Rule
-from ..sandbox import SandboxError
-from . import PHASE_STATIC, Ctx, checker, grep, label, result
+from verdict.core.models import CheckResult, Evidence, Rule
+from verdict.gateways.sandbox import SandboxError
+from verdict.checks import PHASE_STATIC, Ctx, checker, grep, label, result
 
 BINARY_MAGIC = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"MZ")
 ARTIFACT_SUFFIXES = {".o", ".a", ".so", ".dylib", ".out", ".exe"}

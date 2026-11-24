@@ -1,0 +1,8 @@
+# The build context of the web image is the repository, so everything it does not copy in (docker/web/Dockerfile) stays out: the
+# samples, the projects under review, the artifacts (gigabytes), the secrets in .env, the session of the scraper...
+*
+!pyproject.toml
+!src
+!scripts/container/entrypoint.sh
+src/extension
+**/__pycache__

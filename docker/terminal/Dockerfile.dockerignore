@@ -1,0 +1,11 @@
+# Only what the terminal image copies in (docker/terminal/Dockerfile).
+*
+!pyproject.toml
+!src
+!scripts/container/entrypoint.sh
+!scripts/norminette/fetch-norminette.sh
+!scripts/pdf/readpdf
+!docker/terminal/zshrc
+!docker/terminal/editor-settings.json
+**/__pycache__
+**/node_modules

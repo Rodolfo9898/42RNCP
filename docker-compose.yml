@@ -2,7 +2,9 @@ services:
   # The API of the review (checks, subjects, verdict.md), for the Verdict extension of the editor. Not published: the editor
   # (the `terminal` service) reaches it as http://web:8000 on the internal network.
   web:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
     environment:
       PROJECTS_DIR: /projects
       PROGRESS_FILE: /progress/Progress.md
@@ -42,7 +44,7 @@ services:
   sandbox:
     build:
       context: .
-      dockerfile: sandbox/Dockerfile
+      dockerfile: docker/sandbox/Dockerfile
     environment:
       ALLOWED_ROOTS: /workspace:/projects
       DOCKER_HOST: tcp://dind:2375     # the separate daemon below, never your Mac's Docker
@@ -75,7 +77,7 @@ services:
   terminal:
     build:
       context: .
-      dockerfile: terminal/Dockerfile
+      dockerfile: docker/terminal/Dockerfile
     ports:
       - "127.0.0.1:${EDITOR_PORT:-8000}:3000"   # this machine only
     environment:

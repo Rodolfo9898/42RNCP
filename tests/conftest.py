@@ -5,7 +5,7 @@ from pathlib import Path
 import pymupdf
 import pytest
 
-from verdict.sandbox import ExecResult
+from verdict.gateways.sandbox import ExecResult
 
 
 class LocalSandbox:

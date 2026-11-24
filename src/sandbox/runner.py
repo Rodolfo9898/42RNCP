@@ -1,0 +1,214 @@
+"""Tiny command runner for untrusted repositories.
+
+Stdlib only. Runs inside the `sandbox` container, which has no outbound network
+(see docker-compose.yml). Only the web app can reach it, over an internal network.
+
+POST /exec  {"argv": [...], "cwd": "/workspace/...", "timeout": 60, "stdin": "", "env": {"SUBJECTS_DIR": "/workspace/<id>/subjects"}}
+         -> {"rc": int, "stdout": str, "stderr": str, "timed_out": bool, "truncated": bool}
+GET  /health
+"""
+
+import json
+import os
+import resource
+import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+ROOTS = [Path(r).resolve() for r in os.environ.get("ALLOWED_ROOTS", os.environ.get("WORKSPACE", "/workspace")).split(":") if r]
+MAX_TIMEOUT = 300
+MAX_OUTPUT = 1_000_000  # bytes kept per stream
+MAX_BODY = 1_000_000
+# The only variables a request may add to the clean environment below, each pointing at an existing folder inside the allowed
+# roots: SUBJECTS_DIR is where the PDFs of the review (the subjects, and the Norm when it applies) are.
+EXTRA_ENV_KEYS = {"SUBJECTS_DIR"}
+
+ENV = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "HOME": "/tmp",
+    "LANG": "C.UTF-8",
+    "TMPDIR": "/tmp",
+    "DOCKER_CONFIG": "/tmp/.docker",
+}
+# The sandbox has a Docker client but no daemon. If an operator deliberately points the runner at one, commands run
+# by the review can use it; nothing is passed on otherwise (and the host's socket is never mounted).
+if os.environ.get("DOCKER_HOST"):
+    ENV["DOCKER_HOST"] = os.environ["DOCKER_HOST"]
+
+
+# Programs with a window (MiniLibX: fract-ol, so_long, cub3D...) need an X display, and a container has none. Xvfb is a virtual one: the
+# program draws into memory and nobody sees it, but mlx_init() succeeds, so such a program can be started, crash-tested and run
+# under valgrind. One server for the whole container, started when the runner starts and again if it ever dies.
+X_DISPLAY = ":99"
+X_SCREEN = "1280x1024x24"
+X_DIR = Path("/tmp/.X11-unix")
+_xvfb: subprocess.Popen | None = None
+_xvfb_lock = threading.Lock()
+
+
+def _display_up() -> bool:
+    number = X_DISPLAY[1:]
+    for address in (f"\0{X_DIR}/X{number}", str(X_DIR / f"X{number}")):      # (Linux: the abstract socket, then the file)
+        probe = socket.socket(socket.AF_UNIX)
+        probe.settimeout(0.2)
+        try:
+            probe.connect(address)
+            return True
+        except OSError:
+            pass
+        finally:
+            probe.close()
+    return False
+
+
+def display_env() -> dict[str, str]:
+    """{"DISPLAY": ":99"} when a virtual X server is running (started, or restarted, here); {} when this image has none."""
+    global _xvfb
+    exe = shutil.which("Xvfb")
+    if exe is None:
+        return {}
+    with _xvfb_lock:
+        if _xvfb is None or _xvfb.poll() is not None:
+            number = X_DISPLAY[1:]
+            for stale in (X_DIR.parent / f".X{number}-lock", X_DIR / f"X{number}"):       # what a server that died leaves behind
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+            try:
+                X_DIR.mkdir(mode=0o1777, exist_ok=True)
+                X_DIR.chmod(0o1777)
+            except OSError:
+                pass
+            try:
+                _xvfb = subprocess.Popen([exe, X_DISPLAY, "-screen", "0", X_SCREEN, "-nolisten", "tcp", "-ac"], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                         preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+            except OSError:
+                _xvfb = None
+                return {}
+        end = time.monotonic() + 5
+        while not _display_up():
+            if _xvfb.poll() is not None or time.monotonic() > end:
+                return {}
+            time.sleep(0.05)
+    return {"DISPLAY": X_DISPLAY}
+
+
+def _limits() -> None:
+    # No RLIMIT_NPROC: the kernel counts it per uid across the whole host, and uid 1000 is usually the Linux host's
+    # own user (with a browser's worth of threads), so every fork would fail. pids_limit in docker-compose.yml caps the
+    # number of processes of this container alone.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (200 * 1024 * 1024,) * 2)
+    resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT, MAX_TIMEOUT))
+
+
+def _kill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass  # already gone (macOS reports EPERM for a group that only holds zombies)
+
+
+def run(argv: list[str], cwd: Path, timeout: float, stdin: str, extra_env: dict[str, str] | None = None) -> dict:
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env={**ENV, **display_env(), **(extra_env or {})},
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        preexec_fn=_limits,
+    )
+    timed_out = False
+    try:
+        out, err = proc.communicate(stdin.encode(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_group(proc.pid)
+        out, err = proc.communicate()
+    finally:
+        _kill_group(proc.pid)  # reap anything the command left behind
+    return {
+        "rc": proc.returncode,
+        "stdout": out[:MAX_OUTPUT].decode(errors="replace"),
+        "stderr": err[:MAX_OUTPUT].decode(errors="replace"),
+        "timed_out": timed_out,
+        "truncated": len(out) > MAX_OUTPUT or len(err) > MAX_OUTPUT,
+    }
+
+
+def parse_request(req: dict) -> tuple[list[str], Path, float, str]:
+    argv = req["argv"]
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        raise ValueError("argv must be a non-empty list of strings")
+    cwd = Path(req["cwd"]).resolve()
+    if not any(cwd.is_relative_to(root) for root in ROOTS) or not cwd.is_dir():
+        raise ValueError("cwd must be an existing directory inside an allowed root")
+    return argv, cwd, min(float(req.get("timeout", 60)), MAX_TIMEOUT), str(req.get("stdin", ""))
+
+
+def parse_env(req: dict) -> dict[str, str]:
+    """The extra environment of a request: only the variables allowed above, only folders that exist inside the allowed roots."""
+    extra = req.get("env") or {}
+    if not isinstance(extra, dict):
+        raise ValueError("env must be an object")
+    out: dict[str, str] = {}
+    for key, value in extra.items():
+        if key not in EXTRA_ENV_KEYS or not isinstance(value, str):
+            raise ValueError(f"{key!r} cannot be set")
+        folder = Path(value).resolve()
+        if not any(folder.is_relative_to(root) for root in ROOTS) or not folder.is_dir():
+            raise ValueError(f"{key} must be an existing directory inside an allowed root")
+        out[key] = str(folder)
+    return out
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, status: int, body: dict) -> None:
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self) -> None:
+        if self.path == "/health":
+            self._send(200, {"status": "ok"})
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self) -> None:
+        if self.path != "/exec":
+            return self._send(404, {"error": "not found"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > MAX_BODY:
+                return self._send(413, {"error": "body too large"})
+            request = json.loads(self.rfile.read(length))
+            argv, cwd, timeout, stdin = parse_request(request)
+            extra_env = parse_env(request)
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return self._send(400, {"error": str(exc)})
+        try:
+            self._send(200, run(argv, cwd, timeout, stdin, extra_env))
+        except OSError as exc:  # e.g. executable not found
+            self._send(200, {"rc": 127, "stdout": "", "stderr": str(exc),
+                             "timed_out": False, "truncated": False})
+
+    def log_message(self, fmt: str, *args) -> None:
+        pass
+
+
+def main() -> None:
+    threading.Thread(target=display_env, daemon=True).start()      # (so that the first program does not wait for the display)
+    # 0.0.0.0 is only safe because the container sits on an internal Docker network.
+    # Never run this directly on a host: it executes whatever it is sent.
+    ThreadingHTTPServer((os.environ.get("RUNNER_HOST", "0.0.0.0"), 8001), Handler).serve_forever()
