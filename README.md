@@ -256,15 +256,13 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   build, run and test in the current directory, never in a copy in `/tmp` or another folder, and to keep any scratch files
   inside it and remove them afterwards. In live mode that means the build output lands in your project (claude says so
   before the first build and runs `make fclean` after it when the Makefile has one).
-- **Safety:** by default claude works **in your project folder** (see *Your project, live* below), so what it changes is on
-  your machine at once. With `TERMINAL_WORKDIR=copy` it never runs in the original: it runs in a throw-away copy (in memory,
-  wiped when you close the tab) from which `.claude/`, `CLAUDE.md`, `.mcp.json` and every symlink are left out. The copy keeps
-  the clone's `.git` (git works there) but never its hooks or its config, which is replaced by a minimal one, so `.git` cannot
-  make git run a program. In both modes claude runs with `--setting-sources user` so hooks and settings shipped in a student's
-  repo are ignored, and with `--strict-mcp-config`. The interactive terminal asks before each command or edit; in copy mode
-  anything you approve affects only the copy, and nothing done there goes back to your project. A
-  student's repo can still try to talk the model into proposing something harmful, so read each request before approving it,
-  and never approve one that reads `~/.claude` or sends data out.
+- **Safety:** claude works **in your project folder** (see *Your project, live* below), so what it changes is on your machine at
+  once. It runs with `--setting-sources user` so hooks and settings shipped in a student's repo are ignored, and with
+  `--strict-mcp-config`. The interactive terminal asks before each command or edit. A student's repo can still try to talk the
+  model into proposing something harmful, so read each request before approving it, and never approve one that reads `~/.claude`
+  or sends data out. The API-backed AI review with `LLM_PROVIDER=claude-cli` (`POST /api/sessions/{id}/ai-review`) is different: it
+  runs `claude -p` headless, read-only, in a throw-away copy of the project from which `.claude/`, `CLAUDE.md`, `.mcp.json` and
+  every symlink are left out, and the copy's `.git` has no hooks and a minimal config, so nothing in it can make git run a program.
 - The editor only opens with its token (`?tkn=EDITOR_TOKEN` in the link, once per browser) and listens on this machine only
   (`127.0.0.1`). The web app and the terminal service share another random `TERMINAL_TOKEN`; both are created in `.env` by
   `make`. The editor and its terminals get none of the app's secrets (no API key, no token).
@@ -273,8 +271,7 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
 
 **Terminal > New Terminal** (Ctrl+\`) opens a `zsh` in the editor's container, in the projects folder: `cd` into a project and
 run `make`, valgrind, norminette or claude yourself. Splits, tabs, moving a terminal into the editor area and every other VS Code
-terminal feature work as usual. With `TERMINAL_WORKDIR=copy`, the claude of **AI Review** works in a throw-away copy instead of
-the project (see *Safety* above); terminals you open yourself are always in the real folders.
+terminal feature work as usual.
 
 It is the terminal container, not the sandbox: same toolchain (cc, c++, make, nasm, valgrind, gdb, norminette, the readline and X11
 headers) and the same `docker` client pointed at the separate rootless daemon, but with internet. The sandbox that runs the
@@ -285,24 +282,24 @@ experiment:
   run: `docker build -t try . && docker run --rm -it try sh` (or `docker compose up --build`) from the shell. The daemon only
   receives the build context, so bind mounts such as `-v "$PWD":/work` do not see your files; put them in the image with
   `COPY`. `pip install --user` and `npm install` into your home work (it is the `claude-home` volume).
-- Only the copy in `/scratch` is writable apart from your home and `/tmp`; it is memory, so a very large build can fill it.
+- Only `/scratch`, your home and `/tmp` are writable (`/scratch` and `/tmp` are memory, so a very large build can fill them).
 
 ### The subject PDFs, inside the sandbox and the terminal
 
 Both places can read the PDFs of the review you are doing: the subjects you chose from the library or uploaded, and
 `en.norm.pdf` whenever the Norm applies (C detected). They are the same files that the app shows in its PDF tabs, and they
-follow the review: add or remove a subject and the folder changes the next time the checks run or a terminal tab opens.
+follow the review: add or remove a subject and the folder changes the next time the checks run or the review prompt is asked for.
 The folder is named by the **`$SUBJECTS_DIR`** environment variable:
 
 - **The checks (Run Checks).** Every command the checks run in the sandbox sees `SUBJECTS_DIR=/workspace/<session>/subjects`
   (the runner accepts that one variable and only for an existing folder inside its allowed roots, so a request cannot
   set `PATH`, `LD_PRELOAD` or anything else). A script or tester that needs the subject can open `"$SUBJECTS_DIR/libft.pdf"`.
-- **claude and the terminals.** `SUBJECTS_DIR=/scratch/subjects/<session>`; the shell's first line prints it, and the review
+- **claude and the terminals.** `SUBJECTS_DIR=/scratch/subjects/<session>`, and the review
   prompt tells claude where the PDFs are so it can read the pages the requirements cite ("libft.pdf p.4") instead of guessing.
   The terminal container still mounts neither the workspace nor `samples/`: the web app hands it exactly this review's PDFs
   over the same token-protected channel as everything else (only what is missing or different is sent), the files are
-  read-only (0444) and are checked on arrival (a plain `*.pdf` name, starts with `%PDF`, size limits), and they are deleted
-  when the review's last claude or shell tab closes. They live outside the working copy and the project.
+  read-only (0444) and are checked on arrival (a plain `*.pdf` name, starts with `%PDF`, size limits). A review's folder is
+  dropped after ten minutes if claude was never started for it. They live outside your project.
 - Copies, not the library: changing a PDF in `samples/` does not change a review that already has its copy. The read-only
   permission protects against accidents; the sandbox's workspace volume is shared by all reviews, so code that is deliberately
   hostile could still overwrite a PDF there (as it could before). The checks do not depend on the file contents: the rules
@@ -313,11 +310,9 @@ your Claude login).
 
 ### Your project, live: the tunnel to your machine
 
-By default **Claude and the terminals work directly in your project folder**: the terminal container mounts `./projects` read-write,
+**Claude and the terminals work directly in your project folder**: the terminal container mounts `./projects` read-write,
 and its tabs start in `/projects/<name>`, which *is* `./projects/<name>` on your machine. Nothing is copied and nothing is sent
-back later: a file claude edits, creates or deletes, or that you change in the Shell, is changed on your machine at that moment,
-and your editor sees it as it happens (the app's file tree refreshes every few seconds while a terminal tab is open). The
-terminal tab says so in its top bar and the shell prints it on its first line.
+back later: a file claude edits, creates or deletes, or that you change in a terminal, is changed on your machine at that moment.
 
 What stays isolated is where things **run**, not where files **live**: claude, the shell and everything they build and run
 (`make`, your programs, `docker build`) execute inside the containers, with their own toolchain and no access to the rest of your
@@ -327,7 +322,7 @@ machine, so "does it build and run with only what is installed there?" is answer
   Makefile rules, and building leaves objects and binaries behind. Doing that in your real folder could delete or clutter your
   files, so each run copies the folder (as it is at that moment, with everything claude has just changed) into the sandbox and
   works there. Run the checks again after claude edits something to see the new result.
-- **Build output lands in your project.** When claude or you build in the Shell, `.o` files and binaries are created in
+- **Build output lands in your project.** When claude or you build in a terminal, `.o` files and binaries are created in
   `./projects/<name>`. `make fclean` removes them; they show up in `git status` unless the project's `.gitignore` covers them.
 - **Claude's review report is not written into your repository.** Working in place, claude saves `claude-review.md` in a folder
   outside the project (`$REPORT_DIR`), the app merges it into `verdict.md` as before, and it is deleted with the session.
@@ -335,13 +330,10 @@ machine, so "does it build and run with only what is installed there?" is answer
   only, nothing written to any git config), so `git status`, `git diff`, `git pull` and, with `TERMINAL_SSH=1`, `git push` work in
   it directly, with the project's real `origin`.
 - **What you give up.** There is no review step between claude's edit and your files (you still approve each edit in the
-  terminal), `git diff` is how you review afterwards, and the protections of the throw-away copy do not apply: a student's
-  `CLAUDE.md` and `.claude/` are in the folder claude starts in. `--setting-sources user` still keeps project settings and hooks
+  terminal), `git diff` is how you review afterwards, and a student's `CLAUDE.md` and `.claude/` are in the folder claude starts in. `--setting-sources user` still keeps project settings and hooks
   out and `--strict-mcp-config` project MCP servers, but a `CLAUDE.md` is plain instructions that claude may read; claude is told
   to treat the folder as untrusted. And anything that runs in the terminal container can change every repository in
   `./projects`, `.git/hooks` included (see *the projects folder is read-write* below).
-- **Back to the safe way:** `TERMINAL_WORKDIR=copy make run` (or that line in `.env`) makes claude and the shell work on
-  throw-away copies again: a scratch space, where nothing done goes back to your project. Use it for code you do not trust.
 
 ### The projects folder is read-write everywhere
 
@@ -350,22 +342,21 @@ directly in `/projects/<name>` (`git pull`, edit, `git status`), and whatever la
 runs in the terminal container, including a peer's code that claude builds or runs there, can change **every** repository in
 that folder, `.git/hooks` and `.claude/` included, and those run on your machine the next time you `git commit` or open the
 project. A read-write mount cannot be limited to one project. If you review code you do not trust, start with
-`TERMINAL_PROJECTS_MODE=ro TERMINAL_WORKDIR=copy make run` (or those lines in `.env`): the terminal then reads the projects folder
-but cannot write to it, and nothing done in it can reach a project.
+`TERMINAL_PROJECTS_MODE=ro make run` (or that line in `.env`): the terminal then reads the projects folder but cannot write to it,
+and nothing done in it can reach a project.
 
 The Verdict extension looks at claude's report (`/scratch/reports/<session>/claude-review.md`) every two seconds and, each time it
-has been saved and has stopped changing, calls `POST /api/sessions/{id}/claude-review/collect`: a report that was asked for by this
+has been saved and has stopped changing, calls `PUT /api/sessions/{id}/claude-review`: a report that was asked for by this
 review (same project, commit, subjects and run) is merged into `verdict.md`; any other is reported as `stale` and left out. If
-claude's report was not picked up anyway (after a new run, or from another commit), `POST /api/sessions/{id}/claude-review/save`
-merges the one it saved into `verdict.md` for the project as it is now, whatever the app thought of it before.
+claude's report was not picked up anyway (after a new run, or from another commit), `PUT /api/sessions/{id}/claude-review` with
+`{"force": true}` merges the one it saved into `verdict.md` for the project as it is now, whatever the app thought of it before.
 
 ### `git push` from the terminal (opt-in)
 
-Off by default: the terminal container has none of your credentials. To clone or push from claude's terminal or the shell, switch it on.
+Off by default: the terminal container has none of your credentials. To clone or push from a terminal of the editor, or from claude, switch it on.
 A new key does not change that: the **Clone** dialog of the page works because the *web* container shares your ssh-agent, but a
 `git clone` typed in a terminal of the editor (or by claude) answers "Permission denied (publickey) … make sure you have the correct
-access rights" until this is on. Each of those tabs says which it is in the bar above the terminal ("git over ssh is off here" /
-"works here"). Only keys that are in your ssh-agent count (`ssh-add -l` on your computer); a key file in `~/.ssh` is not enough,
+access rights" until this is on. Only keys that are in your ssh-agent count (`ssh-add -l` on your computer); a key file in `~/.ssh` is not enough,
 and `make ssh` only loads files named `~/.ssh/id_*` (or `make ssh SSH_KEYS="~/.ssh/other"`).
 
 ```sh
@@ -378,7 +369,7 @@ while it is on, anything that runs in that container can use your keys through t
 builds or runs there. The agent never reveals the key, but it signs for GitHub as you, so such code could push to any repository
 your key can write to. So load a **dedicated key** that only reaches the repositories you push to (`ssh-add -D`, then
 `ssh-add ~/.ssh/that_key`), and turn the switch off (`make run` without it) when you review code you do not trust. The line in `.env` may have spaces or quotes around the `1`;
-anything else than `1` leaves it off, and the terminal tab says so.
+anything else than `1` leaves it off.
 
 ### Submodules during the checks: `SANDBOX_GITHUB=1`
 
@@ -397,11 +388,9 @@ Code under review can still send data to GitHub over this route, so turn the swi
 
 Cloning and pushing over ssh are separate and do not change: the web app clones through your ssh-agent, and the terminal pushes with `TERMINAL_SSH=1`.
 
-Inside the tab, once: `git config --global user.name "…"` and `git config --global user.email "…"` (kept in `claude-home`).
-The copy's `origin` is restored from the clone when it is a plain `git@host:path`, `ssh://git@host/…` or `https://host/…`
-address (never `ext::`, a path or anything else), and `git push -u origin HEAD` sends the copy's commits there; the clone in
-your projects folder only sees them after a `git pull`. The image trusts GitHub's published ED25519 host key (checked against
-a pinned fingerprint at build time) and refuses every other host. Check it with `ssh-add -l` and `ssh -T git@github.com`.
+In a terminal, once: `git config --global user.name "…"` and `git config --global user.email "…"` (kept in `claude-home`). The
+project keeps its real `origin`, so `git push` works from it directly. The image trusts GitHub's published ED25519 host key (checked
+against a pinned fingerprint at build time) and refuses every other host. Check it with `ssh-add -l` and `ssh -T git@github.com`.
 
 ## Fix prompt
 
@@ -419,7 +408,7 @@ to treat the issue text as data, to report each issue as fixed / not fixed / not
 through its report (see *After a fix* above), never by editing `verdict.md`. That report is only picked up from claude started
 by **AI Review** (the **claude: review** terminal): an assistant running anywhere else can fix the code, but cannot update the
 verdict. The prompt opens in an editor tab, with a **Copy** button, because it is meant for whichever assistant you prefer. The
-same text is at `GET /api/sessions/{id}/fix-prompt`.
+same text is at `GET /api/sessions/{id}/prompts/fix`.
 
 ## 42Cursus: all your projects as submodules
 
@@ -495,34 +484,52 @@ docker compose run --rm --entrypoint sh web -c 'ssh -vT -o BatchMode=yes git@git
 
 ## Project layout
 
-Like the C projects in `projects/`: a `src/` with its mains at the root and one folder per feature, folders grouped by what they do.
+Like the C projects in `projects/`: a `src/` with its mains at the root and one folder per feature, folders grouped by what the code
+does, small files and small functions, classes with one job. `tests/infra/test_conventions.py` enforces it (no file over 250 lines, no
+function over 40, no folder with a single module, no folder that holds both modules and folders).
 
 ```
 src/
   verdict_server.py       main of the review app (the `web` container)
-  terminal_server.py      main of the terminal service (claude and the shells on a PTY)
+  terminal_server.py      main of the terminal service (claude's saved report, the subject PDFs, the headless review)
   editor_launcher.py      main of the terminal container: the editor (VS Code in the browser) and the service
   sandbox_server.py       main of the sandbox that builds and runs the code under review
   subject_scraper.py      main of the subject scraper (`make samples`)
-  verdict/                the review: app/ (server), core/ (models), sessions/, subjects/ (PDF + the rules read from it),
-                          repository/ (git, files, search), checks/, reports/ (the verdict), reviews/ (claude, AI, prompts), gateways/
-  terminal/               the terminal service and the editor launcher
-  sandbox/                the command runner (standard library only)
-  scraper/                the subject scraper (+ data/: the project lists)
+  verdict/                the review
+    app/ api/             the composition root (Container), the FastAPI app, and one router per REST resource
+    sessions/ library/    the session and its store; the subject library, the Norm, the PDFs of a review
+    projects/ runs/       which repository a review is about; ▶ Run checks (pull, work copy, checks, verdict)
+    documents/            verdict.md in the project, Progress.md
+    claude_review/        merging claude's report, the prompts for claude
+    ai_review/            the API-backed AI review (jobs, runner)
+    health/ gateways/     the environment check; the clients of the sandbox and of the terminal service
+    subjects/ checks/     the rules read from a subject PDF; the checks (one class per rule kind)
+    repository/ reports/  git (clone, pull, submodules); the verdict and its sections, the improvements
+    reviews/              the AI backends, claude's report block, the digest, the prompts
+  terminal/               the terminal service (settings, api, claude, report, subjects, projects) and the editor launcher
+  sandbox/                the command runner (standard library only: display, request, execution, service)
+  scraper/                the subject scraper (core, plan, site, storage, cli) and data/ (the project lists)
   shared/                 what several features agree on (constants, the environment self-test)
-  extension/              the Verdict extension of the editor
+  extension/              the Verdict extension of the editor, in TypeScript (compiled to out/)
 docker/
   web/  sandbox/  terminal/     one folder per image: its Dockerfile and its Dockerfile.dockerignore (an allow-list)
                                 (+ compose.github.yml and compose.ssh.yml: the opt-in overlays of docker-compose.yml)
 scripts/
-  container/  cursus/  env/  llm/  norminette/  pdf/  ssh/     shell and Python scripts, one folder per purpose
-tests/                    mirrors src/ (verdict/, terminal/, ...), plus infra/ (images, Makefile, scripts) and extension/ (node)
+  container/  conventions/  cursus/  env/  llm/  norminette/  pdf/  ssh/     scripts, one folder per purpose
+tests/                    mirrors src/ (verdict/<area>, terminal, sandbox, scraper, shared, extension), plus infra/
 docker-compose.yml        the main file: builds and wires all the images. Makefile: build, run, clean, samples, ...
 ```
 
+The web app is a REST API (the Verdict extension is its only client): `GET /api/health`, `GET /api/environment`, `GET /api/library`,
+`POST /api/library/{track}/subjects`, `GET /api/projects`, `POST|GET|DELETE /api/sessions[/{id}]`,
+`POST /api/sessions/{id}/subjects`, `DELETE .../subjects/{name}`, `GET .../subjects/{name}/pages/{n}.png`, `PUT .../repo`,
+`POST .../runs`, `PUT .../claude-review`, `POST|DELETE .../ai-review`, `GET .../prompts/review|fix`, `PUT .../progress`,
+`GET .../verdict.md` (the interactive documentation of FastAPI is not served). The terminal service has its own small internal API
+(`/sessions/{sid}/report`, `/sessions/{sid}/subjects`, `/environment`, `/reviews`, `/health`), reachable only with the shared token.
+
 ## How it works
 
-1. **Subject parsing** (`src/verdict/spec.py`): no LLM. The field tables (`Program Name`, `Files to Submit`,
+1. **Subject parsing** (`src/verdict/subjects/spec`): no LLM. The field tables (`Program Name`, `Files to Submit`,
    `Makefile`, `External Function`, …) are parsed structurally; the shared "general rules" prose is matched
    against known rules; every other requirement-looking sentence is kept as a *manual review* item.
 2. **Checks** (`src/verdict/checks/`): file presence, Makefile rules, compile flags, build, relinking,
@@ -566,7 +573,7 @@ docker-compose.yml        the main file: builds and wires all the images. Makefi
    reservations` is `PASS WITH ISSUES`, `do not pass` is `FAIL`), even when the lists alone would say something else. The Verdict
    window and `verdict.md` then read "decided by Claude", give its reason and say what the lists alone would have said, so you
    can see the disagreement. A report without a verdict in it decides nothing: the lists do.
-4. **Every Run Checks starts from nothing.** The server first ends claude's session (its report is thrown away, not
+4. **Every Run Checks starts from nothing.** The server first throws away what claude saved for the last run (it is not
    collected), forgets claude's review and the AI review, deletes the `verdict.md` it wrote into the project (a `verdict.md`
    of your own, without this app's marker, is never touched), and runs a `git pull` (fast-forward only) in the project, so the
    checks look at what is on GitHub now. A pull that cannot be done (no remote, no network, local changes in the way) is
@@ -581,9 +588,10 @@ docker-compose.yml        the main file: builds and wires all the images. Makefi
   not wrong behaviour. Per-project functional tests (sorting correctness for push_swap, etc.) are not written yet.
 - born2beroot, netpractice, inception and ft_transcendence are not repository checks; their rules are listed for manual review.
 - Dev: `uv sync && uv run pytest`. The sandbox-dependent checks are only fully exercised inside Docker, and the Verdict
-  extension (`src/extension/`) only inside the editor. Its logic (the merge after every pass, the JSON view, the
-  markdown buttons) is run in node against a fake editor by `tests/js` (`uv run pytest` does it when node 20+ is there); `make
-  test-extension` also installs the TextMate engine that checks the colours of the ignore files. How the real editor draws it is
+  extension (`src/extension/`, TypeScript) only inside the editor. Its logic (the merge after every pass, the JSON view, the
+  markdown buttons, the PDF viewer) is compiled with `tsc` and run in node against a fake editor by `tests/extension` (`uv run pytest`
+  does it when node 20+ and the tooling are there); `make test-extension` installs the tooling (and the TextMate engine that checks the
+  colours of the ignore files). Build it by hand with `cd src/extension && npm ci && npm run build`. How the real editor draws it is
   not covered: look at it once after changing the extension.
 
 ## Interface
