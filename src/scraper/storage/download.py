@@ -59,7 +59,7 @@ def choose_subject(subjects: list[FileLink], lang: str) -> FileLink | None:
 
 
 class ProjectSaver:
-    """Saves one project: its subject as samples/<track>/<stem>.pdf and its other files in artifacts/<stem>/."""
+    """Saves one project: its subject as samples/<track>/[<group>/]<stem>.pdf and its other files in artifacts/[<group>/]<stem>/."""
 
     def __init__(self, downloader: FileDownloader, library: Library, settings: Settings, reporter: Reporter) -> None:
         self.downloader, self.library, self.settings, self.reporter = downloader, library, settings, reporter
@@ -89,10 +89,10 @@ class ProjectSaver:
             self.reporter.log("  ! no subject PDF on the page")
             stats.failed.append(f"{target.stem} (no subject PDF)")
             return
-        self._save_file(link.url, existing or self.library.pdf_path(target.track, target.stem), pdf=True, force=force, stats=stats, kind="subject")
+        self._save_file(link.url, existing or self.library.pdf_path(target), pdf=True, force=force, stats=stats, kind="subject")
 
     def _artifacts(self, target: Target, info: ProjectInfo, force: bool, stats: Stats) -> None:
-        folder = self.library.artifact_dir(target.stem)
+        folder = self.library.artifact_dir(target)
         used: set[str] = set()
         for link in info.artifacts:
             name, n = link.filename, 2      # two different URLs can share a filename; keep the names stable across runs

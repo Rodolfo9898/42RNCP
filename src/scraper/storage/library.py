@@ -1,10 +1,11 @@
-"""What is on disk: the subject PDFs in samples/<track>/, and the artifacts in artifacts/<stem>/."""
+"""What is on disk: the subject PDFs in samples/<track>/[<group>/], and the artifacts in artifacts/[<group>/]<name>/."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 from scraper.plan.names import key
+from scraper.plan.target import Target
 from scraper.plan.tracks import TRACKS
 
 
@@ -15,24 +16,25 @@ class Library:
         self.samples, self.artifacts = samples, artifacts
 
     def pdfs(self) -> dict[str, Path]:
-        """Spelling-insensitive name -> the PDF, over every track (a subject is the same one wherever it was put)."""
+        """Spelling-insensitive name -> the PDF, over every track and every folder (a subject is the same one wherever it was put)."""
         found: dict[str, Path] = {}
         for track in TRACKS:
-            for pdf in sorted((self.samples / track).glob("*.pdf")):
+            for pdf in sorted((self.samples / track).rglob("*.pdf")):
                 found.setdefault(key(pdf.stem), pdf)
         return found
 
     def find_pdf(self, stem: str) -> Path | None:
         return self.pdfs().get(key(stem))
 
-    def pdf_path(self, track: str, stem: str) -> Path:
-        return self.samples / track / f"{stem}.pdf"
+    def pdf_path(self, target: Target) -> Path:
+        """Where the subject of a project goes: its track, the folder of its series if it has one, its name."""
+        return self.samples.joinpath(target.track, *target.folders, f"{target.stem}.pdf")
 
-    def artifact_dir(self, stem: str) -> Path:
-        return self.artifacts / stem
+    def artifact_dir(self, target: Target) -> Path:
+        return self.artifacts.joinpath(*target.folders, target.stem)
 
-    def artifact_files(self, stem: str) -> list[Path]:
-        folder = self.artifact_dir(stem)
+    def artifact_files(self, target: Target) -> list[Path]:
+        folder = self.artifact_dir(target)
         if not folder.is_dir():
             return []
         return sorted(f for f in folder.rglob("*") if f.is_file() and f.suffix != ".part" and f.name != ".DS_Store")

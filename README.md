@@ -49,10 +49,19 @@ container). A real browser (Playwright, your installed Chrome) is used only to l
 asks for 2FA or a captcha. The session is kept in `.session/`, so the next run does not log in again.
 
 - **What goes where.** `samples/common-core/`, `samples/post-common-core/` and `samples/rncp/`: one folder per track, no sub-folder per
-  RNCP. The PDF is named like the project (`libft.pdf`, `cpp03.pdf`, `h42n42.pdf`), and a project of a piscine or a series (Django - 0,
-  Day 00, ...) is a PDF of its own in the track of its parent (`--skip-children` leaves them out). The other files of a project (its
-  tester, a VM, ...) go to `artifacts/<name>/`, a folder named like the PDF, **next to** `samples/`, not inside it. They can be gigabytes:
-  `--no-artifacts` skips them, and `artifacts/` is in `.gitignore` and `.dockerignore`.
+  RNCP. The PDF is named like the project (`libft.pdf`, `cpp03.pdf`, `h42n42.pdf`). **A series has a folder of its own**, the same
+  principle as `cpp-modules/` in the projects folder: the numbered projects (`cpp-module-03`, `kfs-1` ... `kfs-x`: a trailing `-N` or
+  `-x`, at least two in the track) go in `samples/common-core/cpp-modules/cpp03.pdf` and `samples/rncp/kfs/kfs1.pdf`, and the
+  projects the intra lists inside a piscine or a series (Django - 0, Day 00, Module 01 ...) go in the folder of that piscine, with the
+  piscine's own PDF (`samples/rncp/piscine-django/django-0-initiation.pdf`; `--skip-children` leaves them out). The PDF keeps its full
+  name wherever it is, so two projects never share a file name. The other files of a project (its tester, a VM, ...) go to
+  `artifacts/<name>/`, a folder named like the PDF, **next to** `samples/` and in the same series folder
+  (`artifacts/cpp-modules/cpp03/`). They can be gigabytes: `--no-artifacts` skips them. The app's library reads the series folders too
+  (the path of a subject is then `common-core/cpp-modules/cpp03.pdf`). The rules are in `src/scraper/plan/groups.py` (one class each,
+  add a class for a new kind of series) and the names of the folders in `plan/layout.py`.
+- **Filing what you already have.** `make samples ARGS=--reorganize` moves the PDFs and artifact folders that are on disk into the
+  folders of their series (offline, nothing is downloaded or deleted, a file is never replaced and never leaves its track; add
+  `--dry-run` to see the moves first). `make samples-plan` tells you how many are not filed yet.
 - **Which projects.** The lists are in `src/scraper/data/`: `rncp_21.json` (every project of every RNCP option, plus the "suite" projects;
   `--with-experience` adds the internships), `common-core.txt` and `post-common-core.txt` (one project per line: slug, name or id).
   `projects_21.json` is the intra's catalog (id, name, slug, children), a snapshot copied from the 42tools data: a project that

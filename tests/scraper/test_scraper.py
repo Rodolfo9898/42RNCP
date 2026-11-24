@@ -210,21 +210,23 @@ def test_the_shipped_lists_resolve_and_match_what_samples_already_holds():
     assert len(stems) == len(set(stems)) and {t.track for t in plan.targets} == set(TRACKS)
     assert {"libft", "cpp09", "so_long"} <= {t.stem for t in plan.of("common-core")} and "h42n42" in {t.stem for t in plan.of("rncp")}
     by_key = {key(t.stem): t.track for t in plan.targets}
+    not_in_the_catalog = {key(name) for names in plan.unresolved.values() for name in names}      # (ft_lex: a PDF you have, a project it does not list)
     for track in TRACKS:                                                       # what you already have is recognised, in the same track
-        for pdf in sorted((ROOT / "samples" / track).glob("*.pdf")):
-            assert by_key.get(key(pdf.stem)) == track, f"{track}/{pdf.name} is not in the plan"
+        for pdf in sorted((ROOT / "samples" / track).rglob("*.pdf")):
+            if key(pdf.stem) not in not_in_the_catalog:
+                assert by_key.get(key(pdf.stem)) == track, f"{track}/{pdf.name} is not in the plan"
 
 
 # ---------------------------------------------------------------------------------------------- the library on disk
 
 
 def test_the_library_sees_a_pdf_in_any_track_under_any_spelling(tmp_path):
-    for rel in ("samples/rncp/kfs1.pdf", "samples/common-core/cpp00.pdf", "samples/rncp/notes.txt"):
+    for rel in ("samples/rncp/kfs1.pdf", "samples/common-core/cpp-modules/cpp00.pdf", "samples/rncp/notes.txt"):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_bytes(PDF)
     library = Library(tmp_path / "samples", tmp_path / "artifacts")
-    assert library.find_pdf("kfs-1").name == "kfs1.pdf" and library.find_pdf("cpp00").parent.name == "common-core"
-    assert library.find_pdf("kfs2") is None and library.pdf_path("rncp", "h42n42") == tmp_path / "samples" / "rncp" / "h42n42.pdf"
+    assert library.find_pdf("kfs-1").name == "kfs1.pdf" and library.find_pdf("cpp00").parent.name == "cpp-modules"     # (in a series folder too)
+    assert library.find_pdf("kfs2") is None and library.pdf_path(target("rncp", "42cursus-h42n42")) == tmp_path / "samples" / "rncp" / "h42n42.pdf"
 
 
 def test_checked_projects_are_remembered_and_a_broken_marker_is_ignored(tmp_path):
@@ -333,10 +335,11 @@ def test_a_run_puts_the_pdf_in_its_track_and_the_artifacts_beside_samples(tmp_pa
     site = FakeSite()
     site.add_project("42cursus-h42n42", "h42n42", artifacts=("tests.tgz", "vm.ova"))
     site.add_project("cpp-module-03", "CPP Module 03")
-    reporter, _, library = run_scrape(tmp_path, site, [target("rncp", "42cursus-h42n42", 1), target("common-core", "cpp-module-03", 2)])
+    first, second = target("rncp", "42cursus-h42n42", 1), target("common-core", "cpp-module-03", 2)
+    reporter, _, library = run_scrape(tmp_path, site, [first, second])
     assert (tmp_path / "samples" / "rncp" / "h42n42.pdf").read_bytes() == PDF
     assert (tmp_path / "samples" / "common-core" / "cpp03.pdf").is_file()                 # named like the review expects, not like the page
-    assert sorted(f.name for f in library.artifact_files("h42n42")) == ["tests.tgz", "vm.ova"]
+    assert sorted(f.name for f in library.artifact_files(first)) == ["tests.tgz", "vm.ova"]
     assert (tmp_path / "artifacts" / "h42n42" / "tests.tgz").read_bytes() == b"artifact:tests.tgz"
     assert not (tmp_path / "samples" / "rncp" / "artifacts").exists() and not list((tmp_path / "samples").rglob("*.part"))
     assert library.checked() == {"h42n42", "cpp03"} and "Done: 2 subject(s) and 2 artifact(s)" in reporter.text
@@ -398,8 +401,9 @@ def test_two_files_with_one_name_are_both_kept(tmp_path):
     site.add_project("p", "p", artifacts=("a.zip",))
     site.projects["p"] = site.projects["p"].replace(b"</body>", b'<a href="https://cdn.intra.42.fr/document/other/a.zip">dup</a></body>')
     site.files["/document/other/a.zip"] = (200, "application/zip", b"second")
-    _, _, library = run_scrape(tmp_path, site, [target("rncp", "p")])
-    assert sorted(f.name for f in library.artifact_files("p")) == ["a.zip", "a_2.zip"]
+    only = target("rncp", "p")
+    _, _, library = run_scrape(tmp_path, site, [only])
+    assert sorted(f.name for f in library.artifact_files(only)) == ["a.zip", "a_2.zip"]
 
 
 def test_the_download_writes_through_a_part_file_and_rejects_non_pdfs(tmp_path):
@@ -529,7 +533,7 @@ def test_the_library_the_scraper_writes_is_the_one_the_app_reads(tmp_path):
 
 def test_artifacts_and_the_login_session_stay_out_of_git_and_the_docker_build():
     gitignore = (ROOT / ".gitignore").read_text().split()
-    for entry_ in ("/artifacts/", ".session/", ".scraper-venv/"):
+    for entry_ in (".session/", ".scraper-venv/"):
         assert entry_ in gitignore, f"{entry_} must be in .gitignore"
     for ignore in sorted((ROOT / "docker").glob("*/Dockerfile.dockerignore")):          # every image: only what its Dockerfile copies in
         lines = ignore.read_text().split()

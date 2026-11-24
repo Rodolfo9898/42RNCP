@@ -5,7 +5,7 @@
 * post-common-core  data/post-common-core.txt
 
 The .txt files hold one project per line (slug, name or id; `#` starts a comment). RNCP wins over post-common-core when a project is
-in both, and a project in a piscine or a series (its children) goes where its parent goes. There are no sub-folders per RNCP.
+in both, and a project in a piscine or a series (its children) goes where its parent goes. There are no sub-folders per RNCP, but a series (a piscine, `cpp-module-NN`, `kfs-N`) has a folder of its own (see layout.py).
 """
 from __future__ import annotations
 
@@ -14,25 +14,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from scraper.plan.catalog import Catalog, Project
-from scraper.plan.names import stem
+from scraper.plan.layout import LayoutPlanner
+from scraper.plan.target import Target
 
+__all__ = ["TRACKS", "Target", "Plan", "build_plan"]
 TRACKS = ("common-core", "post-common-core", "rncp")        # the folders of samples/, as the app knows them
 ORDER = ("common-core", "rncp", "post-common-core")         # who wins when a project is in two lists
-
-
-@dataclass(frozen=True)
-class Target:
-    track: str
-    project: Project
-    parent: Project | None = None
-
-    @property
-    def stem(self) -> str:
-        return stem(self.project.slug)
-
-    @property
-    def slug(self) -> str:
-        return self.project.slug
 
 
 @dataclass
@@ -97,4 +84,5 @@ def build_plan(catalog: Catalog, data_dir: Path, *, with_children: bool = True, 
                 for child in project.children:
                     take(track, child, project)
     plan.targets.sort(key=lambda t: (TRACKS.index(t.track), t.stem))
+    plan.targets = LayoutPlanner().place(plan.targets)
     return plan

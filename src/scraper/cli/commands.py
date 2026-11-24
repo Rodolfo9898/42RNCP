@@ -12,6 +12,7 @@ from scraper.storage.download import FileDownloader, ProjectSaver
 from scraper.core.exceptions import ScraperError, SessionExpired
 from scraper.site.gateway import FileCollector, ProjectReader
 from scraper.storage.library import Library
+from scraper.storage.reorganize import Reorganizer
 from scraper.core.models import Stats
 from scraper.site.page import PageParser
 from scraper.core.reporting import Reporter
@@ -51,6 +52,10 @@ class PlanCommand(Command):
         self.targets, self.plan, self.catalog, self.library = targets, plan, catalog, library
         self.settings, self.reporter, self.unassigned = settings, reporter, unassigned
 
+    def _shown(self, path) -> str:
+        base = self.library.samples.parent
+        return path.relative_to(base).as_posix() if base in path.parents else path.name
+
     def execute(self) -> None:
         log = self.reporter.log
         checked = self.library.checked()
@@ -61,13 +66,17 @@ class PlanCommand(Command):
             missing = [t for t in mine if not self.library.find_pdf(t.stem)]
             log(f"\n{track}: {len(mine)} project(s), {len(mine) - len(missing)} with a PDF, {len(missing)} missing")
             for t in missing:
-                log(f"  + samples/{track}/{t.stem}.pdf   ({t.slug})")
+                log(f"  + {self._shown(self.library.pdf_path(t))}   ({t.slug})")
             for name in self.plan.unresolved.get(track, []):
                 log(f"  ? {name}: not in the catalog (data/projects_21.json)")
         if self.settings.with_artifacts:
             todo = [t for t in self.targets if t.stem not in checked]
             log(f"\nartifacts: {len(self.targets) - len(todo)} project(s) already checked, {len(todo)} to visit "
-                f"(they go to {self.library.artifacts.name}/<name>/)")
+                f"(they go to {self.library.artifacts.name}/[<group>/]<name>/)")
+        misplaced = len(Reorganizer(self.library).moves(self.targets))
+        if misplaced:
+            log(f"\n{misplaced} PDF(s) or artifact folder(s) are not in the folder of their series: "
+                "`make samples ARGS=--reorganize` files them (add --dry-run to see the moves first).")
         visits = [t for t in self.targets if _needs_visit(t, self.library, self.settings, force=False)]
         log(f"\n{len(visits)} project page(s) would be visited. Nothing was downloaded (dry run).")
         if self.unassigned:
@@ -121,7 +130,7 @@ class ScrapeCommand(Command):
     def _print_summary(self, stats: Stats) -> None:
         log, c = self.reporter.log, stats.counts
         log(f"\nDone: {c['subject']} subject(s) and {c['artifact']} artifact(s) downloaded, {c['existing']} already there.")
-        log(f"PDFs are in {self.library.samples}, artifacts in {self.library.artifacts} ({human_size(sum(f.stat().st_size for t in self.targets for f in self.library.artifact_files(t.stem)))}).")
+        log(f"PDFs are in {self.library.samples}, artifacts in {self.library.artifacts} ({human_size(sum(f.stat().st_size for t in self.targets for f in self.library.artifact_files(t)))}).")
         if stats.no_files:
             log(f"No files found for {len(stats.no_files)} project(s) (probably no access): " + ", ".join(stats.no_files))
         if stats.failed:

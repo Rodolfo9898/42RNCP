@@ -45,7 +45,7 @@ track_of() {
         [ "$(key "${o%%=*}")" = "$k" ] && { echo "${o#*=}"; return 0; }
     done
     for t in $tracks; do
-        for pdf in samples/$t/*; do
+        for pdf in samples/$t/* samples/$t/*/*; do      # (a PDF is at the top of its track, or in the folder of its series)
             [ -f "$pdf" ] || continue
             [ "$(key "$(basename "$pdf" .pdf)")" = "$k" ] && { echo "$t"; return 0; }
         done

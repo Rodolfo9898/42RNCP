@@ -28,8 +28,8 @@ class SubjectFiles:
         candidates = [self.directory(session) / name]
         if subject.kind == "norm":
             candidates.append(self.library.norm_path)
-        elif subject.track in TRACKS:
-            candidates.append(self.library.root / subject.track / name)
+        elif subject.track in TRACKS and (filed := self.library.find(subject.track, name)) is not None:
+            candidates.append(filed)
         for path in candidates:
             if path.is_file() and not path.is_symlink():
                 return path

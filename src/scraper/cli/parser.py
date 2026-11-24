@@ -7,6 +7,7 @@ from collections.abc import Callable
 from scraper.site.login import Authenticator, BrowserAuthenticator, SessionManager
 from scraper.plan.catalog import Catalog
 from scraper.cli.commands import Command, PlanCommand, ScrapeCommand, select_targets
+from scraper.cli.reorganize import ReorganizeCommand
 from scraper.core.config import Settings
 from scraper.core.debug import HtmlDumper, NullDumper
 from scraper.site.http import HttpClient
@@ -32,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", "-p", action="append", metavar="PROJECT",
                    help="only this project (repeatable): its slug, name, id or file name, e.g. libft or 42cursus-libft")
     p.add_argument("--dry-run", action="store_true", help="show what is missing and what would be visited; offline, nothing is fetched")
+    p.add_argument("--reorganize", action="store_true",
+                   help="move the PDFs and artifacts you already have into the folders of their series (offline; with --dry-run: only list the moves)")
     p.add_argument("--unassigned", action="store_true", help="with --dry-run: also list the catalog's 42cursus projects that are in no track")
     p.add_argument("--force", action="store_true", help="download again what is already there")
     p.add_argument("--no-artifacts", action="store_true", help="only the subject PDFs (artifacts can be gigabytes)")
@@ -60,6 +63,8 @@ class CommandFactory:
         plan = build_plan(catalog, s.data_dir, with_children=s.with_children, with_experience=s.with_experience)
         library = Library(s.samples_dir, s.artifacts_dir)
         targets = select_targets(plan, catalog, tracks=args.track, projects=args.project)
+        if args.reorganize:
+            return ReorganizeCommand(targets, library, self.reporter, dry_run=args.dry_run)
         if args.dry_run:
             return PlanCommand(targets, plan, catalog, library, s, self.reporter, unassigned=args.unassigned)
         session = SessionManager(s, self.authenticator, self.reporter, self.http_factory, self.ask)

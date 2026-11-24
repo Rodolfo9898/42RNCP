@@ -23,13 +23,29 @@ class LibraryService:
         return self.root / NORM_PDF
 
     def files(self) -> dict[str, Path]:
-        """Subject PDFs in the library, by their path inside it (`common-core/libft.pdf`)."""
+        """Subject PDFs in the library, by their path inside it: `common-core/libft.pdf`, or `common-core/cpp-modules/cpp00.pdf` when the
+        PDF is in the folder of its series (one level of folders, like the projects folder)."""
         found: dict[str, Path] = {}
         for track in TRACKS:
             folder = self.root / track
-            for pdf in sorted(folder.glob("*.pdf")) if folder.is_dir() else []:
-                if pdf.is_file() and not pdf.is_symlink():
-                    found[f"{track}/{pdf.name}"] = pdf
+            for pdf in sorted(self._pdfs_of(folder)):
+                found[f"{track}/{pdf.relative_to(folder).as_posix()}"] = pdf
+        return found
+
+    def find(self, track: str, name: str) -> Path | None:
+        """The PDF called `name` in a track, wherever it is filed in it."""
+        return next((pdf for rel, pdf in self.files().items() if rel.split("/", 1)[0] == track and pdf.name == name), None)
+
+    @staticmethod
+    def _pdfs_of(folder: Path) -> list[Path]:
+        """The PDFs of a track folder and of its series folders; no link is followed and nothing hidden counts."""
+        if not folder.is_dir() or folder.is_symlink():
+            return []
+        found = []
+        for current, folders, names in os.walk(folder, followlinks=False):
+            folders[:] = [d for d in folders if not d.startswith(".") and not (Path(current) / d).is_symlink()]
+            found += [Path(current) / n for n in names if n.lower().endswith(".pdf") and not n.startswith(".")
+                      and (Path(current) / n).is_file() and not (Path(current) / n).is_symlink()]
         return found
 
     def listing(self) -> dict:
@@ -45,11 +61,14 @@ class LibraryService:
     def upload(self, track: str, name: str, data: bytes) -> dict:
         """Keep an uploaded PDF in the library folder of its track, unless that exact file is already there."""
         self._check(track, name, data)
-        target = self._slot(track, name, data)
-        if target is not None:
-            self._save(target, data)
-        rel = f"{track}/{name}"
-        return self._item(rel, self.root / rel)
+        existing = self.find(track, name)                       # filed anywhere in the track, in a series folder or not
+        if existing is not None:
+            if existing.read_bytes() != data:
+                raise Conflict(f"samples/{existing.relative_to(self.root).as_posix()} already exists with different content. "
+                               "Rename the file, or remove the old one from the folder first.")
+            return self._item(existing.relative_to(self.root).as_posix(), existing)
+        self._save(self._slot(track, name), data)
+        return self._item(f"{track}/{name}", self.root / track / name)
 
     @staticmethod
     def _item(rel: str, path: Path) -> dict:
@@ -66,16 +85,11 @@ class LibraryService:
         if name == NORM_PDF:
             raise VerdictError(f"{NORM_PDF} is the Norm: it is added automatically whenever C code is detected")
 
-    def _slot(self, track: str, name: str, data: bytes) -> Path | None:
-        """Where an upload goes, or None when that exact file is already there."""
+    def _slot(self, track: str, name: str) -> Path:
+        """Where a new upload goes: at the top of its track (nothing is filed in a series folder by an upload)."""
         target = self.root / track / name
-        if target.is_symlink():
+        if target.is_symlink() or target.exists():
             raise Conflict(f"samples/{track}/{name} is a link; it was not replaced")
-        if target.exists():
-            if target.read_bytes() == data:
-                return None
-            raise Conflict(f"samples/{track}/{name} already exists with different content. "
-                           "Rename the file, or remove the old one from the folder first.")
         return target
 
     @staticmethod
