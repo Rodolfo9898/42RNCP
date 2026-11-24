@@ -13,6 +13,7 @@ is the one at the top of its `verdict.md`).
 | cub3d | ✅ |
 | dr-quine | ✅ |
 | fract-ol | ✅ |
+| ft_lex | ✅ |
 | ft_printf | ⬜ |
 | ft_ssl_des | ✅ |
 | ft_ssl_md5 | ✅ |
