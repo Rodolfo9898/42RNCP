@@ -36,9 +36,12 @@ from .sandbox import Sandbox, SandboxError, sandbox_selftest
 from .selftest import summarize as selftest_summary
 from .spec import parse_norm, parse_subject
 from .models import AIEvent, AIState, ClaudeReport
+from . import progress as progress_mod
 from .store import RepoMeta, Session, Store, Subject, safe_filename
 
 WORKSPACE = Path(os.environ.get("WORKSPACE", "workspace")).resolve()
+# Progress.md (the table of which projects were run and what came out), mounted by compose as a file: unset, the feature is off.
+PROGRESS_FILE = Path(os.environ["PROGRESS_FILE"]) if os.environ.get("PROGRESS_FILE") else None
 PROJECTS = Path(os.environ.get("PROJECTS_DIR", WORKSPACE / "projects")).resolve()
 PROJECTS.mkdir(parents=True, exist_ok=True)
 SAMPLES = Path(os.environ.get("SAMPLES_DIR", "/samples" if Path("/samples").is_dir() else "samples")).resolve()
@@ -1334,6 +1337,34 @@ def cancel_ai(session_id: str) -> dict:
                 job.cancel.set()
     store.save(session)
     return view(session)
+
+
+_progress_lock = threading.Lock()
+
+
+@app.post("/api/sessions/{session_id}/progress")
+def update_progress(session_id: str) -> dict:
+    """Record this project's result (the one the verdict shows now) in its row of Progress.md. Meant to be pressed once the result is
+    one you are happy with, so it never happens by itself."""
+    session = session_or_404(session_id)
+    if PROGRESS_FILE is None:
+        raise HTTPException(404, "Progress.md is not available: start the app with `make run` (it mounts the file)")
+    if session.repo is None or not session.results:
+        raise HTTPException(400, "run the checks first: there is no result to record yet")
+    project = session.repo.name or Path(session.repo.path).name
+    result = view(session)["summary"]["overall"]
+    try:
+        symbol = progress_mod.symbol_for(result)
+        with _progress_lock:
+            text = PROGRESS_FILE.read_text(encoding="utf-8") if PROGRESS_FILE.is_file() else ""
+            new, before = progress_mod.update(text, project, symbol)
+            if new != text:
+                PROGRESS_FILE.write_text(new, encoding="utf-8")        # in place: the file keeps its identity on the host
+    except progress_mod.ProgressError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Progress.md cannot be written ({exc.strerror or exc})") from exc
+    return {"project": project, "result": result, "symbol": symbol, "before": before, "changed": before != symbol}
 
 
 @app.get("/api/sessions/{session_id}/verdict.md", response_class=PlainTextResponse)

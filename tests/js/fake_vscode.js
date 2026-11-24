@@ -57,8 +57,8 @@ function create() {
   const vscode = {
     EventEmitter, Uri, TabInputText, TabInputCustom, ThemeIcon, ThemeColor, TreeItem, MarkdownString, Range,
     StatusBarAlignment: { Left: 1 }, TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 }, ProgressLocation: { Notification: 15 },
-    QuickPickItemKind: { Separator: -1 }, ViewColumn: { Beside: -2 },
-    calls, messages, handlers, providers, groups, documents, settings, emitters,
+    QuickPickItemKind: { Separator: -1 }, ViewColumn: { Active: -1, Beside: -2 },
+    calls, messages, handlers, providers, groups, documents, settings, emitters, panels: [],
     window: {
       tabGroups,
       get activeTextEditor() { return active; },
@@ -75,6 +75,23 @@ function create() {
       },
       showWarningMessage: (m) => { messages.warning.push(m); return Promise.resolve(undefined); },
       showErrorMessage: (m) => { messages.error.push(m); return Promise.resolve(undefined); },
+      // A tab with a web page inside (the PDF viewer): what the page was given, what it said back, and whether the person closed it.
+      createWebviewPanel(viewType, title, column, options) {
+        const listeners = [];
+        const disposers = [];
+        const panel = {
+          viewType, title, column, options, disposed: false, revealed: 0, posted: [],
+          webview: { html: "", postMessage: (m) => { panel.posted.push(m); return Promise.resolve(true); },
+                     onDidReceiveMessage: (fn) => { listeners.push(fn); return { dispose() {} }; } },
+          reveal() { panel.revealed++; },
+          onDidDispose(fn) { disposers.push(fn); return { dispose() {} }; },
+          dispose() { if (panel.disposed) return; panel.disposed = true; disposers.forEach((fn) => fn()); },
+          // For the tests: the page says something to the extension.
+          say: (message) => Promise.all(listeners.map((fn) => fn(message))),
+        };
+        vscode.panels.push(panel);
+        return panel;
+      },
       createTerminal: (o) => { calls.push(["terminal", o]); return { show() {} }; },
       async showTextDocument(doc, options) {
         const uri = doc.uri || doc;

@@ -7,3 +7,8 @@ tests
 projects/
 .env
 .ssh-pub
+artifacts
+.session
+.scraper-venv
+.debug
+scraper

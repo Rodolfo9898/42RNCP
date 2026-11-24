@@ -298,3 +298,21 @@ def test_the_library_gives_the_layout_and_root_details_a_human_checked():
     gnl = next(r for r in parse_subject("get_next_line.pdf", read_pages(REAL / "common-core" / "get_next_line.pdf")).rules if r.kind == "required_files")
     assert gnl.params["root"] == ["get_next_line.c", "get_next_line_utils.c", "get_next_line.h"]
     assert not [r for r in parse_subject("libft.pdf", read_pages(REAL / "common-core" / "libft.pdf")).rules if r.params.get("from_text")]   # a table already says it
+
+
+def test_how_the_subject_is_graded_is_not_a_requirement_of_the_project():
+    """Sentences about the bonus being judged only if the mandatory part is perfect, or about sections "that may be required", are not
+    items for a human to check: nothing in the repository can satisfy them."""
+    pages = ["Chapter V\nMandatory part\n"
+             "Inside a window, the 3D object must be displayed in perspective and you must be able to rotate it.\n"
+             "Additional sections may be required depending on the project (e.g., usage examples, feature list).\n"
+             "Any required additions will be explicitly listed below.\n"
+             "Chapter VI\nBonus part\n"
+             "The bonus section will only be evaluated if the mandatory part is PERFECT. Perfect means everything works.\n"
+             "If you miss even one mandatory feature, the bonus won\u2019t be considered at all.\n"
+             "The bonus must also support a second object, loaded at run time.\n"]
+    texts = [r.text for r in parse_subject("scop.pdf", pages).rules if r.kind == "manual"]
+    assert any("3D object must be displayed" in t for t in texts)
+    assert any("bonus must also support a second object" in t for t in texts)         # a real bonus requirement stays
+    for gone in ("Additional sections may be required", "Any required additions", "will only be evaluated", "won\u2019t be considered"):
+        assert not any(gone in t for t in texts), gone

@@ -1,0 +1,24 @@
+# The post common core: the projects after the common core that are not in an RNCP list (those are in rncp_21.json and go to
+# samples/rncp). One project per line: its intra slug, its name or its id. Add a line to get a subject; `make samples-plan` lists
+# the projects of the catalog that no track has yet.
+computorv1
+computorv2
+dr-quine
+ft_kalman
+ft_ssl_des
+ft_ssl_rsa
+lem_in
+rubik
+scop
+42run
+particle-system
+ft_vox
+ft_minecraft
+abstract-vm
+mod1
+n-puzzle
+B
+cc1
+# not in the catalog snapshot yet: they are reported until the catalog (data/projects_21.json) knows them
+ft_lex
+ft_yacc

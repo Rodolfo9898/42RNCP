@@ -148,6 +148,7 @@ async function running() {
     if (url.endsWith("/api/sessions/s1")) return reply(session);
     if (url.endsWith("/api/health")) return reply({ llm: { provider: "claude-cli", configured: true } });
     if (url.endsWith("/api/sessions/s1/review-prompt")) return reply({ text: "review this project" });
+    if (url.endsWith("/api/sessions/s1/progress")) { app.progress = (app.progress || 0) + 1; return reply(app.progressAnswer || { project: "cub3d", result: "PASS", symbol: "✅", before: "⬜", changed: true }); }
     return reply({ detail: `unexpected ${init.method || "GET"} ${url}` }, 404);
   };
   mock.timers.enable({ apis: ["setInterval"] });
@@ -216,6 +217,23 @@ test("asking claude starts it with the prompt and does not wait for a click to m
     fs.unlinkSync(promptFile);
     assert.ok(run.vscode.messages.information.includes("claude's report goes into verdict.md by itself, each time it saves it."));
     assert.ok(!run.vscode.messages.buttons.some((b) => /merge/i.test(b)), "no button to click to merge");
+  } finally { run.stop(); }
+});
+
+test("Progress.md: the person confirms the result, it is recorded, and what changed is said", async () => {
+  const run = await running();
+  try {
+    await run.vscode.commands.executeCommand("verdict.updateProgress");
+    assert.equal(run.app.progress, 1);
+    assert.ok(run.vscode.messages.information.includes("cub3d: PASS. Record ✅ in Progress.md?"), "the question names the project, the result and the symbol");
+    assert.ok(run.vscode.messages.buttons.includes("Update Progress.md"));
+    assert.equal(run.vscode.messages.information.at(-1), "Progress.md: cub3d is now ✅ (was ⬜).");
+    run.app.progressAnswer = { project: "cub3d", result: "PASS", symbol: "✅", before: "✅", changed: false };
+    await run.vscode.commands.executeCommand("verdict.updateProgress");
+    assert.equal(run.vscode.messages.information.at(-1), "Progress.md already says ✅ for cub3d.");
+    run.app.progressAnswer = { project: "cub3d", result: "FAIL", symbol: "❌", before: null, changed: true };
+    await run.vscode.commands.executeCommand("verdict.updateProgress");
+    assert.equal(run.vscode.messages.information.at(-1), "Progress.md: cub3d is now ❌ (new row).");
   } finally { run.stop(); }
 });
 
@@ -300,4 +318,98 @@ test("markdown: the page opens in place of the code, and the code in place of th
   const dirty = v.vscode.openTab(v.write("EDITED.md", "x"), { isDirty: true });
   await v.vscode.handlers["verdict.markdownPreview"](dirty.input.uri);
   assert.ok(v.vscode.groups[0].tabs.includes(dirty), "a tab with unsaved changes stays open");
+});
+
+
+// ---------------------------------------------------------------------------------------------- pdf.js
+
+function subjects(extra = {}) {
+  const { vscode, mod } = fresh("pdf.js");
+  const session = { subjects: [{ name: "push_swap.pdf", kind: "subject", pages: 12 }, { name: "en.norm.pdf", kind: "norm", pages: 3 }] };
+  const asked = [];
+  const deps = { session: () => session, fetchPage: async (name, n) => { asked.push([name, n]); if (deps.failing) throw new Error("HTTP 404"); return Buffer.from(`png-${name}-${n}`); }, ...extra };
+  const ctx = { subscriptions: [] };
+  mod.activate(ctx, deps);
+  return { vscode, mod, session, asked, deps, open: (...args) => vscode.commands.executeCommand("verdict.openSubject", ...args) };
+}
+
+test("a subject opens in a tab of its own, with a page that can only show the images it is given", async () => {
+  const run = subjects();
+  await run.open("push_swap.pdf");
+  assert.equal(run.vscode.panels.length, 1);
+  const panel = run.vscode.panels[0];
+  assert.equal(panel.title, "push_swap.pdf");
+  assert.deepEqual(panel.options, { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
+  const csp = panel.webview.html.match(/Content-Security-Policy" content="([^"]+)"/)[1];
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /img-src data:;/);
+  assert.ok(!/https?:|unsafe-inline|unsafe-eval|connect-src/.test(csp), csp);          // no network, nothing inline without the nonce
+  const nonce = csp.match(/script-src 'nonce-([0-9a-f]+)'/)[1];
+  assert.equal([...panel.webview.html.matchAll(/<script nonce="([0-9a-f]+)"/g)].every((m) => m[1] === nonce), true);
+  assert.match(panel.webview.html, /"pages":12/);
+  assert.match(panel.webview.html, /"page":1/);
+});
+
+test("the pages are sent one by one, as images, and only the pages that exist are answered", async () => {
+  const run = subjects();
+  await run.open("push_swap.pdf");
+  const panel = run.vscode.panels[0];
+  await panel.say({ t: "page", n: 3 });
+  assert.deepEqual(run.asked, [["push_swap.pdf", 3]]);
+  assert.deepEqual(panel.posted, [{ t: "page", n: 3, src: `data:image/png;base64,${Buffer.from("png-push_swap.pdf-3").toString("base64")}` }]);
+  for (const bad of [{ t: "page", n: 0 }, { t: "page", n: 13 }, { t: "page", n: 1.5 }, { t: "page", n: "2" }, { t: "other", n: 1 }, null, "page", { n: 2 }]) await panel.say(bad);
+  assert.equal(run.asked.length, 1, "nothing else was fetched");
+  run.deps.failing = true;
+  await panel.say({ t: "page", n: 4 });
+  assert.deepEqual(panel.posted.at(-1), { t: "error", n: 4, text: "HTTP 404" });
+});
+
+test("opening a PDF again goes to its tab at the page asked for, never past its last page", async () => {
+  const run = subjects();
+  await run.open("push_swap.pdf", 5);
+  assert.match(run.vscode.panels[0].webview.html, /"page":5/);
+  await run.open("push_swap.pdf", 7);
+  await run.open("push_swap.pdf", 99);
+  await run.open("push_swap.pdf", "x");
+  assert.equal(run.vscode.panels.length, 1);
+  assert.equal(run.vscode.panels[0].revealed, 3);
+  assert.deepEqual(run.vscode.panels[0].posted.map((m) => m.page), [7, 12, 1]);
+  await run.open({ subject: "en.norm.pdf" });                       // from the Subjects view, the item itself is the argument
+  assert.deepEqual(run.vscode.panels.map((p) => p.title), ["push_swap.pdf", "en.norm.pdf"]);
+});
+
+test("a PDF that is not a subject of the review is explained, and a tab of a removed subject is closed", async () => {
+  const run = subjects();
+  await run.open("nothing.pdf");
+  await run.open(undefined);
+  assert.equal(run.vscode.panels.length, 0);
+  assert.deepEqual(run.vscode.messages.error, ["Verdict: nothing.pdf is not a subject of this review", "Verdict: that PDF is not a subject of this review"]);
+  run.session.subjects.push({ name: "empty.pdf", kind: "subject", pages: 0 });
+  await run.open("empty.pdf");
+  assert.match(run.vscode.messages.error.at(-1), /has no pages to show/);
+  await run.open("push_swap.pdf");
+  run.session.subjects = run.session.subjects.filter((s) => s.name !== "push_swap.pdf");
+  run.mod.sync(run.session);
+  assert.equal(run.vscode.panels[0].disposed, true);
+  await run.open("en.norm.pdf");
+  run.vscode.panels[1].dispose();                                   // closed by the person: opening it again makes a new tab
+  await run.open("en.norm.pdf");
+  assert.equal(run.vscode.panels.length, 3);
+});
+
+test("a file name cannot break out of the page's script", async () => {
+  const run = subjects();
+  run.session.subjects.push({ name: "</script><b>.pdf", kind: "subject", pages: 1 });
+  await run.open("</script><b>.pdf");
+  const html = run.vscode.panels[0].webview.html;
+  assert.ok(html.includes("\\u003c/script>") || html.includes("\u003c/script>"));
+  assert.equal(html.match(/<\/script>/g).length, 2, "only the two script tags of the page itself");
+  assert.ok(!html.includes("<b>"));
+});
+
+test("a very long PDF is not turned into thousands of page boxes", async () => {
+  const run = subjects();
+  run.session.subjects.push({ name: "huge.pdf", kind: "subject", pages: 100000 });
+  await run.open("huge.pdf");
+  assert.match(run.vscode.panels[0].webview.html, new RegExp(`"pages":${run.mod.MAX_PAGES}`));
 });

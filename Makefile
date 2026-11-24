@@ -45,7 +45,7 @@ SSH_KEYS ?=
 all: build
 
 # norminette is cloned from GitHub over SSH through the same agent (falls back to HTTPS).
-build: token ssh pubkeys
+build: token ssh pubkeys progress
 	$(if $(wildcard $(AGENT_SOCK)),SSH_AUTH_SOCK=$(AGENT_SOCK) $(COMPOSE) build --ssh default,$(COMPOSE) build)
 
 run: build token
@@ -62,11 +62,14 @@ fclean: token
 re: fclean build
 
 # The web app and the terminal container share a random token, and the editor has its own (the ?tkn= of its link); both live
-# in .env (never committed).
+# in .env (never committed). A missing .env is a copy of .env.example with those two filled in, on their own lines (scripts/env-setup.sh).
 token:
-	@touch .env && chmod 600 .env
-	@grep -q '^TERMINAL_TOKEN=.' .env || { printf '\nTERMINAL_TOKEN=%s\n' "$$(openssl rand -hex 24)" >> .env; echo "created TERMINAL_TOKEN in .env"; }
-	@grep -q '^EDITOR_TOKEN=.' .env || { printf 'EDITOR_TOKEN=%s\n' "$$(openssl rand -hex 24)" >> .env; echo "created EDITOR_TOKEN in .env"; }
+	@sh scripts/env-setup.sh .env .env.example
+
+# Progress.md is mounted into the web container as a file (`Verdict: Update Progress.md` writes the project's row). It has to exist
+# before compose starts, or Docker makes a folder of that name. An empty one is fine: the first update writes the table.
+progress:
+	@[ -e Progress.md ] || : > Progress.md
 
 # The link to the editor, with its token.
 url: token
@@ -116,10 +119,30 @@ cursus-push:
 cursus-refresh:
 	@sh scripts/cursus.sh refresh $(ONLY)
 
+# Subjects: fills samples/ (the PDFs, one folder per track) and artifacts/ (the other files of a project, in a folder named like its PDF)
+# from the 42 intra, using the lists in scraper/data. It runs on this computer, not in Docker: it needs your intra login
+# (INTRA_LOGIN and INTRA_PASSWORD in .env, or it asks for them), which no container ever gets. What is already there is kept.
+#   make samples-plan                         what is missing, per track (offline: nothing is fetched, no login)
+#   make samples                              download what is missing: the PDFs and the artifacts
+#   make samples ARGS="--track rncp --no-artifacts"      ...only the RNCP PDFs (more options: ARGS=--help)
+#   make samples ARGS="-p libft -p cpp-module-00"        ...only these projects
+SCRAPE_VENV ?= .scraper-venv
+
+$(SCRAPE_VENV)/.ready: scraper/requirements.txt
+	python3 -m venv $(SCRAPE_VENV)
+	$(SCRAPE_VENV)/bin/pip install -q -r scraper/requirements.txt
+	@touch $@
+
+samples-plan: $(SCRAPE_VENV)/.ready
+	@$(SCRAPE_VENV)/bin/python -m scraper --dry-run $(ARGS)
+
+samples: $(SCRAPE_VENV)/.ready
+	@$(SCRAPE_VENV)/bin/python -m scraper $(ARGS)
+
 # The Verdict extension (terminal/vscode/verdict) is tested in node with a fake editor: tests/test_extension.py runs those tests when node
 # is installed. This also installs, once and next to the tests, the TextMate engine that checks the colours of the ignore files.
 test-extension:
 	@cd tests/js && npm install --no-audit --no-fund --silent
 	@uv run pytest tests/test_extension.py -q
 
-.PHONY: all build run clean fclean re models token url ssh pubkeys cursus cursus-sort cursus-update cursus-push cursus-refresh test-extension
+.PHONY: all build run clean fclean re models token url ssh pubkeys progress samples samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh test-extension

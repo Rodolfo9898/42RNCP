@@ -3,9 +3,10 @@
 // Verdict inside VS Code: the review of a 42 project, talking to the web app (VERDICT_API, the `web` service). It adds
 //  - a Verdict view: the result and every check (a check opens the file and line it cites), and the subjects of the review;
 //  - commands: open or clone a project, add subjects, run the checks, ask claude (in a VS Code terminal) or the configured AI,
-//    merge claude's report into verdict.md, write a fix prompt, open verdict.md;
+//    merge claude's report into verdict.md, write a fix prompt, open verdict.md, record the result in Progress.md;
 //  - claude's report is merged into verdict.md by itself, each time claude saves it (report.js);
-//  - how files are shown: markdown as a page, JSON pretty-printed (viewers.js), and the colours of .gitignore / .dockerignore files.
+//  - how files are shown: markdown as a page, JSON pretty-printed (viewers.js), and the colours of .gitignore / .dockerignore files;
+//  - a subject PDF opens in the editor (pdf.js): from the Subjects view, or from the "From x.pdf, page N" of a check.
 //  - two Output channels, "Verdict: Checks" and "Verdict: AI review", and the project under review in the status bar.
 // Everything shown comes from untrusted input (subject PDFs, repositories): it is only ever put in labels and plain text.
 
@@ -15,6 +16,7 @@ const os = require("os");
 const path = require("path");
 const reports = require("./report");
 const viewers = require("./viewers");
+const pdf = require("./pdf");
 
 const API = (process.env.VERDICT_API || "http://web:8000").replace(/\/$/, "");
 const PROJECTS = process.env.PROJECTS_DIR || "/projects";
@@ -59,6 +61,18 @@ async function api(route, { method = "GET", body, form } = {}) {
   return data;
 }
 
+// A binary answer (a page of a subject PDF as an image).
+async function fetchBytes(route) {
+  let response;
+  try {
+    response = await fetch(`${API}/api/${route}`);
+  } catch (err) {
+    throw new Error(`the Verdict service (${API}) cannot be reached: ${err.message}`);
+  }
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
 async function ensureSession() {
   sid = context.globalState.get("verdict.session") || null;
   if (sid) {
@@ -72,6 +86,7 @@ async function ensureSession() {
 
 function setSession(data) {
   session = data;
+  pdf.sync(session);
   trackOutput();
   changed.fire();
   status.refresh();
@@ -228,6 +243,7 @@ class ReviewTree {
     for (const src of (r.sources || []).slice(0, 4)) {
       const it = new vscode.TreeItem(`From ${src.pdf}${src.page ? `, page ${src.page}` : ""}`);
       it.iconPath = new vscode.ThemeIcon("file-pdf");
+      it.command = { command: "verdict.openSubject", title: "Open the PDF", arguments: [src.pdf, src.page] };
       extra.push({ item: it });
     }
     const item = new vscode.TreeItem(`${r.title}${r.section === "bonus" ? " [bonus]" : ""}`,
@@ -255,6 +271,7 @@ class SubjectsTree {
       item.iconPath = new vscode.ThemeIcon(s.kind === "norm" ? "law" : "file-pdf");
       item.contextValue = s.kind === "norm" ? "norm" : "subject";
       item.subject = s.name;
+      item.command = { command: "verdict.openSubject", title: "Open the PDF", arguments: [s.name] };
       return item;
     });
   }
@@ -351,6 +368,22 @@ async function uploadSubject() {
   form.append("track", track.id);
   for (const f of files) form.append("files", new Blob([await vscode.workspace.fs.readFile(f)], { type: "application/pdf" }), path.basename(f.fsPath));
   setSession(await api(`sessions/${sid}/subjects`, { method: "POST", form }));
+}
+
+// The result the verdict shows now goes into this project's row of Progress.md. Pressed on purpose, once the result is one you accept.
+async function updateProgress() {
+  if (!session?.repo) throw new Error("open a project first");
+  if (!session.results?.length) throw new Error("run the checks first: there is no result to record yet");
+  const result = session.summary?.overall;
+  const symbol = { PASS: "✅", "PASS WITH ISSUES": "⚠️", FAIL: "❌" }[result];
+  if (!symbol) throw new Error(`there is no result to record yet (it says ${result || "nothing"})`);
+  const name = session.repo.name || session.repo.path;
+  const ok = await vscode.window.showInformationMessage(`${name}: ${result}. Record ${symbol} in Progress.md?`, { modal: true }, "Update Progress.md");
+  if (ok !== "Update Progress.md") return;
+  const done = await api(`sessions/${sid}/progress`, { method: "POST" });
+  vscode.window.showInformationMessage(done.changed
+    ? `Progress.md: ${done.project} is now ${done.symbol} (${done.before === null ? "new row" : `was ${done.before || "empty"}`}).`
+    : `Progress.md already says ${done.symbol} for ${done.project}.`);
 }
 
 async function removeSubject(item) {
@@ -514,6 +547,7 @@ function activate(ctx) {
   command("verdict.addSubjects", addSubjects);
   command("verdict.uploadSubject", uploadSubject);
   command("verdict.removeSubject", removeSubject);
+  command("verdict.updateProgress", updateProgress);
   command("verdict.runChecks", runChecks);
   command("verdict.aiReview", aiReview);
   command("verdict.mergeClaudeReview", mergeClaudeReview);
@@ -527,6 +561,7 @@ function activate(ctx) {
   ctx.subscriptions.push(vscode.window.registerTreeDataProvider("verdict.subjects", new SubjectsTree()));
   ctx.subscriptions.push(status.item, checksLog, aiLog, changed);
   viewers.activate(ctx);
+  pdf.activate(ctx, { session: () => session, fetchPage: (name, n) => fetchBytes(`sessions/${sid}/subjects/${encodeURIComponent(name)}/pages/${n}.png`) });
   watchReport(ctx);
   status.refresh();
   ensureSession().then(() => { if (busy()) poll(); }, (err) => {

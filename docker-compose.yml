@@ -5,6 +5,7 @@ services:
     build: .
     environment:
       PROJECTS_DIR: /projects
+      PROGRESS_FILE: /progress/Progress.md
       # Optional AI review (sends repository source to Anthropic). Leave unset to keep everything local.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-}
@@ -23,6 +24,7 @@ services:
       - workspace:/workspace
       - ${PROJECTS_DIR:-./projects}:/projects
       - ./samples:/samples   # writable: uploaded subjects are kept in samples/<track>/
+      - ./Progress.md:/progress/Progress.md   # writable: `Verdict: Update Progress.md` records a project's result in its row (`make` creates the file)
       # your ssh-agent's socket (set by `make`: your $SSH_AUTH_SOCK on Linux, Docker Desktop's path on macOS)
       - ${SSH_AGENT_MOUNT:-/run/host-services/ssh-auth.sock}:/run/host-services/ssh-auth.sock
     networks: [default, sandbox-net]

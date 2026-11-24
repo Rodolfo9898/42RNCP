@@ -17,8 +17,10 @@ loads your keys into it (`~/.ssh/id_*`, asking each passphrase once; pick others
 mounts the agent's socket into the web container. Clones authenticate through the agent: private keys are never copied
 into a container. `make ssh` does only that step.
 
-Settings live in `.env` (never committed). `make run` creates it if it is missing; to change options, start from
-`.env.example` (`cp .env.example .env`): it says what is required, what is recommended and what you can leave out.
+Settings live in `.env` (never committed). If it is missing, `make run` copies `.env.example` to it and fills in the two
+tokens on their own lines (`# TERMINAL_TOKEN=` becomes `TERMINAL_TOKEN=<random>`): nothing else of the example is moved or changed,
+and a value that is already there is never touched (`scripts/env-setup.sh`). The example says what is required, what is
+recommended and what you can leave out.
 
 The subject library is `samples/`, one folder per track:
 
@@ -30,9 +32,49 @@ samples/
   rncp/
 ```
 
+### Getting the subjects
+
+`make samples` fills the library from the 42 intra, so you do not collect PDFs by hand:
+
+```
+make samples-plan      what is missing, per track (offline: no login, nothing fetched)
+make samples           download what is missing: the PDFs into samples/<track>/ and the other files into artifacts/<name>/
+make samples ARGS="--track rncp --no-artifacts"   only the RNCP PDFs (all options: ARGS=--help)
+make samples ARGS="-p libft -p cpp-module-00"     only these projects
+```
+
+It is the `scraper/` package (the old `scapper` project, merged in) and it runs on your computer, not in Docker, because it logs in to
+the intra with your account (`INTRA_LOGIN` and `INTRA_PASSWORD` in `.env`, see `.env.example`, or it asks; they are never given to a
+container). A real browser (Playwright, your installed Chrome) is used only to log in; add `ARGS=--headed` the first time if the intra
+asks for 2FA or a captcha. The session is kept in `.session/`, so the next run does not log in again.
+
+- **What goes where.** `samples/common-core/`, `samples/post-common-core/` and `samples/rncp/`: one folder per track, no sub-folder per
+  RNCP. The PDF is named like the project (`libft.pdf`, `cpp03.pdf`, `h42n42.pdf`), and a project of a piscine or a series (Django - 0,
+  Day 00, ...) is a PDF of its own in the track of its parent (`--skip-children` leaves them out). The other files of a project (its
+  tester, a VM, ...) go to `artifacts/<name>/`, a folder named like the PDF, **next to** `samples/`, not inside it. They can be gigabytes:
+  `--no-artifacts` skips them, and `artifacts/` is in `.gitignore` and `.dockerignore`.
+- **Which projects.** The lists are in `scraper/data/`: `rncp_21.json` (every project of every RNCP option, plus the "suite" projects;
+  `--with-experience` adds the internships), `common-core.txt` and `post-common-core.txt` (one project per line: slug, name or id).
+  `projects_21.json` is the intra's catalog (id, name, slug, children), a snapshot copied from the 42tools data: a project that
+  is newer than it is added by slug in a `.txt` file. `make samples-plan ARGS=--unassigned` lists the catalog's projects that no track has.
+  A project in both an RNCP list and `post-common-core.txt` goes to `rncp`.
+- **Nothing is downloaded twice.** A subject you already have is recognised in any track and under any spelling (`kfs-1`, `kfs1`), and
+  is never replaced unless you pass `--force`. A project whose page was read in full is not visited again, so a second run is instant.
+  A download that fails leaves no half file and is retried by the next run.
+
+**Progress.md** is the table of which projects were run through Verdict and what came out (✅ `PASS`, ⚠️ `PASS WITH ISSUES`, ❌ `FAIL`,
+⬜ not run). Once you are happy with a result, **Update Progress.md** (the checklist button of the Review view, or `Verdict: Update
+Progress.md`) asks to confirm and then writes the project's row with the result the verdict shows now: the row is added in its
+alphabetical place if it has none, and the rest of the file is left as it is. It is never updated by itself. The file stays in the
+repository's root; the web container sees it as a file (`./Progress.md`, which `make` creates empty if it is missing, so Docker does
+not make a folder of that name), and writes it in place. If a git operation replaces the file on your computer, restart with `make run`.
+
 The **Subjects** view of Verdict lists the PDFs of this review. Add them with **Add from the Library** (grouped by track; the
 project's own subject, `push_swap.pdf` for push_swap, comes ticked) or **Upload a PDF**: you choose Common Core, Post Common Core
 or RNCP, and the PDF is added to the review and saved in that folder. An existing file with different content is never replaced.
+**Click a subject** to read it in the editor: its pages open in a tab of its own (one tab per PDF), loaded as you scroll, with a page
+box and a zoom. A check that cites the subject ("From push_swap.pdf, page 3") opens it at that page. The pages are images made by the
+web app, so no PDF is ever run in the editor, and the tab has no network access.
 
 C is detected when a subject says the project must be written in C or, when no subject names a language, when the
 repository has `.c` files and no C++ (vendored minilibx is ignored). The Norm then adds the norminette check and, as
@@ -528,8 +570,8 @@ search, splits, themes, keys, Settings.
 
 | Where | What |
 |---|---|
-| Review view | the result, the checks grouped by status (a `file:line` opens the file at that line), the AI review; its title bar has **Run Checks**, **AI Review**, **Merge claude's Review** (only to force it: claude's reports are merged by themselves), **Open verdict.md**, **Open Project**, and in `…` **Fix Prompt**, **Clone a Repository**, **Refresh**, **Check the Environment** |
-| Subjects view | the PDFs of this review: **Add from the Library**, **Upload a PDF**, ✕ to remove one |
+| Review view | the result, the checks grouped by status (a `file:line` opens the file at that line), the AI review; its title bar has **Run Checks**, **AI Review**, **Merge claude's Review** (only to force it: claude's reports are merged by themselves), **Open verdict.md**, **Open Project**, **Update Progress.md**, and in `…` **Fix Prompt**, **Clone a Repository**, **Refresh**, **Check the Environment** |
+| Subjects view | the PDFs of this review: a click opens the PDF in a tab (**Open the Subject PDF**), **Add from the Library**, **Upload a PDF**, ✕ to remove one |
 | Output panel | **Verdict: Checks** (what the run logged) and **Verdict: AI review** (each step of the AI review) |
 | Status bar | the project under review, its commit and the result; a click opens the Review view |
 

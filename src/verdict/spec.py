@@ -48,6 +48,17 @@ REQUIREMENT_WORDS = re.compile(
     re.I,
 )
 
+# Sentences about how the subject is read or graded, not about the project: nothing in the repository can satisfy them, so they are
+# not worth a "needs manual review" line (the bonus being judged only if the mandatory part is perfect, sections of the README "that may
+# be required", additions "listed below").
+ABOUT_THE_SUBJECT = re.compile(
+    r"\bbonus\b.{0,80}\b(?:will only be|won[’']?t be|will not be|is only|are only|only counts?|only be)\b.{0,40}"
+    r"\b(?:evaluated|considered|graded|assessed|taken into account|counted)\b"
+    r"|\b(?:additional|extra|optional) sections? (?:may|might|can) be required\b"
+    r"|\bany required additions? (?:will|would) be\b",
+    re.I,
+)
+
 DEFAULT_MAKEFILE_RULES = ["NAME", "all", "clean", "fclean", "re"]
 
 # Functions that only appear through well-known libraries named in "External Function".
@@ -493,7 +504,7 @@ def _prose_rules(lines: list[Line], pdf: str, module: int | None, file_hits: lis
             if names:                                   # "You must submit a Makefile": a required file, not a vague manual item
                 file_hits.append((names, root, _line_of(prose, line, names[0])))
                 continue
-        if rule is None and REQUIREMENT_WORDS.search(sentence):
+        if rule is None and REQUIREMENT_WORDS.search(sentence) and not ABOUT_THE_SUBJECT.search(sentence):
             rule = _rule("manual", "Needs manual review", text=sentence, section=line.section,
                          params={"text": sentence}, source=Source(pdf=pdf, page=line.page))
         if rule:

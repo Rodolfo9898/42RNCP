@@ -114,3 +114,22 @@ def test_the_languages_have_their_servers_and_the_editor_is_set_up_for_them():
     assert settings["files.associations"]["*.h"] == "c", "a header is C here, not C++ (which is what VS Code assumes)"
     assert settings["clangd.path"] == "/usr/bin/clangd"
     assert "--background-index" in settings["clangd.arguments"]
+
+
+def test_a_subject_and_the_page_a_check_cites_open_the_pdf_in_the_editor():
+    manifest_commands = {c["command"] for c in MANIFEST["contributes"]["commands"]}
+    assert "verdict.openSubject" in manifest_commands
+    extension = SOURCES["extension.js"]
+    assert extension.count('command: "verdict.openSubject"') == 2            # a subject of the Subjects view, and a "From x.pdf, page N"
+    assert "arguments: [s.name]" in extension and "arguments: [src.pdf, src.page]" in extension
+    assert "pdf.activate(ctx" in extension and "pdf.sync(session)" in extension
+    inline = [m for m in MANIFEST["contributes"]["menus"]["view/item/context"] if m["command"] == "verdict.openSubject"]
+    assert inline and "viewItem == subject" in inline[0]["when"] and "viewItem == norm" in inline[0]["when"]
+
+
+def test_the_pdf_page_is_served_by_the_route_the_extension_asks_for():
+    """The extension fetches sessions/<id>/subjects/<name>/pages/<n>.png: that is the app's page-image route."""
+    from verdict import main
+    routes = {r.path for r in main.app.routes}
+    assert "/api/sessions/{session_id}/subjects/{name}/pages/{page}.png" in routes
+    assert "subjects/${encodeURIComponent(name)}/pages/${n}.png" in SOURCES["extension.js"]
