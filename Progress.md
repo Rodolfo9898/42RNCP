@@ -18,6 +18,7 @@ is the one at the top of its `verdict.md`).
 | ft_ssl_des | ✅ |
 | ft_ssl_md5 | ✅ |
 | ft_ssl_rsa | ✅ |
+| ft_yacc | ✅ |
 | get_next_line | ⬜ |
 | inception | ⬜ |
 | lem_in | ✅ |
