@@ -19,6 +19,21 @@ mod1
 n-puzzle
 B
 cc1
+# the other projects of the outer circles that the catalog has and no RNCP list claims (the older full download had them too)
+42cursus-corewar
+42cursus-death
+doom_nukem
+freddie-mercury
+ft_kleene
+42cursus-ft_ls
+ft_newton
+Ftl_quantum
+42cursus-guimp
+42cursus-in-the-shadows
+42cursus-shaderpixel
+Very_Real_Engine
+42cursus-war
+42cursus-xv
 # not in the catalog snapshot yet: they are reported until the catalog (data/projects_21.json) knows them
 ft_lex
 ft_yacc
