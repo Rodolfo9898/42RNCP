@@ -2,7 +2,7 @@
 # Makes sure .env exists and holds the secrets the containers need (called by `make token`, so by every `make build` / `make run`).
 #
 #   - No .env yet: it is a copy of .env.example, so it has the example's structure, comments and options.
-#   - A secret that is missing (TERMINAL_TOKEN, EDITOR_TOKEN) is filled in on its own line of the example (`# TERMINAL_TOKEN=` becomes
+#   - A secret that is missing (TERMINAL_TOKEN, EDITOR_TOKEN, SCRAPER_TOKEN) is filled in on its own line of the example (`# TERMINAL_TOKEN=` becomes
 #     `TERMINAL_TOKEN=<random>`). Nothing else is moved or rewritten, and a value that is already there is never changed.
 #   - An .env that was not made from the example (no such line) gets the secret appended at the end.
 set -eu
@@ -42,3 +42,4 @@ fill() {
 
 fill TERMINAL_TOKEN
 fill EDITOR_TOKEN
+fill SCRAPER_TOKEN

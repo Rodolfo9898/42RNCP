@@ -24,3 +24,13 @@ test("a channel is shown with or without taking the focus, and is disposed with 
   assert.deepEqual(shown, [true, undefined]);
   assert.equal(disposed, true);
 });
+
+test("a block is a report: the first line carries the time, the others follow as they are (blank lines included)", () => {
+  editor.reset();
+  const log = new ChannelLog(editor.api.window.createOutputChannel("x"));
+  log.block(["Report", "", "  - a"]);
+  log.block([]);
+  assert.equal(editor.calls.length, 3);
+  assert.match(editor.calls[0][1] as string, /^\[\d\d:\d\d:\d\d\] Report$/);
+  assert.deepEqual(editor.calls.slice(1).map((c) => c[1]), ["", "  - a"]);
+});

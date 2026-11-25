@@ -64,12 +64,6 @@ class ProjectSaver:
     def __init__(self, downloader: FileDownloader, library: Library, settings: Settings, reporter: Reporter) -> None:
         self.downloader, self.library, self.settings, self.reporter = downloader, library, settings, reporter
 
-    def _shown(self, path: Path) -> str:
-        for base in (self.library.samples.parent, self.library.artifacts.parent):
-            if path.is_relative_to(base):
-                return path.relative_to(base).as_posix()
-        return path.name
-
     def save(self, target: Target, info: ProjectInfo, *, force: bool, stats: Stats) -> bool:
         """True when nothing failed (so the project does not need to be visited again)."""
         failed_before = len(stats.failed)
@@ -81,7 +75,7 @@ class ProjectSaver:
     def _subject(self, target: Target, info: ProjectInfo, force: bool, stats: Stats) -> None:
         existing = self.library.find_pdf(target.stem)
         if existing and not force:
-            self.reporter.log(f"  = {self._shown(existing)} (exists)")
+            self.reporter.log(f"  = {self.library.shown(existing)} (exists)")
             stats.counts["existing"] += 1
             return
         link = choose_subject(info.subjects, self.settings.lang)
@@ -105,12 +99,12 @@ class ProjectSaver:
 
     def _save_file(self, url: str, dest: Path, *, pdf: bool, force: bool, stats: Stats, kind: str) -> None:
         if dest.exists() and not force:
-            self.reporter.log(f"  = {self._shown(dest)} (exists)")
+            self.reporter.log(f"  = {self.library.shown(dest)} (exists)")
             stats.counts["existing"] += 1
             return
         size = self.downloader.download(url, dest, pdf=pdf)
         if size is None:
-            stats.failed.append(self._shown(dest))
+            stats.failed.append(self.library.shown(dest))
             return
-        self.reporter.log(f"  + {self._shown(dest)} ({human_size(size)})")
+        self.reporter.log(f"  + {self.library.shown(dest)} ({human_size(size)})")
         stats.counts[kind] += 1

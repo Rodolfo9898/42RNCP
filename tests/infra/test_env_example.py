@@ -38,7 +38,7 @@ def test_the_example_activates_only_the_one_line_that_is_needed_for_the_ai_revie
 
 def test_the_example_holds_no_secret_or_real_looking_value():
     for name, value in re.findall(r"^#?\s*([A-Z][A-Z_]+)=(\S*)", EXAMPLE, re.M):
-        if name in {"TERMINAL_TOKEN", "EDITOR_TOKEN", "LLM_API_KEY", "ANTHROPIC_API_KEY", "INTRA_LOGIN", "INTRA_PASSWORD"}:
+        if name in {"TERMINAL_TOKEN", "EDITOR_TOKEN", "SCRAPER_TOKEN", "LLM_API_KEY", "ANTHROPIC_API_KEY", "INTRA_LOGIN", "INTRA_PASSWORD"}:
             assert value == "", f"{name} must be empty in the example"
     assert not re.search(r"sk-[A-Za-z0-9_-]{8,}|[0-9a-f]{32,}", EXAMPLE)
 
@@ -49,7 +49,8 @@ def test_the_intra_login_is_never_handed_to_a_container():
 
 
 def test_the_token_is_documented_as_automatic_and_not_activated():
-    assert re.search(r"^# TERMINAL_TOKEN=$", EXAMPLE, re.M) and not re.search(r"^TERMINAL_TOKEN=", EXAMPLE, re.M)
+    for name in ("TERMINAL_TOKEN", "EDITOR_TOKEN", "SCRAPER_TOKEN"):
+        assert re.search(rf"^# {name}=$", EXAMPLE, re.M) and not re.search(rf"^{name}=", EXAMPLE, re.M), name
     assert "make` fills it in" in EXAMPLE
 
 
@@ -82,9 +83,10 @@ def test_a_missing_env_is_a_copy_of_the_example_with_only_the_tokens_filled_in(t
     lines, original = text.splitlines(), EXAMPLE.splitlines()
     assert len(lines) == len(original)                                             # same structure: no line added, moved or dropped
     changed = [(a, b) for a, b in zip(original, lines) if a != b]
-    assert [a for a, _ in changed] == ["# TERMINAL_TOKEN=", "# EDITOR_TOKEN="]
-    assert re.fullmatch(r"TERMINAL_TOKEN=[0-9a-f]{48}", changed[0][1]) and re.fullmatch(r"EDITOR_TOKEN=[0-9a-f]{48}", changed[1][1])
-    assert changed[0][1].split("=")[1] != changed[1][1].split("=")[1]
+    assert [a for a, _ in changed] == ["# TERMINAL_TOKEN=", "# EDITOR_TOKEN=", "# SCRAPER_TOKEN="]
+    for (_, line), name in zip(changed, ("TERMINAL_TOKEN", "EDITOR_TOKEN", "SCRAPER_TOKEN")):
+        assert re.fullmatch(name + r"=[0-9a-f]{48}", line)
+    assert len({line.split("=")[1] for _, line in changed}) == 3                  # three different secrets
     assert "LLM_PROVIDER=claude-cli" in lines                                      # the example's one active line comes along
 
 
@@ -102,7 +104,7 @@ def test_running_it_again_changes_nothing_and_a_value_that_is_there_is_kept(tmp_
 def test_an_env_that_was_not_made_from_the_example_gets_the_tokens_at_the_end(tmp_path):
     text = setup_env(tmp_path, env="LLM_PROVIDER=claude-cli\nPROJECTS_DIR=/x\n")
     assert text.startswith("LLM_PROVIDER=claude-cli\nPROJECTS_DIR=/x\n")
-    assert re.search(r"\nTERMINAL_TOKEN=[0-9a-f]{48}\nEDITOR_TOKEN=[0-9a-f]{48}\n$", text)
+    assert re.search(r"\nTERMINAL_TOKEN=[0-9a-f]{48}\nEDITOR_TOKEN=[0-9a-f]{48}\nSCRAPER_TOKEN=[0-9a-f]{48}\n$", text)
 
 
 @needs_tools
@@ -110,7 +112,7 @@ def test_without_an_example_the_env_is_still_made(tmp_path):
     (tmp_path / "scripts" / "env").mkdir(parents=True)
     (tmp_path / "scripts" / "env" / "env-setup.sh").write_text(SETUP.read_text())
     assert subprocess.run(["sh", "scripts/env/env-setup.sh", ".env", "missing.example"], cwd=tmp_path).returncode == 0
-    assert len(re.findall(r"^(TERMINAL|EDITOR)_TOKEN=[0-9a-f]{48}$", (tmp_path / ".env").read_text(), re.M)) == 2
+    assert len(re.findall(r"^(TERMINAL|EDITOR|SCRAPER)_TOKEN=[0-9a-f]{48}$", (tmp_path / ".env").read_text(), re.M)) == 3
 
 
 @pytest.mark.skipif(shutil.which("make") is None or shutil.which("docker") is None, reason="needs make and docker")

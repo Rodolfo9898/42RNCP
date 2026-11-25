@@ -1,5 +1,6 @@
-"""What the web-layer tests plug into the app and build with: a terminal that records what it is asked, a `spawn` that runs
-background work where the test can see it, and the session builders every topic uses (the fixtures that use them are in conftest)."""
+"""What the web-layer tests plug into the app and build with: a terminal and a subject downloader that record what they are asked, a
+`spawn` that runs background work where the test can see it, and the session builders every topic uses (the fixtures that use them
+are in conftest)."""
 
 import hashlib
 import json
@@ -86,6 +87,50 @@ class FakeTerminal:
         if self.down:
             raise Unavailable("could not reach the terminal service (ConnectError)")
         return {"tools": self.tools}
+
+
+class FakeScraper:
+    """The subject downloader as the web app sees it, scripted: the answer of each call is in `answers` (by the name of the call), every
+    call is recorded in `calls` with its arguments. `error` (a VerdictError) is what every call raises, the way the real gateway tells a
+    refusal of the service, or a service that is down."""
+
+    configured = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.error: Exception | None = None
+        self.answers: dict[str, dict] = {
+            "plan": {"session": {"valid": True, "reason": ""}, "tracks": [], "unknown": [], "misplaced": 0},
+            "start_download": {"id": "d1", "state": "running"},
+            "current_download": {"state": "idle", "id": "", "lines": [], "next": 0, "summary": None},
+            "cancel_download": {"state": "idle"},
+            "reorganize": {"dry_run": True, "done": 0, "moves": []},
+        }
+
+    def of(self, kind: str) -> list[tuple]:
+        return [call for call in self.calls if call[0] == kind]
+
+    def _answer(self, kind: str, *arguments) -> dict:
+        self.calls.append((kind, *arguments))
+        if self.error is not None:
+            raise self.error
+        return self.answers[kind]
+
+    def plan(self, tracks: list[str], children: bool) -> dict:
+        return self._answer("plan", tracks, children)
+
+    def start_download(self, *, tracks, projects, artifacts, children, force) -> dict:
+        return self._answer("start_download", {"tracks": tracks, "projects": projects, "artifacts": artifacts, "children": children,
+                                               "force": force})
+
+    def current_download(self, since: int = 0) -> dict:
+        return self._answer("current_download", since)
+
+    def cancel_download(self) -> dict:
+        return self._answer("cancel_download")
+
+    def reorganize(self, dry_run: bool) -> dict:
+        return self._answer("reorganize", dry_run)
 
 
 class UpSandbox:

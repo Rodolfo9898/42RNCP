@@ -17,7 +17,7 @@ loads your keys into it (`~/.ssh/id_*`, asking each passphrase once; pick others
 mounts the agent's socket into the web container. Clones authenticate through the agent: private keys are never copied
 into a container. `make ssh` does only that step.
 
-Settings live in `.env` (never committed). If it is missing, `make run` copies `.env.example` to it and fills in the two
+Settings live in `.env` (never committed). If it is missing, `make run` copies `.env.example` to it and fills in the three
 tokens on their own lines (`# TERMINAL_TOKEN=` becomes `TERMINAL_TOKEN=<random>`): nothing else of the example is moved or changed,
 and a value that is already there is never touched (`scripts/env/env-setup.sh`). The example says what is required, what is
 recommended and what you can leave out.
@@ -34,19 +34,30 @@ samples/
 
 ### Getting the subjects
 
-`make samples` fills the library from the 42 intra, so you do not collect PDFs by hand:
+The library is filled from the 42 intra, so you do not collect PDFs by hand. Two ways in, the same scraper behind both:
+
+- **From the editor** (the Subjects view's title bar, or the Command Palette): **Verdict: Show What Subjects Are Missing**,
+  **Verdict: Download Subjects from the Intra…** (pick the tracks, with or without artifacts; a progress notification follows the download
+  and has a Cancel button; the log is in the *Verdict: Subjects* output) and **Verdict: File Subjects in Their Series Folders**. The work is done
+  by the `scraper` container, the only thing that talks to the intra for the editor. **It never logs in:** there is no browser and no
+  password in it. You log in once on your computer with `make samples-login`; the cookies that saves (`.session/`, readable only by you) are
+  mounted read-only into that container alone, not into the web app and not into the terminal where claude runs. When they expire the editor
+  says so and you run `make samples-login` again. The web app reaches it with its own `SCRAPER_TOKEN` over a network that only the two share.
+- **From a terminal** on your computer, without Docker:
 
 ```
+make samples-login     log in once and save the session (add ARGS=--headed when the intra asks for 2FA or a captcha)
 make samples-plan      what is missing, per track (offline: no login, nothing fetched)
 make samples           download what is missing: the PDFs into samples/<track>/ and the other files into artifacts/<name>/
 make samples ARGS="--track rncp --no-artifacts"   only the RNCP PDFs (all options: ARGS=--help)
 make samples ARGS="-p libft -p cpp-module-00"     only these projects
 ```
 
-It is the `src/scraper/` package (the old `scapper` project, merged in) and it runs on your computer, not in Docker, because it logs in to
-the intra with your account (`INTRA_LOGIN` and `INTRA_PASSWORD` in `.env`, see `.env.example`, or it asks; they are never given to a
-container). A real browser (Playwright, your installed Chrome) is used only to log in; add `ARGS=--headed` the first time if the intra
-asks for 2FA or a captcha. The session is kept in `.session/`, so the next run does not log in again.
+It is the `src/scraper/` package (the old `scapper` project, merged in). The login runs on your computer, never in Docker, because it uses
+your account (`INTRA_LOGIN` and `INTRA_PASSWORD` in `.env`, see `.env.example`, or it asks; they are never given to a container). A real
+browser (Playwright, your installed Chrome) is used only to log in; add `ARGS=--headed` the first time if the intra asks for 2FA or a
+captcha. The session is kept in `.session/`, so the next run, here or from the editor, does not log in again. (The container runs as
+uid 1000 like the web app: on Linux with another user id, make `.session/` and its files readable to it.)
 
 - **What goes where.** `samples/common-core/`, `samples/post-common-core/` and `samples/rncp/`: one folder per track, no sub-folder per
   RNCP. The PDF is named like the project (`libft.pdf`, `cpp03.pdf`, `h42n42.pdf`). **A series has a folder of its own**, the same
@@ -274,7 +285,8 @@ Three containers run: `web` (the app), `sandbox` (builds and runs student code, 
   every symlink are left out, and the copy's `.git` has no hooks and a minimal config, so nothing in it can make git run a program.
 - The editor only opens with its token (`?tkn=EDITOR_TOKEN` in the link, once per browser) and listens on this machine only
   (`127.0.0.1`). The web app and the terminal service share another random `TERMINAL_TOKEN`; both are created in `.env` by
-  `make`. The editor and its terminals get none of the app's secrets (no API key, no token).
+  `make`; a third, `SCRAPER_TOKEN`, is shared by the web app and the scraper container. The editor and its terminals get none of the app's
+  secrets (no API key, no token, no intra session).
 
 ## Terminals, to try things by hand
 
@@ -504,6 +516,7 @@ src/
   editor_launcher.py      main of the terminal container: the editor (VS Code in the browser) and the service
   sandbox_server.py       main of the sandbox that builds and runs the code under review
   subject_scraper.py      main of the subject scraper (`make samples`)
+  scraper_server.py       main of the scraper service (the `scraper` container): the same scraper, behind a small REST API
   verdict/                the review
     app/ api/             the composition root (Container), the FastAPI app, and one router per REST resource
     sessions/ library/    the session and its store; the subject library, the Norm, the PDFs of a review
@@ -517,11 +530,12 @@ src/
     reviews/              the AI backends, claude's report block, the digest, the prompts
   terminal/               the terminal service (settings, api, claude, report, subjects, projects) and the editor launcher
   sandbox/                the command runner (standard library only: display, request, execution, service)
-  scraper/                the subject scraper (core, plan, site, storage, cli) and data/ (the project lists)
+  scraper/                the subject scraper (core, plan, site, storage, cli), what is missing (inventory), the download job (jobs),
+                          its REST service (server) and data/ (the project lists)
   shared/                 what several features agree on (constants, the environment self-test)
   extension/              the Verdict extension of the editor, in TypeScript (compiled to out/)
 docker/
-  web/  sandbox/  terminal/     one folder per image: its Dockerfile and its Dockerfile.dockerignore (an allow-list)
+  web/  sandbox/  terminal/  scraper/     one folder per image: its Dockerfile and its Dockerfile.dockerignore (an allow-list)
                                 (+ compose.github.yml and compose.ssh.yml: the opt-in overlays of docker-compose.yml)
 scripts/
   container/  conventions/  cursus/  env/  llm/  norminette/  pdf/  ssh/     scripts, one folder per purpose
@@ -530,11 +544,13 @@ docker-compose.yml        the main file: builds and wires all the images. Makefi
 ```
 
 The web app is a REST API (the Verdict extension is its only client): `GET /api/health`, `GET /api/environment`, `GET /api/library`,
-`POST /api/library/{track}/subjects`, `GET /api/projects`, `POST|GET|DELETE /api/sessions[/{id}]`,
+`POST /api/library/{track}/subjects`, `GET /api/library/plan`, `POST /api/library/downloads`, `GET|DELETE /api/library/downloads/current`,
+`POST /api/library/reorganizations` (the subject downloads, proxied to the scraper container), `GET /api/projects`, `POST|GET|DELETE /api/sessions[/{id}]`,
 `POST /api/sessions/{id}/subjects`, `DELETE .../subjects/{name}`, `GET .../subjects/{name}/pages/{n}.png`, `PUT .../repo`,
 `POST .../runs`, `PUT .../claude-review`, `POST|DELETE .../ai-review`, `GET .../prompts/review|fix`, `PUT .../progress`,
 `GET .../verdict.md` (the interactive documentation of FastAPI is not served). The terminal service has its own small internal API
-(`/sessions/{sid}/report`, `/sessions/{sid}/subjects`, `/environment`, `/reviews`, `/health`), reachable only with the shared token.
+(`/sessions/{sid}/report`, `/sessions/{sid}/subjects`, `/environment`, `/reviews`, `/health`), reachable only with the shared token;
+the scraper container has one too (`/plan`, `/downloads`, `/downloads/current`, `/reorganizations`, `/health`) that only the web app can call.
 
 ## How it works
 

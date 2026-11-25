@@ -7,9 +7,11 @@ from collections.abc import Callable
 from scraper.site.login import Authenticator, BrowserAuthenticator, SessionManager
 from scraper.plan.catalog import Catalog
 from scraper.cli.commands import Command, PlanCommand, ScrapeCommand, select_targets
+from scraper.cli.login import LoginCommand
 from scraper.cli.reorganize import ReorganizeCommand
 from scraper.core.config import Settings
 from scraper.core.debug import HtmlDumper, NullDumper
+from scraper.inventory.builder import PlanReportBuilder
 from scraper.site.http import HttpClient
 from scraper.storage.library import Library
 from scraper.core.reporting import Reporter
@@ -24,6 +26,7 @@ DESCRIPTION = """Fill samples/ (the subject PDFs) and artifacts/ (the files that
 
 What is already there is never downloaded again. A real browser (Playwright) is used only to log in; everything else is plain
 authenticated HTTP. INTRA_LOGIN and INTRA_PASSWORD come from .env (or are asked for).
+The editor's downloader (the scraper service) reuses the session that --login saves in .session/: it never logs in itself.
 """
 
 
@@ -42,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-experience", action="store_true", help="also the RNCP 'experience' projects (internships, work-study)")
     p.add_argument("--lang", default=None, help="preferred subject language (default: $SUBJECT_LANG or en)")
     p.add_argument("--delay", type=float, default=None, help="seconds between projects (default: $SCRAPE_DELAY or 1.5)")
+    p.add_argument("--login", action="store_true",
+                   help="only log in with the browser and save the session in .session/ (the editor's downloader reuses it; it never logs in)")
     p.add_argument("--headed", action="store_true", help="show the browser window while logging in (2FA/captcha)")
     p.add_argument("--dump-html", action="store_true", help="save the fetched pages to .debug/ to tune the parsing")
     return p
@@ -59,6 +64,9 @@ class CommandFactory:
 
     def create(self, args: argparse.Namespace) -> Command:
         s = self.settings
+        session = SessionManager(s, self.authenticator, self.reporter, self.http_factory, self.ask)
+        if args.login:
+            return LoginCommand(session, s, self.reporter)
         catalog = Catalog.load(s.data_dir / "projects_21.json")
         plan = build_plan(catalog, s.data_dir, with_children=s.with_children, with_experience=s.with_experience)
         library = Library(s.samples_dir, s.artifacts_dir)
@@ -66,8 +74,7 @@ class CommandFactory:
         if args.reorganize:
             return ReorganizeCommand(targets, library, self.reporter, dry_run=args.dry_run)
         if args.dry_run:
-            return PlanCommand(targets, plan, catalog, library, s, self.reporter, unassigned=args.unassigned)
-        session = SessionManager(s, self.authenticator, self.reporter, self.http_factory, self.ask)
+            return PlanCommand(PlanReportBuilder(plan, catalog, library, s).build(targets, unassigned=args.unassigned), library, self.reporter)
         dumper = HtmlDumper(s.debug_dir) if args.dump_html else NullDumper()
         return ScrapeCommand(targets=targets, settings=s, session=session, library=library, reporter=self.reporter,
                              dumper=dumper, force=args.force)

@@ -17,8 +17,9 @@ from scraper.plan.catalog import Catalog, Project
 from scraper.plan.layout import LayoutPlanner
 from scraper.plan.target import Target
 
-__all__ = ["TRACKS", "Target", "Plan", "build_plan"]
+__all__ = ["TRACKS", "TRACK_LABELS", "Target", "Plan", "build_plan"]
 TRACKS = ("common-core", "post-common-core", "rncp")        # the folders of samples/, as the app knows them
+TRACK_LABELS = {"common-core": "Common Core", "post-common-core": "Post Common Core", "rncp": "RNCP"}      # as a person reads them
 ORDER = ("common-core", "rncp", "post-common-core")         # who wins when a project is in two lists
 
 

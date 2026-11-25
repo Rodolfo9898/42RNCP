@@ -1,0 +1,6 @@
+# The build context of the scraper image is the repository, so everything its Dockerfile does not copy in stays out: the samples, the
+# artifacts (gigabytes), the secrets in .env, the saved intra session (.session is mounted read-only at run time, never baked in)...
+*
+!src/scraper
+!src/scraper_server.py
+**/__pycache__

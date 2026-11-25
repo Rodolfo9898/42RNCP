@@ -16,6 +16,8 @@ class Settings:
     progress_file: Path | None = None    # Progress.md, mounted as a file by compose; unset, recording a result is off
     terminal_url: str = ""
     terminal_token: str = ""
+    scraper_url: str = ""                # the subject downloader (src/scraper_server.py); both unset, the library cannot download
+    scraper_token: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -25,8 +27,13 @@ class Settings:
         progress = env.get("PROGRESS_FILE")
         return cls(workspace=workspace, projects=Path(env.get("PROJECTS_DIR", workspace / "projects")).resolve(),
                    samples=Path(samples).resolve(), progress_file=Path(progress) if progress else None,
-                   terminal_url=env.get("TERMINAL_URL", "").rstrip("/"), terminal_token=env.get("TERMINAL_TOKEN", ""))
+                   terminal_url=env.get("TERMINAL_URL", "").rstrip("/"), terminal_token=env.get("TERMINAL_TOKEN", ""),
+                   scraper_url=env.get("SCRAPER_URL", "").rstrip("/"), scraper_token=env.get("SCRAPER_TOKEN", ""))
 
     @property
     def terminal_configured(self) -> bool:
         return bool(self.terminal_url and self.terminal_token)
+
+    @property
+    def scraper_configured(self) -> bool:
+        return bool(self.scraper_url and self.scraper_token)

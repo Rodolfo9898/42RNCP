@@ -11,10 +11,12 @@ from verdict.core.background import Spawn, in_thread
 from verdict.documents.progress import ProgressService
 from verdict.documents.verdict_file import VerdictFile
 from verdict.gateways.sandbox import Sandbox
+from verdict.gateways.scraper import NullScraper, ScraperGateway
 from verdict.gateways.terminal import NullTerminal, TerminalGateway
 from verdict.health.environment import EnvironmentService
 from verdict.health.status import HealthService
 from verdict.library.catalog import LibraryService
+from verdict.library.downloads import SubjectDownloads
 from verdict.library.files import SubjectFiles
 from verdict.library.handover import SubjectHandover
 from verdict.library.norm import NormAttachment
@@ -35,13 +37,16 @@ FROM_ENVIRONMENT = object()      # "the sandbox the environment names" (None mea
 
 
 class Container:
-    """What a test replaces is passed in (the sandbox, the terminal gateway, how background work is started); the rest is built here."""
+    """What a test replaces is passed in (the sandbox, the terminal and scraper gateways, how background work is started); the rest is
+    built here."""
 
-    def __init__(self, settings: Settings, *, sandbox=FROM_ENVIRONMENT, terminal=None, spawn: Spawn = in_thread) -> None:
+    def __init__(self, settings: Settings, *, sandbox=FROM_ENVIRONMENT, terminal=None, scraper=None, spawn: Spawn = in_thread) -> None:
         self.settings = settings
         self.sandbox = Sandbox.from_env() if sandbox is FROM_ENVIRONMENT else sandbox
         self.terminal = terminal or (TerminalGateway(settings.terminal_url, settings.terminal_token) if settings.terminal_configured
                                      else NullTerminal())
+        self.scraper = scraper or (ScraperGateway(settings.scraper_url, settings.scraper_token) if settings.scraper_configured
+                                   else NullScraper())
         self.store = Store(settings.workspace)
         self._build_library()
         self._build_sessions()
@@ -57,6 +62,7 @@ class Container:
         self.norm = NormAttachment(self.library, self.folders)
         self.pages = PageImages(self.files)
         self.handover = SubjectHandover(self.files, self.terminal)
+        self.downloads = SubjectDownloads(self.scraper)
 
     def _build_sessions(self) -> None:
         self.jobs = AiJobs()

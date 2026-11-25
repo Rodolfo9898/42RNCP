@@ -83,3 +83,31 @@ test("health, the environment (quick or deep), the library, and the projects wit
   assert.deepEqual((await api.projects()).existing, [{ path: "rncp/x", git: true }]);
   assert.deepEqual(sent(app), ["GET health", "GET environment", "GET environment?deep=true", "GET library", "GET projects"]);
 });
+
+test("the intra routes of the library: the plan (tracks and children in the query), a download started, followed from a line and stopped, the filing", async () => {
+  const { api, app } = talk();
+  const request = { tracks: ["rncp"], projects: null, artifacts: false, children: true, force: false };
+  app.on("GET library/plan", { session: { valid: true, reason: "" }, tracks: [], unknown: [], misplaced: 0 })
+    .on("POST library/downloads", { id: "d1", state: "running" }, 202)
+    .on("GET library/downloads/current", { state: "running", id: "d1", lines: ["a"], next: 8, summary: null })
+    .on("DELETE library/downloads/current", { state: "running" })
+    .on("POST library/reorganizations", { dry_run: true, done: 0, moves: [{ from: "a", to: "b" }] });
+  await api.libraryPlan(true);
+  await api.libraryPlan(false, ["rncp", "common-core"]);
+  assert.deepEqual(await api.startDownload(request), { id: "d1", state: "running" });
+  assert.equal((await api.download(7)).next, 8);
+  assert.equal((await api.stopDownload()).state, "running");
+  assert.deepEqual((await api.reorganize(true)).moves, [{ from: "a", to: "b" }]);
+  await api.reorganize(false);
+  assert.deepEqual(sent(app), ["GET library/plan?children=true", "GET library/plan?track=rncp&track=common-core&children=false", "POST library/downloads",
+    "GET library/downloads/current?since=7", "DELETE library/downloads/current", "POST library/reorganizations", "POST library/reorganizations"]);
+  assert.deepEqual(app.calls("POST library/downloads")[0].body, request);
+  assert.deepEqual(app.callsTo("POST library/reorganizations").map((r) => r.body), [{ dry_run: true }, { dry_run: false }]);
+});
+
+test("the refusals of the download routes reach the caller with the app's words and the status", async () => {
+  const { api, app } = talk();
+  app.on("POST library/downloads", { detail: "the saved session is not usable: run `make samples-login`" }, 400);
+  await assert.rejects(api.startDownload({ tracks: null, projects: null, artifacts: true, children: true, force: false }),
+    (err: Error & { status?: number }) => err.status === 400 && err.message.includes("samples-login"));
+});

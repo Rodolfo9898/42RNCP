@@ -5,13 +5,13 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from verdict.api import documents, health, library, projects, reviews, runs, sessions, subjects
+from verdict.api import documents, downloads, health, library, projects, reviews, runs, sessions, subjects
 from verdict.app.container import Container
 from verdict.app.security import SecurityHeaders
 from verdict.app.settings import Settings
 from verdict.core.errors import VerdictError
 
-ROUTERS = (health, library, sessions, subjects, projects, runs, reviews, documents)
+ROUTERS = (health, library, downloads, sessions, subjects, projects, runs, reviews, documents)
 
 
 def create_app(settings: Settings | None = None, container: Container | None = None) -> FastAPI:

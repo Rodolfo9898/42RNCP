@@ -11,7 +11,8 @@ from tests.paths import DOCKER, ROOT, SCRIPTS
 SANDBOX = (DOCKER / "sandbox" / "Dockerfile").read_text()
 TERMINAL = (DOCKER / "terminal" / "Dockerfile").read_text()
 COMPOSE = (ROOT / "docker-compose.yml").read_text()
-DOCKERFILES = {"sandbox": SANDBOX, "terminal": TERMINAL, "web": (DOCKER / "web" / "Dockerfile").read_text()}
+DOCKERFILES = {"sandbox": SANDBOX, "terminal": TERMINAL, "web": (DOCKER / "web" / "Dockerfile").read_text(),
+               "scraper": (DOCKER / "scraper" / "Dockerfile").read_text()}
 
 
 def services():
@@ -164,7 +165,7 @@ def test_both_images_pin_the_same_norminette():
 
 
 def test_the_compose_parser_used_by_these_tests_sees_all_services():
-    assert set(services()) == {"web", "sandbox", "terminal", "dind"}
+    assert set(services()) == {"web", "sandbox", "terminal", "dind", "scraper"}
     assert "build:" in services()["web"] and "tmpfs:" in services()["terminal"]
 
 # ---------------------------------------------------------------- git credentials for the terminal: opt-in, and nothing else widens

@@ -69,7 +69,8 @@ export class FakeEditor {
   readonly group: FakeGroup = { viewColumn: 1, tabs: [], isActive: true, get activeTab() { return this.tabs[this.tabs.length - 1]; } };
   readonly groups = [this.group];
   readonly tabsChanged = new EventEmitter<{ opened: FakeTab[]; closed: FakeTab[]; changed: FakeTab[] }>();
-  private readonly emitters = [this.tabsChanged, new EventEmitter<unknown>(), new EventEmitter<unknown>(), new EventEmitter<unknown>()];
+  private readonly cancelled = new EventEmitter<void>();
+  private readonly emitters = [this.tabsChanged, new EventEmitter<unknown>(), new EventEmitter<unknown>(), new EventEmitter<unknown>(), this.cancelled];
   private active: { document: FakeDocument } | null = null;
   private untitled = 0;
   /** What `require("vscode")` gives the extension. */
@@ -108,6 +109,14 @@ export class FakeEditor {
     const handler = this.handlers[id];
     return handler ? (handler as (...a: unknown[]) => unknown)(...args) : undefined;
   };
+
+  /** What was written in the Output channel `name`, without the time each line carries. */
+  output(name: string): string[] {
+    return this.calls.filter((c) => c[0] === "output" && c[2] === name).map((c) => String(c[1]).replace(/^\[\d\d:\d\d:\d\d\] /, ""));
+  }
+
+  /** The person presses Cancel on the progress notification that is showing. */
+  cancelProgress(): void { this.cancelled.fire(); }
 
   /** Back to an editor with nothing open and nothing said. */
   reset(): void {
@@ -149,7 +158,11 @@ export class FakeEditor {
       showQuickPick: ((items: unknown, options: unknown) => { calls.push(["quickPick", items, options]); return Promise.resolve(answers.quickPick?.(items, options)); }) as never,
       showInputBox: ((options: { title?: string }) => { calls.push(["inputBox", options]); return Promise.resolve(answers.inputBox?.(options)); }) as never,
       showOpenDialog: ((options: unknown) => { calls.push(["openDialog", options]); return Promise.resolve(answers.openDialog?.(options)); }) as never,
-      withProgress: ((options: unknown, task: (progress: unknown) => unknown) => { calls.push(["progress", options]); return Promise.resolve(task({ report() {} })); }) as never,
+      withProgress: ((options: unknown, task: (progress: unknown, token: unknown) => unknown) => {
+        calls.push(["progress", options]);
+        const progress = { report: (value: unknown) => { calls.push(["progressReport", value]); } };
+        return Promise.resolve(task(progress, { isCancellationRequested: false, onCancellationRequested: this.cancelled.event }));
+      }) as never,
     };
   }
 

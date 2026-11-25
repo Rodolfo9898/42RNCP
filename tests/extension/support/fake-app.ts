@@ -1,7 +1,8 @@
 // A fake web app for the extension: answers `fetch` from a table of routes ("METHOD route", the route is what follows /api/) and
 // records every request, so a test can say which routes of the REST API the extension called, with what.
 
-export interface Recorded { method: string; route: string; body: unknown; form?: FormData }
+/** `route` is as asked (with its query string); `path` is the route without it, and `query` its parameters. */
+export interface Recorded { method: string; route: string; path: string; query: URLSearchParams; body: unknown; form?: FormData }
 type Answer = unknown | ((request: Recorded) => unknown);
 
 export class FakeApp {
@@ -9,26 +10,33 @@ export class FakeApp {
   private readonly routes = new Map<string, { answer: Answer; status: number }>();
 
   /** `answer` is the JSON body (or a function of the request that makes it; a string or a Buffer is sent as it is: text, an image);
-   * `status` is the HTTP status. */
+   * `status` is the HTTP status. A key with a query string ("GET environment?deep=true") answers that request only; one without answers
+   * the route whatever its query (the function reads it from the request). */
   on(key: string, answer: Answer, status = 200): this {
     this.routes.set(key, { answer, status });
     return this;
   }
 
-  /** Requests whose "METHOD route" is `key`. */
+  /** Requests whose "METHOD route" is `key`, query string included. */
   calls(key: string): Recorded[] {
     return this.requests.filter((r) => `${r.method} ${r.route}` === key);
+  }
+
+  /** Requests whose "METHOD path" is `key`, whatever their query string. */
+  callsTo(key: string): Recorded[] {
+    return this.requests.filter((r) => `${r.method} ${r.path}` === key);
   }
 
   readonly fetch = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
     const url = String(input);
     const route = url.slice(url.indexOf("/api/") + "/api/".length);
     const method = init.method || "GET";
-    const request: Recorded = { method, route, body: null };
+    const [path, query = ""] = route.split("?");
+    const request: Recorded = { method, route, path, query: new URLSearchParams(query), body: null };
     if (typeof init.body === "string") request.body = JSON.parse(init.body);
     else if (init.body instanceof FormData) request.form = init.body;
     this.requests.push(request);
-    const found = this.routes.get(`${method} ${route}`);
+    const found = this.routes.get(`${method} ${route}`) ?? this.routes.get(`${method} ${path}`);
     if (!found) return Response.json({ detail: `unexpected ${method} ${url}` }, { status: 404 });
     const body = typeof found.answer === "function" ? (found.answer as (r: Recorded) => unknown)(request) : found.answer;
     return typeof body === "string" || body instanceof Buffer ? new Response(body, { status: found.status }) : Response.json(body, { status: found.status });

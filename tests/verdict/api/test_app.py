@@ -2,15 +2,18 @@
 
 from fastapi.testclient import TestClient
 
-from tests.verdict.api.support import new_session
+from tests.verdict.api.support import FakeScraper, new_session
 from verdict.app.container import Container
 from verdict.app.factory import create_app
 from verdict.app.security import HEADERS
 from verdict.app.settings import Settings
+from verdict.gateways.scraper import NullScraper, ScraperGateway
 from verdict.gateways.terminal import NullTerminal, TerminalGateway
 
 ROUTES = {
     ("GET", "/api/health"), ("GET", "/api/environment"), ("GET", "/api/library"), ("POST", "/api/library/{track}/subjects"),
+    ("GET", "/api/library/plan"), ("POST", "/api/library/downloads"), ("GET", "/api/library/downloads/current"),
+    ("DELETE", "/api/library/downloads/current"), ("POST", "/api/library/reorganizations"),
     ("POST", "/api/sessions"), ("GET", "/api/sessions/{session_id}"), ("DELETE", "/api/sessions/{session_id}"),
     ("POST", "/api/sessions/{session_id}/subjects"), ("DELETE", "/api/sessions/{session_id}/subjects/{name}"),
     ("GET", "/api/sessions/{session_id}/subjects/{name}/pages/{page}.png"), ("GET", "/api/projects"),
@@ -78,3 +81,26 @@ def test_settings_come_from_the_environment_once(tmp_path):
     assert settings.progress_file == tmp_path / "P.md" and settings.terminal_url == "http://terminal:8002" and settings.terminal_configured
     bare = Settings.from_env({"WORKSPACE": str(tmp_path / "w"), "PROJECTS_DIR": str(tmp_path / "elsewhere")})
     assert bare.progress_file is None and not bare.terminal_configured and bare.projects == tmp_path / "elsewhere"
+
+
+def test_the_scraper_gateway_is_used_only_when_it_is_configured(tmp_path):
+    """The url alone is not enough: the token is what the scraper service asks for."""
+    def container(url, token, **kwargs):
+        return Container(Settings(workspace=tmp_path / "ws", projects=tmp_path / "p", samples=tmp_path / "s", scraper_url=url,
+                                  scraper_token=token), **kwargs)
+
+    for url, token in (("", ""), ("http://scraper:8003", ""), ("", "tok")):
+        assert type(container(url, token).scraper) is NullScraper              # (the gateway is a NullScraper too: the exact type tells)
+    gateway = container("http://scraper:8003", "tok").scraper
+    assert type(gateway) is ScraperGateway and (gateway.url, gateway.token) == ("http://scraper:8003", "tok")
+    own = FakeScraper()
+    assert container("http://scraper:8003", "tok", scraper=own).scraper is own and container("", "", scraper=own).downloads.scraper is own
+
+
+def test_the_scraper_settings_come_from_the_environment(tmp_path):
+    env = {"WORKSPACE": str(tmp_path / "w"), "SCRAPER_URL": "http://scraper:8003/", "SCRAPER_TOKEN": "tok"}
+    settings = Settings.from_env(env)
+    assert (settings.scraper_url, settings.scraper_token) == ("http://scraper:8003", "tok") and settings.scraper_configured
+    for missing in ("SCRAPER_URL", "SCRAPER_TOKEN"):
+        assert not Settings.from_env({k: v for k, v in env.items() if k != missing}).scraper_configured
+    assert not Settings.from_env({"WORKSPACE": str(tmp_path / "w")}).scraper_configured

@@ -1,6 +1,6 @@
 """The web layer under test: the real app, built by `create_app` from a `Container` whose replaceable parts are the tests' own.
 
-`client` is `(TestClient, harness)`; the harness is the container itself (`.store`, `.settings`, `.terminal`, `.sandbox`, `.folders`...).
+`client` is `(TestClient, harness)`; the harness is the container itself (`.store`, `.settings`, `.terminal`, `.scraper`, `.sandbox`, `.folders`...).
 Background work runs in the thread of the request (the `spawn` fixture can hold it); `threaded_client` is the real thing, for the few
 tests where concurrency is the point."""
 
@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import NORM_PAGES, SUBJECT_PAGES, make_pdf
-from tests.verdict.api.support import FakeTerminal, Spawner
+from tests.verdict.api.support import FakeScraper, FakeTerminal, Spawner
 from verdict.app.container import Container
 from verdict.app.factory import create_app
 from verdict.app.settings import Settings
@@ -26,14 +26,19 @@ def terminal() -> FakeTerminal:
 
 
 @pytest.fixture
-def make_client(tmp_path, spawn, terminal):
+def scraper() -> FakeScraper:
+    return FakeScraper()
+
+
+@pytest.fixture
+def make_client(tmp_path, spawn, terminal, scraper):
     """Builds an app over empty temp folders and a library with push_swap.pdf and the Norm. Everything is replaceable per test."""
-    def make(*, sandbox=None, terminal=terminal, spawn=spawn, progress_file=None):
+    def make(*, sandbox=None, terminal=terminal, scraper=scraper, spawn=spawn, progress_file=None):
         (tmp_path / "lib" / "common-core").mkdir(parents=True, exist_ok=True)
         (tmp_path / "lib" / "common-core" / "push_swap.pdf").write_bytes(make_pdf(SUBJECT_PAGES))
         (tmp_path / "lib" / "en.norm.pdf").write_bytes(make_pdf(NORM_PAGES))
         settings = Settings(workspace=tmp_path / "ws", projects=tmp_path / "projects", samples=tmp_path / "lib", progress_file=progress_file)
-        container = Container(settings, sandbox=sandbox, terminal=terminal, spawn=spawn)
+        container = Container(settings, sandbox=sandbox, terminal=terminal, scraper=scraper, spawn=spawn)
         return TestClient(create_app(container=container)), container
     return make
 

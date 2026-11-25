@@ -10,10 +10,18 @@ export class ChannelLog implements vscode.Disposable {
     if (text) this.channel.appendLine(`[${stamp()}] ${text}`);
   }
 
+  /** A report of several lines: the first carries the time, the others follow as they are. */
+  block(lines: string[]): void {
+    if (!lines.length) return;
+    this.line(lines[0]);
+    for (const text of lines.slice(1)) this.channel.appendLine(text);
+  }
+
   show(preserveFocus?: boolean): void { this.channel.show(preserveFocus); }
 
   dispose(): void { this.channel.dispose(); }
 }
 
-/** The two channels: what the checks do ("Verdict: Checks") and what the AI review does ("Verdict: AI review"). */
-export interface Logs { checks: ChannelLog; ai: ChannelLog }
+/** The three channels: what the checks do ("Verdict: Checks"), what the AI review does ("Verdict: AI review") and what happens to the
+ * subjects of the library: the plan, the downloads, the filing ("Verdict: Subjects"). */
+export interface Logs { checks: ChannelLog; ai: ChannelLog; subjects: ChannelLog }

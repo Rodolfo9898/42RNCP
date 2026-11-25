@@ -485,7 +485,8 @@ def test_dry_run_lists_what_is_missing_offline(tmp_path):
     (tmp_path / "samples" / "common-core" / "libft.pdf").write_bytes(PDF)
     factory, reporter = factory_for(tmp_path)
     factory.create(build_parser().parse_args(["--dry-run", "--track", "common-core"])).execute()
-    assert "common-core: 28 project(s), 1 with a PDF, 27 missing" in reporter.text and "samples/common-core/so_long.pdf" in reporter.text
+    total = len(build_plan(Catalog.load(DATA / "projects_21.json"), DATA).of("common-core"))          # (the list is the person's: do not pin its length)
+    assert f"common-core: {total} project(s), 1 with a PDF, {total - 1} missing" in reporter.text and "samples/common-core/so_long.pdf" in reporter.text
     assert "libft.pdf" not in reporter.text and "rncp:" not in reporter.text and "Nothing was downloaded" in reporter.text
     assert not (tmp_path / "artifacts").exists()
 
@@ -538,4 +539,5 @@ def test_artifacts_and_the_login_session_stay_out_of_git_and_the_docker_build():
     for ignore in sorted((ROOT / "docker").glob("*/Dockerfile.dockerignore")):          # every image: only what its Dockerfile copies in
         lines = ignore.read_text().split()
         assert "*" in lines and not {"!artifacts", "!.session", "!samples", "!projects", "!.env"} & set(lines), ignore
-    assert "artifacts" not in (ROOT / "docker-compose.yml").read_text()               # the containers never see them
+    mounts = [line.strip() for line in (ROOT / "docker-compose.yml").read_text().splitlines() if "artifacts" in line and not line.strip().startswith("#")]
+    assert mounts == ["- ./artifacts:/artifacts"]                                       # only the scraper container sees them (it writes them)

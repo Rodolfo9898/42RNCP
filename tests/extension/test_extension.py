@@ -201,6 +201,8 @@ PUBLIC_API = {
     ("GET", "/api/sessions/{}/subjects/{}/pages/{}.png"), ("GET", "/api/projects"), ("PUT", "/api/sessions/{}/repo"), ("POST", "/api/sessions/{}/runs"),
     ("PUT", "/api/sessions/{}/claude-review"), ("POST", "/api/sessions/{}/ai-review"), ("GET", "/api/sessions/{}/prompts/review"),
     ("GET", "/api/sessions/{}/prompts/fix"), ("PUT", "/api/sessions/{}/progress"), ("GET", "/api/sessions/{}/verdict.md"),
+    ("GET", "/api/library/plan"), ("POST", "/api/library/downloads"), ("GET", "/api/library/downloads/current"),
+    ("DELETE", "/api/library/downloads/current"), ("POST", "/api/library/reorganizations"),
 }
 CALL = re.compile(r'this\.client\.(?:json|bytes|text)(?:<[^(]*>)?\(\s*(?:([`"])(.*?)\1|(this\.of\(sid\)))(?:,\s*\{(.*?)\})?\)', re.S)
 
@@ -211,7 +213,7 @@ def routes_called() -> set[tuple[str, str]]:
     for _quote, template, _expression, options in CALL.findall(SOURCES["api/verdict-api.ts"]):
         route = re.sub(r"\$\{this\.of\(sid\)\}", "sessions/{}", template) if template else "sessions/{}"
         route = re.sub(r"\$\{deep \? \"\?deep=true\" : \"\"\}", "", route)
-        route = re.sub(r"\$\{[^}]*\}", "{}", route)
+        route = re.sub(r"\$\{[^}]*\}", "{}", route).split("?")[0]            # (a query string is not part of the route)
         method = re.search(r'method: "(\w+)"', options or "")
         found.add((method.group(1) if method else "GET", "/api/" + route))
     return found
@@ -219,7 +221,7 @@ def routes_called() -> set[tuple[str, str]]:
 
 def test_the_extension_only_calls_routes_of_the_public_api():
     called = routes_called()
-    assert len(called) >= 18, called
+    assert len(called) >= 23, called
     assert called <= PUBLIC_API, called - PUBLIC_API
     assert PUBLIC_API - called == set(), "a route of the table the extension does not use: take it off the table"
 

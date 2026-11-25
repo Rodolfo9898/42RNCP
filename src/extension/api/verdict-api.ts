@@ -1,5 +1,8 @@
 import type { ApiClient } from "./client";
-import type { CloneRequest, Environment, FixPrompt, Health, Library, LibraryItem, MergeAnswer, ProgressAnswer, Projects, ReviewPrompt, SessionView } from "./types";
+import type {
+  CloneRequest, DownloadRequest, DownloadState, DownloadStatus, Environment, FixPrompt, Health, Library, LibraryItem, LibraryPlan, MergeAnswer,
+  ProgressAnswer, Projects, Reorganization, ReviewPrompt, SessionView,
+} from "./types";
 
 export interface UploadFile { name: string; bytes: Uint8Array }
 
@@ -55,6 +58,26 @@ export class VerdictApi {
   fixPrompt(sid: string): Promise<FixPrompt> { return this.client.json(`${this.of(sid)}/prompts/fix`); }
   updateProgress(sid: string): Promise<ProgressAnswer> { return this.client.json(`${this.of(sid)}/progress`, { method: "PUT" }); }
   verdictMarkdown(sid: string): Promise<string> { return this.client.text(`${this.of(sid)}/verdict.md`); }
+
+  /** What the intra has that the library does not: all the tracks, or only these; `children`: the projects inside a piscine or a series too. */
+  libraryPlan(children: boolean, tracks: string[] = []): Promise<LibraryPlan> {
+    const query = new URLSearchParams([...tracks.map((track): [string, string] => ["track", track]), ["children", String(children)]]);
+    return this.client.json(`library/plan?${query}`);
+  }
+
+  /** Starts the one download the service runs at a time (409 when it is busy); follow it with `download`. */
+  startDownload(request: DownloadRequest): Promise<{ id: string; state: DownloadState }> {
+    return this.client.json("library/downloads", { method: "POST", body: request });
+  }
+
+  /** The download now (or the last one): its state, and the log lines from the `since`-th on. */
+  download(since: number): Promise<DownloadStatus> { return this.client.json(`library/downloads/current?since=${since}`); }
+  stopDownload(): Promise<{ state: DownloadState }> { return this.client.json("library/downloads/current", { method: "DELETE" }); }
+
+  /** Files the PDFs and artifacts that are on disk in the folders of their series; `dryRun`: only says what it would move. */
+  reorganize(dryRun: boolean): Promise<Reorganization> {
+    return this.client.json("library/reorganizations", { method: "POST", body: { dry_run: dryRun } });
+  }
 
   private of(sid: string): string { return `sessions/${encodeURIComponent(sid)}`; }
 }

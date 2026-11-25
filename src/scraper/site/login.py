@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from scraper.core.config import Settings
 from scraper.core.exceptions import LoginError, ScraperError
@@ -10,6 +11,9 @@ from scraper.site.http import HttpClient
 from scraper.site.gateway import PROJECTS_URL, SIGNIN_URL, IntraGateway, on_intra
 from scraper.core.reporting import Reporter
 from scraper.core.utils import first_line
+
+# What the downloader service tells the person to do when the session is no good: only the computer has a browser and the credentials.
+LOGIN_ON_YOUR_COMPUTER = "run `make samples-login` on your computer"
 
 
 class Authenticator(ABC):
@@ -78,6 +82,29 @@ class BrowserAuthenticator(Authenticator):
         return pw.chromium.launch(headless=headless)
 
 
+class RefusingAuthenticator(Authenticator):
+    """Null Object for a process that must never log in (the downloader service has no browser and no credentials): it says what to do
+    instead. `ask` is its twin for SessionManager's prompt, so neither way of getting a login leads anywhere."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def login(self, login: str, password: str) -> None:
+        raise ScraperError(self.message)
+
+    def ask(self) -> tuple[str, str]:
+        raise ScraperError(self.message)
+
+
+@dataclass(frozen=True)
+class SavedSession:
+    """What the saved session (the cookies and user-agent of an earlier login) is worth right now."""
+
+    found: bool                                 # is there a saved session at all
+    gateway: IntraGateway | None = None         # set when it works
+    reason: str = ""                            # when it does not: why not, in the words of IntraGateway.check_access()
+
+
 class SessionManager:
     """A logged-in IntraGateway: the saved session if it still works, else a new login."""
 
@@ -92,15 +119,26 @@ class SessionManager:
     def _cannot_ask() -> tuple[str, str]:
         raise ScraperError("Not logged in: set INTRA_LOGIN and INTRA_PASSWORD in .env (or in the environment) and run it again.")
 
+    def saved(self) -> SavedSession:
+        """Try the saved session: nothing is written, and nobody is asked for anything."""
+        if not self.settings.state_file.exists():
+            return SavedSession(found=False)
+        gateway = IntraGateway(self._new_http())
+        reason = gateway.check_access()
+        return SavedSession(found=True, gateway=gateway) if reason is None else SavedSession(found=True, reason=reason)
+
     def open(self) -> IntraGateway:
+        saved = self.saved()
+        if saved.gateway is not None:
+            self.reporter.log("Reusing saved session.")
+            return saved.gateway
+        if saved.found:
+            self.reporter.log(f"Saved session not usable: {saved.reason}")
+        return self.sign_in()
+
+    def sign_in(self) -> IntraGateway:
+        """A new login in the browser (the credentials are in the settings, else asked for), then the same check of the session."""
         s = self.settings
-        if s.state_file.exists():
-            gateway = IntraGateway(self._new_http())
-            reason = gateway.check_access()
-            if reason is None:
-                self.reporter.log("Reusing saved session.")
-                return gateway
-            self.reporter.log(f"Saved session not usable: {reason}")
         login, password = (s.login, s.password) if s.login and s.password else self.ask()
         self.authenticator.login(login, password)
         gateway = IntraGateway(self._new_http())

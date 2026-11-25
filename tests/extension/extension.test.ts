@@ -18,6 +18,31 @@ test("activating registers every command the manifest declares, and nothing it d
   } finally { run.stop(); }
 });
 
+test("every menu entry uses a command the manifest declares, on a view or a place that exists", () => {
+  const declared = new Set(MANIFEST.contributes.commands.map((c: { command: string }) => c.command));
+  const views = new Set(MANIFEST.contributes.views.verdict.map((v: { id: string }) => `view == ${v.id}`));
+  for (const [place, entries] of Object.entries(MANIFEST.contributes.menus) as Array<[string, Array<{ command: string; when: string }>]>) {
+    for (const entry of entries) {
+      assert.ok(declared.has(entry.command), `${place}: ${entry.command} is not declared`);
+      if (place === "view/title") assert.ok(views.has(entry.when), `${entry.command}: ${entry.when} is not a view of the extension`);
+    }
+  }
+  assert.ok(MANIFEST.contributes.commands.every((c: { title: string; category: string }) => c.title && c.category === "Verdict"));
+});
+
+test("the subjects commands are in the title bar of the Subjects view (download as a button, the others under the menu) and in the Command Palette", () => {
+  const where = Object.fromEntries(MANIFEST.contributes.menus["view/title"].filter((m: { when: string }) => m.when === "view == verdict.subjects")
+    .map((m: { command: string; group: string }) => [m.command, m.group]));
+  assert.deepEqual(where, { "verdict.addSubjects": "navigation@1", "verdict.uploadSubject": "navigation@2", "verdict.subjectsDownload": "navigation@3",
+    "verdict.subjectsPlan": "more@1", "verdict.subjectsReorganize": "more@2" });
+  const titles = Object.fromEntries(MANIFEST.contributes.commands.map((c: { command: string; title: string; icon?: string }) => [c.command, [c.title, c.icon]]));
+  assert.deepEqual(titles["verdict.subjectsPlan"][0], "Show What Subjects Are Missing");
+  assert.deepEqual(titles["verdict.subjectsDownload"], ["Download Subjects from the Intra\u2026", "$(cloud-download)"]);
+  assert.deepEqual(titles["verdict.subjectsReorganize"][0], "File Subjects in Their Series Folders");
+  const hidden = MANIFEST.contributes.menus.commandPalette.filter((m: { when: string }) => m.when === "false").map((m: { command: string }) => m.command);
+  for (const id of ["verdict.subjectsPlan", "verdict.subjectsDownload", "verdict.subjectsReorganize"]) assert.ok(!hidden.includes(id), `${id} can be run from the palette`);
+});
+
 test("the two views of the manifest are filled by the extension, and the status bar names the project", async () => {
   const run = await running();
   try {

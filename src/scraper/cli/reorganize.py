@@ -21,9 +21,8 @@ class ReorganizeCommand(Command):
         if not moves:
             log("Everything is already in the folder of its series.")
             return
-        base = self.library.samples.parent
         for move in moves:
-            log(f"  {move.source.relative_to(base)}  ->  {move.destination.relative_to(base)}")
+            log(f"  {self.library.shown(move.source)}  ->  {self.library.shown(move.destination)}")
         if self.dry_run:
             log(f"\n{len(moves)} move(s) would be done (dry run: nothing was moved).")
         else:

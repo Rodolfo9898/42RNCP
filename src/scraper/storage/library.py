@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from scraper.plan.names import key
@@ -25,6 +26,26 @@ class Library:
 
     def find_pdf(self, stem: str) -> Path | None:
         return self.pdfs().get(key(stem))
+
+    def missing(self, targets: Sequence[Target]) -> list[Target]:
+        """The projects that have no PDF yet (the folder is read once for all of them)."""
+        pdfs = self.pdfs()
+        return [t for t in targets if key(t.stem) not in pdfs]
+
+    def visits(self, targets: Sequence[Target], *, with_artifacts: bool, force: bool = False) -> list[Target]:
+        """The projects whose page has to be read: the PDF is missing or, if the artifacts are wanted, the page has not been read in
+        full yet (`force`: all of them)."""
+        if force:
+            return list(targets)
+        pdfs, checked = self.pdfs(), self.checked()
+        return [t for t in targets if key(t.stem) not in pdfs or (with_artifacts and t.stem not in checked)]
+
+    def shown(self, path: Path) -> str:
+        """A path the way a person reads it: from the folder that holds samples/ (or artifacts/)."""
+        for base in (self.samples.parent, self.artifacts.parent):
+            if path.is_relative_to(base):
+                return path.relative_to(base).as_posix()
+        return path.name
 
     def pdf_path(self, target: Target) -> Path:
         """Where the subject of a project goes: its track, the folder of its series if it has one, its name."""

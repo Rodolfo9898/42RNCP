@@ -159,6 +159,24 @@
         "title": "Show Pretty JSON",
         "category": "Verdict",
         "icon": "$(json)"
+      },
+      {
+        "command": "verdict.subjectsPlan",
+        "title": "Show What Subjects Are Missing",
+        "category": "Verdict",
+        "icon": "$(search)"
+      },
+      {
+        "command": "verdict.subjectsDownload",
+        "title": "Download Subjects from the Intra\u2026",
+        "category": "Verdict",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "verdict.subjectsReorganize",
+        "title": "File Subjects in Their Series Folders",
+        "category": "Verdict",
+        "icon": "$(library)"
       }
     ],
     "menus": {
@@ -222,6 +240,21 @@
           "command": "verdict.uploadSubject",
           "when": "view == verdict.subjects",
           "group": "navigation@2"
+        },
+        {
+          "command": "verdict.subjectsDownload",
+          "when": "view == verdict.subjects",
+          "group": "navigation@3"
+        },
+        {
+          "command": "verdict.subjectsPlan",
+          "when": "view == verdict.subjects",
+          "group": "more@1"
+        },
+        {
+          "command": "verdict.subjectsReorganize",
+          "when": "view == verdict.subjects",
+          "group": "more@2"
         }
       ],
       "view/item/context": [

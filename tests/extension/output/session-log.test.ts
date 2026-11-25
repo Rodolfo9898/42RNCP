@@ -10,7 +10,7 @@ import { aSession } from "../support/fixtures";
 function tracking() {
   editor.reset();
   const channel = (name: string) => new ChannelLog(editor.api.window.createOutputChannel(name));
-  const logs: Logs = { checks: channel("Verdict: Checks"), ai: channel("Verdict: AI review") };
+  const logs: Logs = { checks: channel("Verdict: Checks"), ai: channel("Verdict: AI review"), subjects: channel("Verdict: Subjects") };
   const state = new SessionState();
   const log = new SessionLog(state, logs);
   const change = (extra: Parameters<typeof aSession>[0]) => { state.set(aSession(extra)); log.track(); };

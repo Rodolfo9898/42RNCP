@@ -45,7 +45,7 @@ SSH_KEYS ?=
 all: build
 
 # norminette is cloned from GitHub over SSH through the same agent (falls back to HTTPS).
-build: token ssh pubkeys progress
+build: token ssh pubkeys progress scraper-dirs
 	$(if $(wildcard $(AGENT_SOCK)),SSH_AUTH_SOCK=$(AGENT_SOCK) $(COMPOSE) build --ssh default,$(COMPOSE) build)
 
 run: build token
@@ -61,8 +61,8 @@ fclean: token
 
 re: fclean build
 
-# The web app and the terminal container share a random token, and the editor has its own (the ?tkn= of its link); both live
-# in .env (never committed). A missing .env is a copy of .env.example with those two filled in, on their own lines (scripts/env/env-setup.sh).
+# The web app and the terminal container share a random token, the editor has its own (the ?tkn= of its link), and the web app and the
+# scraper container have a third; all live in .env (never committed). A missing .env is a copy of .env.example with those filled in, on their own lines (scripts/env/env-setup.sh).
 token:
 	@sh scripts/env/env-setup.sh .env .env.example
 
@@ -70,6 +70,11 @@ token:
 # before compose starts, or Docker makes a folder of that name. An empty one is fine: the first update writes the table.
 progress:
 	@[ -e Progress.md ] || : > Progress.md
+
+# The folders the scraper container mounts (samples/, artifacts/, and .session/, where `make samples-login` saves your intra session, read-only
+# for the container). They have to exist before compose starts, or Docker makes root-owned ones. .session holds cookies: only you can read it.
+scraper-dirs:
+	@mkdir -p samples artifacts .session && chmod 700 .session
 
 # The link to the editor, with its token.
 url: token
@@ -119,9 +124,13 @@ cursus-push:
 cursus-refresh:
 	@sh scripts/cursus/cursus.sh refresh $(ONLY)
 
-# Subjects: fills samples/ (the PDFs, one folder per track) and artifacts/ (the other files of a project, in a folder named like its PDF)
-# from the 42 intra, using the lists in src/scraper/data. It runs on this computer, not in Docker: it needs your intra login
-# (INTRA_LOGIN and INTRA_PASSWORD in .env, or it asks for them), which no container ever gets. What is already there is kept.
+# Subjects: fills samples/ (the PDFs, one folder per track, series in sub-folders) and artifacts/ (the other files of a project) from the
+# 42 intra, using the lists in src/scraper/data. Two ways, one scraper:
+#  - From the editor: `Verdict: Download Subjects from the Intra` (and `Show What Subjects Are Missing`). The `scraper` container does the work.
+#    It never logs in: it uses the session that `make samples-login` saves on THIS computer (.session/, mounted read-only into it alone).
+#  - From this terminal: `make samples`. Same thing, without Docker.
+# Both need your intra login, which no container ever gets (INTRA_LOGIN and INTRA_PASSWORD in .env, or it asks for them).
+#   make samples-login                        log in once (a browser opens when you add ARGS=--headed: 2FA, captcha); repeat when it expires
 #   make samples-plan                         what is missing, per track (offline: nothing is fetched, no login)
 #   make samples                              download what is missing: the PDFs and the artifacts
 #   make samples ARGS="--track rncp --no-artifacts"      ...only the RNCP PDFs (more options: ARGS=--help)
@@ -132,6 +141,9 @@ $(SCRAPE_VENV)/.ready: src/scraper/requirements.txt
 	python3 -m venv $(SCRAPE_VENV)
 	$(SCRAPE_VENV)/bin/pip install -q -r src/scraper/requirements.txt
 	@touch $@
+
+samples-login: $(SCRAPE_VENV)/.ready scraper-dirs
+	@$(SCRAPE_VENV)/bin/python src/subject_scraper.py --login $(ARGS)
 
 samples-plan: $(SCRAPE_VENV)/.ready
 	@$(SCRAPE_VENV)/bin/python src/subject_scraper.py --dry-run $(ARGS)
@@ -148,4 +160,4 @@ test-extension:
 	@cd tests/extension && npm install --no-audit --no-fund --silent
 	@uv run pytest tests/extension/test_extension.py -q
 
-.PHONY: all build run clean fclean re models token url ssh pubkeys progress samples samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh test-extension
+.PHONY: all build run clean fclean re models token url ssh pubkeys progress scraper-dirs samples samples-login samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh test-extension

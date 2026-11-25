@@ -2,10 +2,11 @@
 //  - a Verdict view: the result and every check (a check opens the file and line it cites), and the subjects of the review;
 //  - commands: open or clone a project, add subjects, run the checks, ask claude (in a VS Code terminal) or the configured AI,
 //    merge claude's report into verdict.md, write a fix prompt, open verdict.md, record the result in Progress.md;
+//    see what subjects the library lacks, download them from the intra, file them in the folders of their series;
 //  - claude's report is merged into verdict.md by itself, each time claude saves it (report/);
 //  - how files are shown: markdown as a page, JSON pretty-printed (viewers/), and the colours of .gitignore / .dockerignore files;
 //  - a subject PDF opens in the editor (viewers/pdf): from the Subjects view, or from the "From x.pdf, page N" of a check.
-//  - two Output channels, "Verdict: Checks" and "Verdict: AI review", and the project under review in the status bar.
+//  - three Output channels, "Verdict: Checks", "Verdict: AI review" and "Verdict: Subjects", and the project under review in the status bar.
 // Everything shown comes from untrusted input (subject PDFs, repositories): it is only ever put in labels and plain text.
 //
 // This file only wires: it makes the objects and hands each one what it works with (the composition root).
@@ -16,12 +17,16 @@ import { VerdictApi } from "./api/verdict-api";
 import { AiReview } from "./commands/ai-review";
 import { CheckCommands } from "./commands/check-commands";
 import { ClaudeReview } from "./commands/claude-review";
+import { DownloadFollower } from "./commands/download-follower";
 import { EnvironmentCommands } from "./commands/environment-commands";
 import { ProjectCommands } from "./commands/project-commands";
 import { CommandRegistry } from "./commands/registry";
 import type { CommandGroup } from "./commands/registry";
 import { ResultCommands } from "./commands/result-commands";
 import { SubjectCommands } from "./commands/subject-commands";
+import { SubjectDownloadCommands } from "./commands/subject-download-commands";
+import { SubjectPlanCommands } from "./commands/subject-plan-commands";
+import { SubjectReorganizeCommands } from "./commands/subject-reorganize-commands";
 import { ChannelLog } from "./output/channel-log";
 import type { Logs } from "./output/channel-log";
 import { SessionLog } from "./output/session-log";
@@ -67,6 +72,7 @@ function createCore(ctx: vscode.ExtensionContext): Core & { reportsRoot: string 
     logs: {
       checks: new ChannelLog(vscode.window.createOutputChannel("Verdict: Checks")),
       ai: new ChannelLog(vscode.window.createOutputChannel("Verdict: AI review")),
+      subjects: new ChannelLog(vscode.window.createOutputChannel("Verdict: Subjects")),
     },
   };
 }
@@ -99,7 +105,10 @@ function createCommands(core: Core, viewers: Viewers): CommandGroup[] {
     new CheckCommands(api, session, loader, poller, logs, project, subjects, viewers.verdict),
     new AiReview(api, session, poller, logs, claude),
     new ResultCommands(api, session, viewers.verdict, viewers.documents),
-    new EnvironmentCommands(api, viewers.documents)];
+    new EnvironmentCommands(api, viewers.documents),
+    new SubjectPlanCommands(api, logs.subjects),
+    new SubjectDownloadCommands(api, new DownloadFollower(api, logs.subjects), logs.subjects),
+    new SubjectReorganizeCommands(api, logs.subjects)];
 }
 
 export function activate(ctx: vscode.ExtensionContext): void {
@@ -117,7 +126,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("verdict.review", new ReviewTree(session, new CheckNodeBuilder(core.folder))),
     vscode.window.registerTreeDataProvider("verdict.subjects", new SubjectsTree(session)),
     session.onDidChange(() => { viewers.pdf.sync(); sessionLog.track(); status.refresh(); }),
-    status, logs.checks, logs.ai, session, core.poller, pickup);
+    status, logs.checks, logs.ai, logs.subjects, session, core.poller, pickup);
   pickup.start();
   status.refresh();
   core.loader.ensure().then(() => { if (session.busy()) core.poller.start(); }, (err: Error) => {

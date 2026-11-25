@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scraper.core.utils import prune_empty
+from scraper.plan.names import key
 from scraper.plan.target import Target
 from scraper.storage.library import Library
 
@@ -24,9 +25,10 @@ class Reorganizer:
         self.library = library
 
     def moves(self, targets: Sequence[Target]) -> list[Move]:
+        pdfs = self.library.pdfs()                         # the folder is read once, not once per project
         found = []
         for target in targets:
-            found += self._subject(target) + self._artifacts(target)
+            found += self._subject(target, pdfs.get(key(target.stem))) + self._artifacts(target)
         return found
 
     def apply(self, moves: Sequence[Move]) -> list[Move]:
@@ -42,8 +44,7 @@ class Reorganizer:
             done.append(move)
         return done
 
-    def _subject(self, target: Target) -> list[Move]:
-        existing = self.library.find_pdf(target.stem)
+    def _subject(self, target: Target, existing: Path | None) -> list[Move]:
         if existing is None or self.library.samples / target.track not in existing.parents:
             return []                                      # not there, or in another track: not moved across tracks
         wanted = self.library.pdf_path(target).parent / existing.name
