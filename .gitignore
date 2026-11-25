@@ -8,7 +8,7 @@ __pycache__/
 .env
 .ssh-pub/
 node_modules/
-/artifacts/
+
 .session/
 .scraper-venv/
 .debug/
