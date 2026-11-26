@@ -541,6 +541,102 @@ def test_a_dry_run_of_refresh_changes_nothing_in_the_projects(world):
     assert code == 0 and "pull libft: 1 commit(s)" in out
 
 
+# ---------------------------------------------------------------- refresh: the projects' own submodules
+
+
+def with_submodule(world, parent: str, sub: str) -> str:
+    """`parent` (on its 'GitHub') has `sub` as a submodule, recorded at sub's newest commit, which is returned."""
+    work = world.base / "work" / parent
+    git("submodule", "add", "-q", str(world.remote(sub)), sub, cwd=work)
+    git("commit", "-q", "-m", f"add {sub}", cwd=work)
+    git("push", "-q", "-u", "origin", "main", cwd=work)
+    return git("rev-parse", "HEAD", cwd=work / sub)
+
+
+def bump(world, parent: str, sub: str, message: str) -> str:
+    """`sub` gets a new commit on its 'GitHub' and `parent` records it (a commit on the parent's 'GitHub'); the new commit is returned."""
+    newest = world.commit(sub, message)
+    work = world.base / "work" / parent
+    git("pull", "-q", "origin", "main", cwd=work / sub)
+    git("add", sub, cwd=work)
+    git("commit", "-q", "-m", f"bump {sub}", cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)
+    return newest
+
+
+def test_the_submodules_of_a_project_follow_it_one_never_cloned_is_cloned_and_a_moved_one_is_checked_out(world):
+    world.project("libft"), world.project("push_swap")
+    first = with_submodule(world, "push_swap", "libft")
+    ps = world.local("push_swap")                                                          # (cloned without its submodules: libft/ is empty)
+    assert not (ps / "libft" / "first.txt").exists()
+    code, out = world.run("refresh")
+    assert code == 0, out
+    assert "ok   push_swap: already up to date" in out and f"sub  push_swap/libft: moved to {first[:7]}" in out
+    assert "cursus: moved 1 submodule(s) of the projects" in out and git("rev-parse", "HEAD", cwd=ps / "libft") == first
+    code, out = world.run("refresh")
+    assert code == 0 and "sub  " not in out, "a submodule that is where the project records it is left alone"
+    newest = bump(world, "push_swap", "libft", "second")
+    code, out = world.run("refresh")
+    assert code == 0, out
+    assert "pull push_swap: 1 commit(s) of main" in out and f"sub  push_swap/libft: moved to {newest[:7]}" in out
+    assert git("rev-parse", "HEAD", cwd=ps / "libft") == newest and (ps / "libft" / "second.txt").exists()
+
+
+def test_a_submodule_on_a_branch_stays_on_it_and_one_with_commits_of_its_own_is_left_alone(world):
+    world.project("libft"), world.project("push_swap"), world.project("nm")
+    with_submodule(world, "push_swap", "libft"), with_submodule(world, "nm", "libft")
+    ps, nm = world.local("push_swap"), world.local("nm")
+    assert world.run("refresh")[0] == 0
+    git("checkout", "-q", "-B", "main", cwd=ps / "libft")                                    # on its branch, not detached
+    (nm / "libft" / "mine.txt").write_text("mine")                                           # a commit of its own
+    git("add", "-A", cwd=nm / "libft")
+    git("commit", "-q", "-m", "mine", cwd=nm / "libft")
+    mine = git("rev-parse", "HEAD", cwd=nm / "libft")
+    newest = bump(world, "push_swap", "libft", "second")
+    work = world.base / "work" / "nm"
+    git("pull", "-q", "origin", "main", cwd=work / "libft")
+    git("add", "libft", cwd=work)
+    git("commit", "-q", "-m", "bump libft", cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)
+    code, out = world.run("refresh")
+    assert code == 0, out
+    assert f"sub  push_swap/libft: moved to {newest[:7]}" in out and git("symbolic-ref", "--short", "HEAD", cwd=ps / "libft") == "main"
+    assert git("rev-parse", "main", cwd=ps / "libft") == newest
+    assert "skip nm/libft: is at a commit the project does not record" in out and git("rev-parse", "HEAD", cwd=nm / "libft") == mine
+
+
+def test_a_submodule_with_changes_in_the_way_is_reported_and_the_others_still_move(world):
+    world.project("libft"), world.project("nm"), world.project("push_swap")
+    with_submodule(world, "nm", "libft"), with_submodule(world, "push_swap", "libft")
+    nm, ps = world.local("nm"), world.local("push_swap")
+    assert world.run("refresh")[0] == 0
+    git("checkout", "-q", "-B", "main", cwd=nm / "libft")
+    (nm / "libft" / "second.txt").write_text("my own second")                              # untracked, and the new commit adds that file
+    newest = bump(world, "nm", "libft", "second")
+    work = world.base / "work" / "push_swap"
+    git("pull", "-q", "origin", "main", cwd=work / "libft")
+    git("add", "libft", cwd=work)
+    git("commit", "-q", "-m", "bump libft", cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)
+    before = git("rev-parse", "HEAD", cwd=nm / "libft")
+    code, out = world.run("refresh")
+    assert code == 1 and "fail nm/libft: not moved" in out and "1 submodule(s) could not be moved" in out, out
+    assert git("rev-parse", "HEAD", cwd=nm / "libft") == before and (nm / "libft" / "second.txt").read_text() == "my own second"
+    assert f"sub  push_swap/libft: moved to {newest[:7]}" in out and git("rev-parse", "HEAD", cwd=ps / "libft") == newest
+
+
+def test_a_dry_run_moves_no_submodule(world):
+    world.project("libft"), world.project("push_swap")
+    first = with_submodule(world, "push_swap", "libft")
+    ps = world.local("push_swap")
+    code, out = world.run("refresh", CURSUS_DRY_RUN="1")
+    assert code == 0 and f"dry  push_swap/libft: would move to {first[:7]}" in out and "sub  " not in out, out
+    assert not (ps / "libft" / "first.txt").exists()
+    assert world.run("refresh")[0] == 0 and git("rev-parse", "HEAD", cwd=ps / "libft") == first
+    bump(world, "push_swap", "libft", "second")
+    world.run("refresh", CURSUS_DRY_RUN="1")
+    assert git("rev-parse", "HEAD", cwd=ps / "libft") == first
+
 # ---------------------------------------------------------------- init
 
 

@@ -461,7 +461,12 @@ The usual round after working on projects: `make cursus-push`, then `make cursus
   (diverged), or uncommitted changes that the new commits would touch, is reported with nothing changed, the others are still
   pulled and the command ends with an error. Uncommitted changes that are not in the way stay as they are; a detached HEAD, a
   branch without an upstream and a folder without an `origin` are skipped. With `CURSUS_DRY_RUN=1` it fetches and says what it
-  would pull. A submodule inside a project (`netpractice/website`) is not touched.
+  would pull.
+  The project's **own submodules** (`netpractice/website`, `push_swap/libft`...) follow it afterwards: each one that is not at the
+  commit the project records is moved there (cloned first if it never was; a submodule on a branch is fast-forwarded and stays on it,
+  a detached one is checked out), but only when that is a step forward. One with commits of its own, or one whose uncommitted files
+  are in the way, is reported and left as it is (`skip …`, `fail …`). Their own newest commits are *not* fetched: that would change
+  what the project records, which is for you to commit.
 - **`cursus-sort`** adds a project at the commit its GitHub has (it warns when you have unpushed commits or uncommitted
   changes: run `cursus-push`). A name that matches no subject PDF needs `make cursus-sort MAP="ft_transcendence=common-core"`.
   A folder that is not a repository but holds some (`projects/cpp-modules/cpp00`, `cpp01`...) is a group: it is kept as a

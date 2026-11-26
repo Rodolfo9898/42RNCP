@@ -102,7 +102,8 @@ models:
 # of them to do everything except pushing and creating.
 #   make cursus-push                 push your projects (all of ./projects) to their own GitHub repos, so the rest sees them
 #   make cursus-push ONLY="libft nm" ...or only these
-#   make refresh                     pull the newest commits of every project of ./projects from its GitHub repo (fast-forward only)
+#   make refresh                     pull the newest commits of every project of ./projects from its GitHub repo (fast-forward only), then
+#                                    move the project's own submodules (libft inside push_swap, ...) to the commit the project records
 #   make refresh ONLY="libft"        ...or only these (`make cursus-refresh` is the same command)
 #   make cursus                      create the private GitHub repo (once)
 #   make cursus-sort                 add what is in the projects folder to it as submodules, and push

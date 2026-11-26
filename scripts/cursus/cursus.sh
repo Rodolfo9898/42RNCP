@@ -8,7 +8,8 @@
 #                           folder that only holds git repos (cpp-modules/cpp00 ...) keeps that folder: common-core/cpp-modules/cpp00
 #   update                  move every submodule to the newest commit of its own repository, then push
 #   push [name ...]         push the projects (all of the projects folder, or the ones named) to their own GitHub repos
-#   refresh [name ...]      pull the projects (all of the projects folder, or the ones named) from their own GitHub repos
+#   refresh [name ...]      pull the projects (all of the projects folder, or the ones named) from their own GitHub repos, and move
+#                           their own submodules to the commit each project records
 # The track comes from the subject PDFs in samples/: a project named like a PDF (libft -> libft.pdf) goes in that PDF's
 # folder. A project with any other name needs name=track (e.g. ft_transcendence=common-core).
 # A submodule holds what a project's GitHub repo has, not your local folder: run `push` first so that `sort` and `update` see your
@@ -330,9 +331,54 @@ EOF
     [ "$failed" -eq 0 ] || die "$failed project(s) could not be pushed, see above"
 }
 
+# A project's own submodules (libft inside push_swap, ...) follow what the project records. They are moved to the recorded commit, but
+# only when that is a step forward (the commit they are at is an ancestor of it) or they were never cloned: a submodule with commits
+# of its own, or one with changes in the way, is reported and left as it is. One on a branch stays on it (fast-forwarded); a detached
+# one (the usual state of a submodule) is checked out. $1: the project's folder, $2: its name as shown. Counts in subs and failed.
+sync_submodules() {
+    [ -f "$1/.gitmodules" ] || return 0
+    paths=$(git -C "$1" ls-files --stage | awk -F'\t' '$1 ~ /^160000 / { print $2 }')
+    while IFS= read -r sub; do
+        [ -n "$sub" ] || continue
+        label=$2/$sub
+        recorded=$(git -C "$1" rev-parse -q --verify "HEAD:$sub") || continue
+        here=
+        [ ! -e "$1/$sub/.git" ] || here=$(git -C "$1/$sub" rev-parse -q --verify HEAD 2>/dev/null)     # (empty: never cloned)
+        [ "$here" != "$recorded" ] || continue
+        if [ -n "$here" ]; then
+            git -C "$1/$sub" cat-file -e "$recorded^{commit}" 2>/dev/null || git -C "$1/$sub" fetch -q 2>/dev/null </dev/null
+            if ! git -C "$1/$sub" cat-file -e "$recorded^{commit}" 2>/dev/null; then
+                echo "skip $label: does not have the commit the project records yet (could not fetch it)"; continue
+            fi
+            if ! git -C "$1/$sub" merge-base --is-ancestor "$here" "$recorded" 2>/dev/null; then
+                echo "skip $label: is at a commit the project does not record (commits of its own, or ahead of it): left as it is"; continue
+            fi
+        fi
+        if [ "$dry" -eq 1 ]; then
+            echo "dry  $label: would move to $(printf '%s' "$recorded" | cut -c1-7)"; continue
+        fi
+        if [ -n "$here" ] && git -C "$1/$sub" symbolic-ref -q HEAD >/dev/null; then
+            out=$(git -C "$1/$sub" merge --ff-only -q "$recorded" 2>&1 </dev/null) || {
+                echo "fail $label: not moved: $(printf '%s' "$out" | head -n 1) (nothing was changed)" >&2
+                sfailed=$((sfailed + 1)); continue
+            }
+        fi
+        if out=$(git -C "$1" submodule update --init --recursive -- "$sub" 2>&1 </dev/null); then
+            echo "sub  $label: moved to $(printf '%s' "$recorded" | cut -c1-7)"
+            subs=$((subs + 1))
+        else
+            echo "fail $label: not moved: $(printf '%s' "$out" | head -n 1) (network, or the ssh key?)" >&2
+            sfailed=$((sfailed + 1))
+        fi
+    done <<EOF
+$paths
+EOF
+}
+
 # Brings the projects up to date with their GitHub repos: the new commits of the current branch of each (the projects folder's, or the
 # ones named) are fast-forwarded in. Nothing is merged and nothing of yours is overwritten: a project whose branch has commits GitHub
-# does not, or whose uncommitted changes the new commits would touch, is reported and the others are still pulled.
+# does not, or whose uncommitted changes the new commits would touch, is reported and the others are still pulled. Then the project's
+# own submodules follow it (sync_submodules).
 refresh_projects() {
     command -v git >/dev/null || die "git is not installed"
     list=$(select_projects "$@") || exit 1
@@ -344,6 +390,8 @@ $list
 EOF
     pulled=0
     failed=0
+    subs=0
+    sfailed=0
     for name in "$@"; do
         p=$projects/$name
         [ -e "$p/.git" ] || { echo "skip $name: not a git repository"; continue; }
@@ -364,6 +412,7 @@ EOF
             else
                 echo "ok   $name: already up to date$dirty"
             fi
+            sync_submodules "$p" "$name"
             continue
         fi
         if [ "${ahead:-0}" -gt 0 ]; then
@@ -376,13 +425,17 @@ EOF
         if out=$(git -C "$p" merge --ff-only -q '@{u}' 2>&1); then
             echo "pull $name: $count commit(s) of $branch$dirty"
             pulled=$((pulled + 1))
+            sync_submodules "$p" "$name"
         else
             echo "fail $name: not pulled: $(printf '%s' "$out" | head -n 1) (nothing was changed)" >&2
             failed=$((failed + 1))
         fi
     done
     [ "$pulled" -eq 0 ] || echo "cursus: pulled $pulled project(s)"
+    [ "$subs" -eq 0 ] || echo "cursus: moved $subs submodule(s) of the projects"
+    [ "$sfailed" -eq 0 ] || echo "cursus: $sfailed submodule(s) could not be moved, see above" >&2
     [ "$failed" -eq 0 ] || die "$failed project(s) could not be refreshed, see above"
+    [ "$sfailed" -eq 0 ] || exit 1
 }
 
 cmd=${1:-}
