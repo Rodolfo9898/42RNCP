@@ -102,8 +102,8 @@ models:
 # of them to do everything except pushing and creating.
 #   make cursus-push                 push your projects (all of ./projects) to their own GitHub repos, so the rest sees them
 #   make cursus-push ONLY="libft nm" ...or only these
-#   make cursus-refresh              pull the newest commits of every project of ./projects from its GitHub repo (fast-forward only)
-#   make cursus-refresh ONLY="libft" ...or only these
+#   make refresh                     pull the newest commits of every project of ./projects from its GitHub repo (fast-forward only)
+#   make refresh ONLY="libft"        ...or only these (`make cursus-refresh` is the same command)
 #   make cursus                      create the private GitHub repo (once)
 #   make cursus-sort                 add what is in the projects folder to it as submodules, and push
 #                                    (a folder of repos, e.g. cpp-modules/, stays a folder: common-core/cpp-modules/cpp00)
@@ -122,6 +122,9 @@ cursus-push:
 	@sh scripts/cursus/cursus.sh push $(ONLY)
 
 cursus-refresh:
+	@sh scripts/cursus/cursus.sh refresh $(ONLY)
+
+refresh:
 	@sh scripts/cursus/cursus.sh refresh $(ONLY)
 
 # Subjects: fills samples/ (the PDFs, one folder per track, series in sub-folders) and artifacts/ (the other files of a project) from the
@@ -160,4 +163,4 @@ test-extension:
 	@cd tests/extension && npm install --no-audit --no-fund --silent
 	@uv run pytest tests/extension/test_extension.py -q
 
-.PHONY: all build run clean fclean re models token url ssh pubkeys progress scraper-dirs samples samples-login samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh test-extension
+.PHONY: all build run clean fclean re models token url ssh pubkeys progress scraper-dirs samples samples-login samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh refresh test-extension

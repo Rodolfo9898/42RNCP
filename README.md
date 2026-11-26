@@ -442,7 +442,7 @@ your own ssh keys):
 
 ```sh
 make cursus-push     # push your projects (all of ./projects) to their own GitHub repos
-make cursus-refresh  # pull the newest commits of every project of ./projects from its GitHub repo
+make refresh         # pull the newest commits of every project of ./projects from its GitHub repo (also `make cursus-refresh`)
 make cursus          # once: create the private GitHub repo (needs `brew install gh && gh auth login`)
 make cursus-sort     # add every git repo of ./projects to it as a submodule, in the folder of its subject PDF, and push
 make cursus-update   # move every submodule to the newest commit of its own GitHub repo, and push
@@ -455,8 +455,8 @@ The usual round after working on projects: `make cursus-push`, then `make cursus
   your latest commits visible to `sort` and `update`. It never forces: a project whose GitHub has commits you do not is
   reported (`git pull` it first) and the others are still pushed. Uncommitted changes are not pushed; a detached HEAD or a
   folder without an `origin` is skipped.
-- **`cursus-refresh`** is the other direction: it pulls every git repo in `./projects` from its own `origin`
-  (`make cursus-refresh ONLY="libft nm"`, `ONLY=cpp-modules` or `ONLY=cpp-modules/cpp00` for just those). It only
+- **`refresh`** (also `cursus-refresh`) is the other direction: it pulls every git repo in `./projects` from its own `origin`
+  (`make refresh ONLY="libft nm"`, `ONLY=cpp-modules` or `ONLY=cpp-modules/cpp00` for just those). It only
   fast-forwards: no merge commit is ever made and nothing of yours is overwritten. A branch with commits GitHub does not have
   (diverged), or uncommitted changes that the new commits would touch, is reported with nothing changed, the others are still
   pulled and the command ends with an error. Uncommitted changes that are not in the way stay as they are; a detached HEAD, a

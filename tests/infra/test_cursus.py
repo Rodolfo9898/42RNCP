@@ -602,7 +602,7 @@ def test_a_dry_run_of_init_creates_nothing(world):
 def test_the_make_targets_and_the_usage_line_exist():
     makefile = (ROOT / "Makefile").read_text()
     for target, command in (("cursus-update", "update"), ("cursus-push", "push $(ONLY)"), ("cursus-refresh", "refresh $(ONLY)"),
-                            ("cursus-sort", "sort $(MAP)"), ("cursus", "init")):
+                            ("refresh", "refresh $(ONLY)"), ("cursus-sort", "sort $(MAP)"), ("cursus", "init")):
         assert f"\n{target}:\n\t@sh scripts/cursus/cursus.sh {command}\n" in makefile, target
         assert target in makefile.split(".PHONY:")[1].split()
     done = subprocess.run(["sh", str(SCRIPT), "nonsense"], capture_output=True, text=True)
