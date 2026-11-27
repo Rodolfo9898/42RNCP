@@ -48,6 +48,14 @@ def test_claude_is_wired_from_the_environment_and_started_with_the_arguments(wor
     assert calls == [(world.projects, world.settings.folders, str(world.stub), "t0ken-for-tests"), ("abcdef123", "/projects/x", "/tmp/p")]
 
 
+def test_on_a_mac_the_service_start_skips_claudes_wizard_and_elsewhere_it_does_not(world, monkeypatch, capsys):
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: None)
+    config = world.tmp / "home" / ".claude" / ".claude.json"
+    cli.main([], environment_of(world.tmp))
+    assert not config.exists() and "first-run wizard" not in capsys.readouterr().err
+    cli.main([], environment_of(world.tmp, CLAUDE_GATEWAY_URL="http://host.docker.internal:18281", CLAUDE_GATEWAY_TOKEN="floodgate"))
+    assert '"hasCompletedOnboarding": true' in config.read_text() and "first-run wizard is skipped" in capsys.readouterr().err
+
 def test_claude_needs_a_session_and_a_project(world):
     for args in (["claude"], ["claude", "--session", "abcdef123"], ["claude", "--project", "/projects/x"]):
         with pytest.raises(SystemExit):

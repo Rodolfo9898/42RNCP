@@ -1,0 +1,14 @@
+# Mac only: `make` adds this file when HOST_OS is Darwin (see the Makefile). The terminal container's claude, in the editor and in the
+# one-click review, then goes through Apple Claude Code on this Mac (your AppleConnect sign-in) instead of a personal Claude login. On
+# Linux this file is never used, and claude keeps the login in the `claude-home` volume.
+#
+# What you are agreeing to: the proxy listens on this Mac's loopback and has no password of its own, and Docker Desktop lets any
+# container reach it as host.docker.internal. So ANYTHING that runs in the terminal container, including code from a project under
+# review that claude builds or runs there, can use it as you, and ask it for the sign-in token it holds. `make run` checks that you
+# are signed in first (scripts/apple/apple-setup.sh). Close the app, and `make clean`, when you are not using it.
+services:
+  terminal:
+    environment:
+      # Read by src/terminal/settings (CLAUDE_GATEWAY_*) and handed to claude as ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN.
+      CLAUDE_GATEWAY_URL: http://host.docker.internal:${APPLE_PROXY_PORT:-18281}
+      CLAUDE_GATEWAY_TOKEN: floodgate        # a placeholder, not a secret: the proxy adds the real sign-in

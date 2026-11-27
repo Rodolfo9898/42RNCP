@@ -30,6 +30,32 @@ def test_the_agent_reaches_the_children_only_when_the_operator_set_one(world, di
     assert Settings.from_environment(environment_of(world.tmp, SSH_AUTH_SOCK="/tmp/a.sock")).ssh_auth_sock == "/tmp/a.sock"
 
 
+def test_without_a_gateway_claude_keeps_its_own_login(world, display):
+    env = child(world, display).build()
+    assert not any(k in env for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"))
+
+
+def test_on_a_mac_claude_is_sent_to_the_apple_gateway_with_its_placeholder_key(world, display):
+    env = child(world, display, claude_gateway_url="http://host.docker.internal:18281", claude_gateway_token="floodgate").build("sess-gate01", world.repo)
+    assert env["ANTHROPIC_BASE_URL"] == "http://host.docker.internal:18281" and env["ANTHROPIC_AUTH_TOKEN"] == "floodgate"
+    assert not any(k in env for k in ("ANTHROPIC_API_KEY", "LLM_API_KEY", "TERMINAL_TOKEN", "EDITOR_TOKEN")), "still no secret of the service"
+    plain = child(world, display, claude_gateway_url="http://gw:1", claude_gateway_token="floodgate").plain()      # the headless review and the editor too
+    assert plain["ANTHROPIC_BASE_URL"] == "http://gw:1"
+
+
+def test_a_gateway_without_a_key_sets_the_address_only_and_a_key_without_an_address_sets_nothing(world, display):
+    only_url = child(world, display, claude_gateway_url="http://gw:1").build()
+    assert only_url["ANTHROPIC_BASE_URL"] == "http://gw:1" and "ANTHROPIC_AUTH_TOKEN" not in only_url
+    only_key = child(world, display, claude_gateway_token="floodgate").build()
+    assert "ANTHROPIC_BASE_URL" not in only_key and "ANTHROPIC_AUTH_TOKEN" not in only_key
+
+
+def test_the_gateway_is_read_from_the_variables_the_apple_file_sets(world):
+    settings = Settings.from_environment(environment_of(world.tmp, CLAUDE_GATEWAY_URL="http://host.docker.internal:18281", CLAUDE_GATEWAY_TOKEN="floodgate"))
+    assert (settings.claude_gateway_url, settings.claude_gateway_token) == ("http://host.docker.internal:18281", "floodgate")
+    assert Settings.from_environment(environment_of(world.tmp)).claude_gateway_url == ""
+
+
 def test_claude_finds_the_pdfs_of_its_review_in_subjects_dir(world, display):
     env = child(world, display)
     assert env.build("sess-pdf002")["SUBJECTS_DIR"] == str(world.subjects / "sess-pdf002")
@@ -64,3 +90,19 @@ def test_the_plain_environment_never_starts_a_display(world):
             raise AssertionError("a display was asked for")
 
     assert "DISPLAY" not in ChildEnvironment(world.settings, Boom()).plain()
+
+
+def test_a_process_the_editor_starts_gets_the_same_gateway_when_it_builds_the_environment_again(world, display):
+    """The AI Review button opens a terminal that runs `editor_launcher claude`: it builds claude's environment from the one the editor
+    gave it. Before, that one lacked the gateway setting, so the claude it started was a plain one that asked you to log in."""
+    gateway = {"claude_gateway_url": "http://host.docker.internal:18281", "claude_gateway_token": "floodgate"}
+    editor_env = child(world, display, **gateway).build()
+    launcher = Settings.from_environment({**environment_of(world.tmp), **editor_env})
+    assert (launcher.claude_gateway_url, launcher.claude_gateway_token) == tuple(gateway.values())
+    started = ChildEnvironment(launcher, display).build("sess-gate02", world.repo)
+    assert started["ANTHROPIC_BASE_URL"] == gateway["claude_gateway_url"] and started["ANTHROPIC_AUTH_TOKEN"] == "floodgate"
+
+
+def test_without_a_gateway_the_editor_hands_on_no_gateway_setting_at_all(world, display):
+    env = child(world, display).build()
+    assert not any(k in env for k in ("CLAUDE_GATEWAY_URL", "CLAUDE_GATEWAY_TOKEN"))

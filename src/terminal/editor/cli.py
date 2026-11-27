@@ -11,6 +11,7 @@ from collections.abc import Mapping
 
 from sandbox.display.xvfb import VirtualDisplay
 from terminal.claude.command import ClaudeCommand
+from terminal.claude.onboarding import FirstRun
 from terminal.editor.claude import ClaudeLauncher
 from terminal.editor.extensions import ExtensionList, InstalledExtensions
 from terminal.editor.installer import ExtensionInstaller, ExtensionWatcher
@@ -57,6 +58,8 @@ def main(args: list[str] | None = None, environ: Mapping[str, str] | None = None
     start.add_argument("--prompt-file", default="")
     opts = parser.parse_args(args)
     settings = Settings.from_environment(os.environ if environ is None else environ)
+    if FirstRun(settings).prepare():
+        print("editor: claude's first-run wizard is skipped: the gateway signs it in", file=sys.stderr)
     display = VirtualDisplay()
     environment = ChildEnvironment(settings, display)
     if opts.command == "claude":

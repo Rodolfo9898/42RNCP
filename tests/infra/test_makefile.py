@@ -17,7 +17,7 @@ def uses_the_ssh_file(tmp_path, env_text=None, *args):
     if env_text is not None:
         (tmp_path / ".env").write_bytes(env_text.encode())
     env = {k: v for k, v in os.environ.items() if k != "TERMINAL_SSH"}          # (a TERMINAL_SSH exported in your shell would win)
-    done = subprocess.run(["make", "-n", "run", *args], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    done = subprocess.run(["make", "-n", "run", "HOST_OS=Linux", *args], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)   # (Linux: no Apple route, whatever runs the tests)
     assert done.returncode == 0, done.stderr
     up = [line for line in done.stdout.splitlines() if line.rstrip().endswith(" up")]
     assert len(up) == 1, done.stdout
@@ -47,7 +47,7 @@ def compose_of_run(tmp_path, env_text=None, *args):
     if env_text is not None:
         (tmp_path / ".env").write_bytes(env_text.encode())
     env = {k: v for k, v in os.environ.items() if k not in ("TERMINAL_SSH", "SANDBOX_GITHUB")}
-    done = subprocess.run(["make", "-n", "run", *args], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    done = subprocess.run(["make", "-n", "run", "HOST_OS=Linux", *args], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)   # (Linux: no Apple route, whatever runs the tests)
     assert done.returncode == 0, done.stderr
     up = [line for line in done.stdout.splitlines() if line.rstrip().endswith(" up")]
     assert len(up) == 1, done.stdout
@@ -68,3 +68,28 @@ def test_both_switches_together_and_neither(tmp_path):
     both = compose_of_run(tmp_path, "TERMINAL_SSH=1\nSANDBOX_GITHUB=1\n")
     assert "docker compose -f docker-compose.yml -f docker/terminal/compose.ssh.yml -f docker/sandbox/compose.github.yml up" in both
     assert compose_of_run(tmp_path, "TERMINAL_TOKEN=x\n").strip().startswith("docker compose up")
+
+
+def build_lines(tmp_path, *args):
+    """The docker compose `build` commands that `make -n build` would run."""
+    shutil.copy(ROOT / "Makefile", tmp_path / "Makefile")
+    env = {k: v for k, v in os.environ.items() if k not in ("TERMINAL_SSH", "SANDBOX_GITHUB", "NOCACHE")}
+    done = subprocess.run(["make", "-n", "build", *args], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    lines = [line for line in done.stdout.splitlines() if " compose " in line and " build" in line]
+    assert len(lines) == 1, done.stdout
+    return lines[0]
+
+
+def test_images_are_built_with_docker_cache_unless_asked_not_to(tmp_path):
+    assert "--no-cache" not in build_lines(tmp_path)
+    assert "--no-cache" not in build_lines(tmp_path, "NOCACHE=")                      # (an empty value is no request)
+
+
+def test_nocache_builds_every_image_from_scratch_with_or_without_an_ssh_agent(tmp_path):
+    socket = tmp_path / "agent.sock"
+    socket.write_text("")                                                              # (the Makefile only looks that the path exists)
+    with_agent = build_lines(tmp_path, "NOCACHE=1", f"AGENT_SOCK={socket}")
+    assert " build --no-cache --ssh default" in with_agent
+    without = build_lines(tmp_path, "NOCACHE=1", "AGENT_SOCK=")
+    assert without.endswith(" build --no-cache") and "--ssh" not in without

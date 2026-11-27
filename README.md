@@ -409,6 +409,30 @@ Code under review can still send data to GitHub over this route, so turn the swi
 
 Cloning and pushing over ssh are separate and do not change: the web app clones through your ssh-agent, and the terminal pushes with `TERMINAL_SSH=1`.
 
+### claude on a Mac: your Apple sign-in
+
+On a Mac, `make run` does one more thing first: it signs you in with **AppleConnect** and sends claude, in the editor's terminals and in the
+one-click review, through **Apple Claude Code** on that Mac instead of through a personal Claude login. On Linux nothing changes: claude keeps
+the login in the `claude-home` volume (`/login` once).
+
+`make run` (or `make apple`, which does only this) checks, in order, and **stops at the first failure**; it never falls back to the other login:
+this Mac has Apple Claude Code, the AppleConnect sign-in works (its window opens when you are not signed in), `claude diagnose` passes, the
+proxy answers (Apple Claude Code's standalone proxy on `127.0.0.1:18281` is started when nothing does), and a one-token request through it
+succeeds. `docker/terminal/compose.apple.yml` then gives the terminal container `ANTHROPIC_BASE_URL` (the proxy, as `host.docker.internal`)
+and a placeholder key; no token of yours enters the container. `make clean` stops the proxy again, but only if `make run` started it.
+The container's claude is the plain Claude Code, not Apple's: on an empty `claude-home` volume it would still open its first-run wizard
+and ask for a subscription, so when the gateway is set the terminal service marks that wizard as done at start (`hasCompletedOnboarding` in
+`/home/term/.claude/.claude.json`, nothing else of that file is touched). A claude that is already signed in, or a file claude wrote, is kept.
+
+**What you are agreeing to:** the proxy has no password of its own, and Docker Desktop lets every container reach your Mac's loopback. So
+anything that runs in the terminal container, including a peer's code that claude builds or runs there, can use the proxy as you, and
+can ask it for the sign-in token it holds. It is only reachable while the proxy runs, so use `make clean` when you are done. Check the
+Apple policy for what code may go through its gateway before you review code that is not yours.
+`APPLE_PROXY_PORT` (in `.env`, or `make run APPLE_PROXY_PORT=3600`) picks another port, for the proxy of an Apple Claude Code session you keep open.
+
+If the container does not seem to have what you changed (`claude --version` in the editor's terminal shows an old version, or the `make run`
+log lacks the line `editor: claude's first-run wizard is skipped`), build everything from scratch, without Docker's cache: `make build NOCACHE=1 && make run`.
+
 In a terminal, once: `git config --global user.name "…"` and `git config --global user.email "…"` (kept in `claude-home`). The
 project keeps its real `origin`, so `git push` works from it directly. The image trusts GitHub's published ED25519 host key (checked
 against a pinned fingerprint at build time) and refuses every other host. Check it with `ssh-add -l` and `ssh -T git@github.com`.
@@ -541,9 +565,10 @@ src/
   extension/              the Verdict extension of the editor, in TypeScript (compiled to out/)
 docker/
   web/  sandbox/  terminal/  scraper/     one folder per image: its Dockerfile and its Dockerfile.dockerignore (an allow-list)
-                                (+ compose.github.yml and compose.ssh.yml: the opt-in overlays of docker-compose.yml)
+                                (+ compose.github.yml, compose.ssh.yml and compose.apple.yml: the opt-in overlays of docker-compose.yml;
+                                the last one is added by `make` itself on a Mac)
 scripts/
-  container/  conventions/  cursus/  env/  llm/  norminette/  pdf/  ssh/     scripts, one folder per purpose
+  apple/  container/  conventions/  cursus/  env/  llm/  norminette/  pdf/  ssh/     scripts, one folder per purpose
 tests/                    mirrors src/ (verdict/<area>, terminal, sandbox, scraper, shared, extension), plus infra/
 docker-compose.yml        the main file: builds and wires all the images. Makefile: build, run, clean, samples, ...
 ```

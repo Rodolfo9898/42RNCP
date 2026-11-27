@@ -23,7 +23,8 @@ class ClaudeOutput:
     def parse(self, schema: type[BaseModel]) -> BaseModel:
         """The answer as `schema`, or an AIError saying what claude said instead."""
         if NOT_SIGNED_IN.search(f"{self.stdout}\n{self.stderr}"):
-            raise AIError("claude is not signed in inside the terminal container. Open the Terminal tab, run claude and use /login once.")
+            raise AIError("claude is not signed in inside the terminal container. Open the Terminal tab, run claude and use /login once. "
+                          "(On a Mac claude uses your Apple sign-in instead: stop the app and run `make run` again, it checks that sign-in.)")
         try:
             outer = json.loads(self.stdout)
         except ValueError:

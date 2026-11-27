@@ -1,5 +1,8 @@
 COMPOSE = docker compose
 
+# The system make runs on. Only here so that a test, or you, can say `make HOST_OS=Linux`.
+HOST_OS ?= $(shell uname -s)
+
 # TERMINAL_SSH=1 (on the command line, or a line TERMINAL_SSH=1 in .env) gives claude's terminal and the shell tab your
 # ssh-agent so `git push` works there. Off by default: while it is on, anything running in that container, including a
 # project's code that claude builds, can use your keys. See docker/terminal/compose.ssh.yml.
@@ -16,6 +19,17 @@ ifeq ($(strip $(SANDBOX_GITHUB)),1)
 COMPOSE_FILES += -f docker/sandbox/compose.github.yml
 endif
 
+# On a Mac, claude in the editor's terminals and the one-click review goes through Apple Claude Code on this Mac (your AppleConnect
+# sign-in), not through a personal Claude login. `make run` first checks that you are signed in (scripts/apple/apple-setup.sh, which opens
+# the sign-in when needed) and stops if anything fails: there is no quiet fallback. Anywhere else (Linux) nothing changes and claude keeps
+# its own login. APPLE_PROXY_PORT (same two places as the switches above) picks the proxy's port, 18281 by default. See docker/terminal/compose.apple.yml.
+APPLE_PROXY_PORT ?= $(shell grep -m1 '^APPLE_PROXY_PORT=' .env 2>/dev/null | cut -d= -f2- | tr -d ' \t\r"')
+export APPLE_PROXY_PORT
+ifeq ($(HOST_OS),Darwin)
+APPLE := apple
+COMPOSE_FILES += -f docker/terminal/compose.apple.yml
+endif
+
 ifneq ($(strip $(COMPOSE_FILES)),)
 COMPOSE = docker compose -f docker-compose.yml $(COMPOSE_FILES)
 endif
@@ -26,7 +40,7 @@ export PROJECTS_DIR
 
 # SSH: clones use your ssh-agent. `make` makes sure one is running with your keys (~/.ssh/id_*, or SSH_KEYS=...)
 # loaded, and mounts its socket into the web container. The private keys themselves never enter a container.
-ifeq ($(shell uname -s),Darwin)
+ifeq ($(HOST_OS),Darwin)
 # Docker Desktop forwards the macOS agent into its VM at a fixed path.
 AGENT_SOCK := $(SSH_AUTH_SOCK)
 SSH_AGENT_MOUNT ?= /run/host-services/ssh-auth.sock
@@ -45,19 +59,25 @@ SSH_KEYS ?=
 all: build
 
 # norminette is cloned from GitHub over SSH through the same agent (falls back to HTTPS).
-build: token ssh pubkeys progress scraper-dirs
-	$(if $(wildcard $(AGENT_SOCK)),SSH_AUTH_SOCK=$(AGENT_SOCK) $(COMPOSE) build --ssh default,$(COMPOSE) build)
+# `make build NOCACHE=1` (or `make run NOCACHE=1`) builds every image from scratch, without Docker's layer cache: for when an image does not
+# seem to have what you changed (the claude version in docker/terminal/Dockerfile, the Python of src/). It downloads everything again.
+BUILD_FLAGS = $(if $(NOCACHE),--no-cache)
 
-run: build token
+build: token ssh pubkeys progress scraper-dirs
+	$(if $(wildcard $(AGENT_SOCK)),SSH_AUTH_SOCK=$(AGENT_SOCK) $(COMPOSE) build $(BUILD_FLAGS) --ssh default,$(COMPOSE) build $(BUILD_FLAGS))
+
+run: $(APPLE) build token
 	@mkdir -p $(PROJECTS_DIR)
 	@$(MAKE) --no-print-directory url
 	$(COMPOSE) up
 
 clean: token
 	$(COMPOSE) down --remove-orphans
+	$(if $(APPLE),@sh scripts/apple/apple-stop.sh)
 
 fclean: token
 	$(COMPOSE) down --remove-orphans --volumes --rmi local
+	$(if $(APPLE),@sh scripts/apple/apple-stop.sh)
 
 re: fclean build
 
@@ -75,6 +95,11 @@ progress:
 # for the container). They have to exist before compose starts, or Docker makes root-owned ones. .session holds cookies: only you can read it.
 scraper-dirs:
 	@mkdir -p samples artifacts .session && chmod 700 .session
+
+# Mac only (the `run` target asks for it there): signs you in with AppleConnect and checks the Apple route end to end.
+# Run it by hand to test the sign-in without starting anything else: `make apple`.
+apple:
+	@sh scripts/apple/apple-setup.sh
 
 # The link to the editor, with its token.
 url: token
@@ -164,4 +189,4 @@ test-extension:
 	@cd tests/extension && npm install --no-audit --no-fund --silent
 	@uv run pytest tests/extension/test_extension.py -q
 
-.PHONY: all build run clean fclean re models token url ssh pubkeys progress scraper-dirs samples samples-login samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh refresh test-extension
+.PHONY: all build run clean fclean re models token url apple ssh pubkeys progress scraper-dirs samples samples-login samples-plan cursus cursus-sort cursus-update cursus-push cursus-refresh refresh test-extension

@@ -28,6 +28,8 @@ class Settings:
     path: str = "/usr/local/bin:/usr/bin:/bin"
     docker_host: str = ""            # the separate daemon (never the host's), passed on only if the operator set one
     ssh_auth_sock: str = ""          # your ssh-agent, only when docker-compose.ssh.yml mounted it (see the README)
+    claude_gateway_url: str = ""     # where claude sends its requests instead of Anthropic: only on a Mac, docker-compose.apple.yml (see the README)
+    claude_gateway_token: str = ""   # the placeholder key that gateway wants (not a secret: the gateway adds the real sign-in)
     limits: Limits = field(default_factory=Limits)
 
     @classmethod
@@ -47,6 +49,8 @@ class Settings:
             claude_config_dir=environ.get("CLAUDE_CONFIG_DIR", f"{home}/.claude"),
             docker_host=environ.get("DOCKER_HOST", ""),
             ssh_auth_sock=environ.get("SSH_AUTH_SOCK", ""),
+            claude_gateway_url=environ.get("CLAUDE_GATEWAY_URL", ""),
+            claude_gateway_token=environ.get("CLAUDE_GATEWAY_TOKEN", ""),
         )
 
     @property

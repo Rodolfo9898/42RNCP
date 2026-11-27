@@ -15,6 +15,7 @@ def test_without_any_variable_the_container_defaults_apply():
     settings = Settings.from_environment({})
     assert (settings.projects, settings.scratch, settings.claude, settings.home) == (Path("/projects"), Path("/scratch"), "claude", "/home/term")
     assert settings.token == "" and settings.claude_config_dir == "/home/term/.claude" and settings.docker_host == settings.ssh_auth_sock == ""
+    assert settings.claude_gateway_url == settings.claude_gateway_token == ""
     assert settings.folders == SessionFolders(Path("/scratch/subjects"), Path("/scratch/reports"))
     assert settings.limits == Limits() and settings.ssh_agent_ready is False
 

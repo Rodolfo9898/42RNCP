@@ -9,8 +9,9 @@ from terminal.settings.settings import Settings
 
 
 class ChildEnvironment:
-    """Builder of the only environment claude gets: no secret from this process (no token, no API key). The virtual display is the
-    one of the sandbox (programs with a window need an X display, and a container has none)."""
+    """Builder of the only environment claude gets: no secret from this process (no token, no API key; the one placeholder key of the
+    Mac's Apple gateway is not a secret). The virtual display is the one of the sandbox (programs with a window need an X display, and
+    a container has none)."""
 
     def __init__(self, settings: Settings, display: VirtualDisplay) -> None:
         self.settings, self.display = settings, display
@@ -34,6 +35,12 @@ class ChildEnvironment:
             env["DOCKER_HOST"] = settings.docker_host
         if settings.ssh_auth_sock:
             env["SSH_AUTH_SOCK"] = settings.ssh_auth_sock
+        if settings.claude_gateway_url:              # a Mac: claude talks to Apple Claude Code's proxy (docker-compose.apple.yml), not to a login of its own
+            env["ANTHROPIC_BASE_URL"] = settings.claude_gateway_url
+            env["CLAUDE_GATEWAY_URL"] = settings.claude_gateway_url       # (the setting itself too: the terminal that "AI Review" opens runs
+            if settings.claude_gateway_token:                              # `editor_launcher claude`, which builds this environment again from
+                env["ANTHROPIC_AUTH_TOKEN"] = settings.claude_gateway_token   # what the editor gave it, and would otherwise find no gateway)
+                env["CLAUDE_GATEWAY_TOKEN"] = settings.claude_gateway_token
         if subjects := settings.folders.subjects(session_id):       # where the PDFs of this review are (or will be: they may arrive later)
             env["SUBJECTS_DIR"] = str(subjects)
         if project is not None:
