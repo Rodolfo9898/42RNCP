@@ -7,7 +7,7 @@
 ARG DOCKER_CLI_IMAGE=docker:cli
 
 FROM node:22-slim AS claude
-ARG CLAUDE_CODE_VERSION=2.1.303
+ARG CLAUDE_CODE_VERSION=2.1.332
 RUN npm install -g --prefix /opt/claude "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && /opt/claude/bin/claude --version
 
