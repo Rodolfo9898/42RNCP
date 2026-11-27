@@ -29,7 +29,7 @@ is the one at the top of its `verdict.md`).
 | philosophers | ⬜ |
 | push_swap | ✅ |
 | rubik | ✅ |
-| scop | ⬜ |
+| scop | ✅ |
 | webserv | ⬜ |
 
 ✅ run and accepted (`PASS`) · ⚠️ run, `PASS WITH ISSUES` (not accepted yet) · ❌ run, `FAIL` · ⬜ not run
